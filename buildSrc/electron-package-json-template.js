@@ -37,7 +37,7 @@ export default async function generateTemplate({ nameSuffix, version, updateUrl,
 		electronVersion: await getElectronVersion(log),
 		icon: iconPath,
 		appId: appId,
-		productName: nameSuffix.length > 0 ? nameSuffix.slice(1) + " Tuta Mail" : "Tuta Mail",
+		productName: nameSuffix.length > 0 ? nameSuffix.slice(1) + " Tuta" : "Tuta",
 		// name of the appImage
 		artifactName: "${name}-${os}.${ext}",
 		asarUnpack: "desktop/*.node",
@@ -101,6 +101,8 @@ export default async function generateTemplate({ nameSuffix, version, updateUrl,
 			extendInfo: {
 				LSUIElement: 1, //hide dock icon on startup
 			},
+			// Important: keep this "Tuta Mail" for macOS. Otherwise, the dock entry will break after an app update.
+			executableName: nameSuffix.length > 0 ? nameSuffix.slice(1) + " Tuta Mail" : "Tuta Mail",
 			// The build process is somewhat silly as we build two apps for each arch (x64 and arm64).
 			// We do not pre-lipo the NAPI binaries so each of these apps will have libraries for both architectures.
 			// But it doesn't matter because in the end both apps are smashed together into a single package.
@@ -129,7 +131,7 @@ export default async function generateTemplate({ nameSuffix, version, updateUrl,
 			// defaults to productName if not specified
 			executableName: appName,
 			icon: path.join(path.dirname(iconPath), "icon/"),
-			synopsis: "Tuta Mail Desktop Client",
+			synopsis: "Tuta Desktop Client",
 			category: "Network",
 			target: [
 				{
@@ -145,7 +147,7 @@ export default async function generateTemplate({ nameSuffix, version, updateUrl,
 		main: "./desktop/DesktopMain.js",
 		version: version,
 		author: "Tutao GmbH",
-		description: "The desktop client for Tutanota, the secure e-mail service.",
+		description: "The desktop client for Tuta, the secure e-mail, calendar and drive service.",
 		type: "module",
 		scripts: {
 			start: "electron .",

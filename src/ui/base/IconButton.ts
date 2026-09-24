@@ -2,16 +2,16 @@ import m, { Children, Component, Vnode } from "mithril"
 import type { MaybeTranslation } from "../utils/LanguageViewModel"
 import { AllIcons, Icon, IconSize } from "./Icon"
 import type { ClickHandler } from "./GuiUtils"
-import { assertMainOrNode, TabIndex } from "../../platform-kit/app-env"
+import { EnvProvider, TabIndex } from "../../platform-kit/app-env"
 import { ButtonColor, getColors } from "./Button.js"
 import { ButtonSize } from "./ButtonSize.js"
 import { BaseButton, BaseButtonAttrs } from "./buttons/BaseButton.js"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface IconButtonAttrs {
 	icon: AllIcons
-	title: MaybeTranslation
+	label: MaybeTranslation
 	click: ClickHandler
 	colors?: ButtonColor
 	size?: ButtonSize
@@ -25,7 +25,7 @@ export interface IconButtonAttrs {
 export class IconButton implements Component<IconButtonAttrs> {
 	view({ attrs }: Vnode<IconButtonAttrs>): Children {
 		return m(BaseButton, {
-			label: attrs.title,
+			label: attrs.label,
 			icon: m(Icon, {
 				icon: attrs.icon,
 				container: "div",
@@ -38,7 +38,7 @@ export class IconButton implements Component<IconButtonAttrs> {
 			}),
 			onclick: attrs.click,
 			onkeydown: attrs.onkeydown,
-			class: `icon-button ${attrs.disabled ? "disabled" : "state-bg"} ${IconButton.getSizeClass(attrs.size)}`,
+			class: `${attrs.size === ButtonSize.Small ? "icon-button-small" : "icon-button"}  ${attrs.disabled ? "disabled" : "state-bg"} ${IconButton.getSizeClass(attrs.size)}`,
 			disabled: attrs.hidden || attrs.disabled,
 			style: {
 				...attrs.style,

@@ -20,7 +20,7 @@ import { PageSize } from "../../../../src/ui/base/ListUtils"
 import { createTestEntity } from "../../TestUtils"
 import { MailboxDetail } from "../../../../src/applications/common/mailFunctionality/MailboxModel"
 import * as restError from "../../../../src/platform-kit/rest-client/error"
-import { clamp, pad } from "../../../../src/platform-kit/utils"
+import { clamp, isNotNull, pad } from "../../../../src/platform-kit/utils"
 import { LoadedMail } from "../../../../src/applications/mail-app/mail/model/MailSetListModel"
 import { getMailFilterForType, MailFilterType } from "../../../../src/applications/mail-app/mail/view/MailViewerUtils"
 import { theme } from "../../../../src/ui/theme.js"
@@ -33,7 +33,6 @@ import { noPatchesAndInstance } from "../../api/worker/EventBusClientTest"
 import { ExposedCacheStorage } from "../../../../src/app-kit/local-store/CacheStorage"
 import { MailSetKind } from "../../../../src/entities/tutanota/Utils"
 import {
-	createMailSetEntry,
 	Mail,
 	MailboxGroupRootTypeRef,
 	MailBoxTypeRef,
@@ -142,7 +141,7 @@ o.spec("MailListModel", () => {
 			mailBags[mailBag].push(mail)
 
 			mailSetEntries.push(
-				createMailSetEntry({
+				createTestEntity(MailSetEntryTypeRef, {
 					_id: [mailSetEntriesListId, makeMailSetElementId(i)],
 					_ownerGroup,
 					_permissions: "1234",
@@ -241,7 +240,7 @@ o.spec("MailListModel", () => {
 
 		when(
 			processInboxHandler.handleIncomingMail(
-				matchers.argThat((mail: Mail) => isSameId(mail._id, makeMailId(25))),
+				matchers.argThat((mail: Mail) => isNotNull(mail._id) && isSameId(mail._id, makeMailId(25))),
 				matchers.anything(),
 				matchers.anything(),
 				matchers.anything(),
@@ -251,7 +250,7 @@ o.spec("MailListModel", () => {
 
 		when(
 			processInboxHandler.handleIncomingMail(
-				matchers.argThat((mail: Mail) => !isSameId(mail._id, makeMailId(25))),
+				matchers.argThat((mail: Mail) => isNotNull(mail._id) && !isSameId(mail._id, makeMailId(25))),
 				matchers.anything(),
 				matchers.anything(),
 				matchers.anything(),
@@ -439,7 +438,7 @@ o.spec("MailListModel", () => {
 				sets: [mailSet._id, labels[1]._id],
 			})
 
-			const newEntry = createMailSetEntry({
+			const newEntry = createTestEntity(MailSetEntryTypeRef, {
 				_id: [forEntries, CUSTOM_MAX_ID],
 				mail: newMail._id,
 			})

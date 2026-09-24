@@ -1,0 +1,183 @@
+import m, { Children, Component, Vnode } from "mithril"
+import type { NavButtonAttrs } from "../../../../ui/base/NavButton.js"
+import { isNavButtonSelected, NavButton } from "../../../../ui/base/NavButton.js"
+import { CounterBadge } from "../../../../ui/base/CounterBadge"
+import { theme } from "../../../../ui/theme"
+import { component_size, px, size } from "../../../../ui/size"
+import { IconButton, IconButtonAttrs } from "../../../../ui/base/IconButton.js"
+import { Icon, IconAttrs } from "../../../../ui/base/Icon.js"
+import { Icons } from "../../../../ui/base/icons/Icons.js"
+import { lang } from "../../../../ui/utils/LanguageViewModel.js"
+import { MailSet } from "@tutao/entities/tutanota"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { contextDropdown } from "../../../../ui/base/GuiUtils"
+import { DropdownButtonAttrs } from "../../../../ui/base/Dropdown"
+
+export type MailSetRowAttrs = {
+	count: number
+	button: NavButtonAttrs
+	rightButton?: IconButtonAttrs | null
+	expanded: boolean | null
+	indentationLevel: number
+	onExpanderClick: (event: Event) => unknown
+	mailSet: MailSet
+	hasChildren: boolean
+	onSelectedPath: boolean
+	numberOfPreviousRows: number
+	isLastSibling: boolean
+	editMode: boolean
+	onHover: () => void
+	onDragEnter: () => void
+	fullFolderPath: string
+	getIconForMailSet: (mailSet: MailSet, button: NavButtonAttrs) => IconAttrs
+	contextMenuButtonAttrs: DropdownButtonAttrs[]
+}
+
+export class MailSetRow implements Component<MailSetRowAttrs> {
+	private hovered: boolean = false
+
+	view(vnode: Vnode<MailSetRowAttrs>): Children {
+		const { count, button, rightButton, expanded, indentationLevel, mailSet, hasChildren, editMode, onDragEnter, getIconForMailSet } = vnode.attrs
+		const iconAttrs = getIconForMailSet(mailSet, button)
+		const onHover = () => {
+			vnode.attrs.onHover()
+			this.hovered = true
+		}
+
+		// because onblur is fired upon changing folder due to the route change
+		// these functions can be used to handle keyboard navigation
+		const handleForwardsTab = (event: KeyboardEvent) => {
+			if (event.key === "Tab" && !event.shiftKey) {
+				this.hovered = false
+			}
+		}
+		const handleBackwardsTab = (event: KeyboardEvent) => {
+			if (event.key === "Tab" && event.shiftKey) this.hovered = false
+		}
+
+		const indentationMargin = indentationLevel * size.spacing_12
+		const paddingNeeded = size.spacing_8
+		const buttonWidth = size.icon_24 + paddingNeeded * 2
+
+		return m(
+			".folder-row.flex.flex-row.mlr-8.border-radius-4.state-bg",
+			{
+				style: {
+					background: isNavButtonSelected(button) ? theme.state_bg_hover : "",
+				},
+				title: lang.getTranslationText(button.label),
+				onmouseenter: onHover,
+				onmouseleave: () => {
+					this.hovered = false
+				},
+				oncontextmenu: (e: MouseEvent) => {
+					contextDropdown(e, vnode.attrs.contextMenuButtonAttrs)
+				},
+			},
+			[
+				hasChildren && !expanded
+					? m(Icon, {
+							style: {
+								position: "absolute",
+								bottom: px(9),
+								left: px(5 + indentationMargin + buttonWidth / 2),
+								fill: isNavButtonSelected(button) ? theme.primary : theme.on_surface_variant,
+							},
+							icon: Icons.Plus,
+							class: "icon-small",
+						})
+					: null,
+				m("", {
+					style: {
+						marginLeft: px(indentationMargin),
+					},
+				}),
+				this.renderHierarchyLine(vnode.attrs, indentationMargin),
+				m(
+					"button.flex.items-center.justify-end" + (editMode ? ".no-hover" : ""),
+					{
+						style: {
+							left: px(indentationMargin),
+							width: px(buttonWidth),
+							height: px(component_size.button_height),
+							paddingLeft: px(paddingNeeded),
+							paddingRight: px(paddingNeeded),
+							// the zIndex is so the hierarchy lines never get drawn over the icon
+							zIndex: 3,
+						},
+						"data-testid": `btn:icon:${vnode.attrs.fullFolderPath}`,
+						"data-expanded": vnode.attrs.expanded ? "true" : "false",
+						onclick: vnode.attrs.onExpanderClick,
+						onkeydown: handleBackwardsTab,
+					},
+					m(Icon, iconAttrs),
+				),
+				m(NavButton, {
+					...button,
+					onfocus: onHover,
+					onkeydown: handleBackwardsTab,
+					dragEnterHandler: onDragEnter,
+					disableSelectedBackground: true,
+				}),
+				// show the edit button in either edit mode or on hover (excluding hover on mobile)
+				rightButton && (editMode || (!ClientDetector.get().isMobileDevice() && this.hovered))
+					? m(IconButton, {
+							...rightButton,
+							click: (event, dom) => {
+								rightButton.click(event, dom)
+							},
+							onkeydown: handleForwardsTab,
+						})
+					: m("", { style: { marginRight: px(size.spacing_8) } }, [
+							m(CounterBadge, {
+								count,
+								color: theme.surface_container,
+								background: theme.on_surface_variant,
+								showFullCount: true,
+							}),
+						]),
+			],
+		)
+	}
+
+	private renderHierarchyLine({ indentationLevel, numberOfPreviousRows, isLastSibling, onSelectedPath }: MailSetRowAttrs, indentationMargin: number) {
+		const lineSize = 1
+		const border = `${lineSize}px solid ${theme.outline}`
+		const verticalOffsetInsideRow = component_size.button_height / 2 + 1
+		const verticalOffsetForParent = (component_size.button_height - size.icon_24) / 2
+		const lengthOfHorizontalLine = size.spacing_12 - 2
+		const leftOffset = indentationMargin
+
+		return indentationLevel !== 0
+			? [
+					isLastSibling || onSelectedPath
+						? // draw both vertical and horizontal lines
+							m(".abs", {
+								style: {
+									width: px(lengthOfHorizontalLine),
+									borderBottomLeftRadius: "3px",
+									// there's some subtle difference between border we use here and the top for the other element and this +1 is to
+									// accommodate it
+									height: px(1 + verticalOffsetInsideRow + verticalOffsetForParent + numberOfPreviousRows * component_size.button_height),
+									top: px(-verticalOffsetForParent - numberOfPreviousRows * component_size.button_height),
+									left: px(leftOffset),
+									borderLeft: border,
+									borderBottom: border,
+									// we need to draw selected lines over everything else, even things that are drawn later
+									zIndex: onSelectedPath ? 2 : 1,
+								},
+							})
+						: // draw only the horizontal line
+							m(".abs", {
+								style: {
+									height: px(lineSize),
+									top: px(verticalOffsetInsideRow),
+									left: px(leftOffset),
+									width: px(lengthOfHorizontalLine),
+									backgroundColor: theme.outline,
+								},
+							}),
+				]
+			: null
+	}
+}

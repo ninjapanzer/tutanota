@@ -12,6 +12,7 @@ import { matchers, object, when } from "testdouble"
 import { getDayShifted, getStartOfDay } from "../../../src/platform-kit/utils"
 import { CredentialEncryptionMode } from "../../../src/platform-kit/app-env"
 import { CredentialType } from "../../../src/platform-kit/network/types"
+import { CalendarViewType } from "../../../src/applications/common/api/common/utils/CommonCalendarUtils"
 
 o.spec("DeviceConfig", function () {
 	o.spec("migrateConfig", function () {
@@ -99,6 +100,18 @@ o.spec("DeviceConfig", function () {
 			migrateConfigV5to6(oldConfig, now)
 			o.check(oldConfig.offlineTimeRangeDateByUser).deepEquals({ [user]: computedDate })
 		})
+
+		o.test("migrating from v7 to v8 renames _defaultCalendarView to lastSelectedCalendarView", function () {
+			const oldConfig: any = {
+				_version: 7,
+				_defaultCalendarView: { userId: "week" },
+			}
+			const localStorageMock = object<Storage>()
+			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(JSON.stringify(oldConfig))
+
+			o.check(new DeviceConfig(localStorageMock)["_defaultCalendarView"]).equals(undefined)
+			o.check(new DeviceConfig(localStorageMock).getLastSelectedCalendarView("userId")).equals(CalendarViewType.WEEK)
+		})
 	})
 
 	o.spec("loading config", function () {
@@ -174,7 +187,8 @@ o.spec("DeviceConfig", function () {
 				_themeId: "mytheme",
 				scheduledAlarmModelVersionPerUser: {},
 				_language: "en",
-				_defaultCalendarView: {},
+				lastSelectedCalendarView: {}, // Renamed from _defaultCalendarView
+				defaultCalendarViewSetting: {},
 				_hiddenCalendars: {},
 				expandedMailFolders: {},
 				_testDeviceId: "testId",
@@ -210,6 +224,7 @@ o.spec("DeviceConfig", function () {
 				offlineTimeRangeDateByUser: { userId1: getStartOfDay(getDayShifted(new Date(), -42)).getTime() },
 				installationDate: getStartOfDay(new Date()).getTime().toString(),
 				isUndoSendEnabled: true,
+				collapsedMailGroups: {},
 			}
 
 			// We can't just call verify on localStorageMock.setItem because the JSON string may not match perfectly
@@ -221,6 +236,53 @@ o.spec("DeviceConfig", function () {
 			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(null)
 
 			o.check(new DeviceConfig(localStorageMock).getMailListDisplayMode()).equals(MailListDisplayMode.CONVERSATIONS)
+		})
+	})
+
+	o.spec("getDefaultCalendarView", function () {
+		o.test("returns MONTH by default", function () {
+			const config = {
+				_version: 8,
+				lastSelectedCalendarView: {},
+				defaultCalendarViewSetting: {},
+			}
+			const localStorageMock = object<Storage>()
+			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(JSON.stringify(config))
+
+			o.check(new DeviceConfig(localStorageMock).getDefaultCalendarView("userId")).equals(CalendarViewType.MONTH)
+		})
+		o.test("returns user's lastSelectedCalendarView when defaultCalendarViewSetting unset", function () {
+			const config = {
+				_version: 8,
+				lastSelectedCalendarView: { userId: CalendarViewType.WEEK },
+				defaultCalendarViewSetting: {},
+			}
+			const localStorageMock = object<Storage>()
+			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(JSON.stringify(config))
+
+			o.check(new DeviceConfig(localStorageMock).getDefaultCalendarView("userId")).equals(CalendarViewType.WEEK)
+		})
+		o.test("returns user's defaultCalendarViewSetting when lastSelectedCalendarView unset", function () {
+			const config = {
+				_version: 8,
+				lastSelectedCalendarView: {},
+				defaultCalendarViewSetting: { userId: CalendarViewType.WEEK },
+			}
+			const localStorageMock = object<Storage>()
+			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(JSON.stringify(config))
+
+			o.check(new DeviceConfig(localStorageMock).getDefaultCalendarView("userId")).equals(CalendarViewType.WEEK)
+		})
+		o.test("user's defaultCalendarViewSetting overrides lastSelectedCalendarView when both set", function () {
+			const config = {
+				_version: 8,
+				lastSelectedCalendarView: { userId: CalendarViewType.DAY },
+				defaultCalendarViewSetting: { userId: CalendarViewType.WEEK },
+			}
+			const localStorageMock = object<Storage>()
+			when(localStorageMock.getItem(DeviceConfig.LocalStorageKey)).thenReturn(JSON.stringify(config))
+
+			o.check(new DeviceConfig(localStorageMock).getDefaultCalendarView("userId")).equals(CalendarViewType.WEEK)
 		})
 	})
 })

@@ -1,6 +1,5 @@
 package de.tutao.tutanota.push
 
-import android.app.Notification
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -12,17 +11,19 @@ import de.tutao.tutasdk.Sdk
 import de.tutao.tutashared.AndroidNativeCryptoFacade
 import de.tutao.tutashared.SdkFileClient
 import de.tutao.tutashared.SdkRestClient
+import de.tutao.tutashared.TempDir
 import de.tutao.tutashared.createAndroidKeyStoreFacade
 import de.tutao.tutashared.credentials.CredentialsEncryptionFactory
 import de.tutao.tutashared.data.AppDatabase
+import de.tutao.tutashared.file.TempFs
 import de.tutao.tutashared.push.SseStorage
-import de.tutao.tutashared.toSdkIdTupleGenerated
 import de.tutao.tutashared.push.toSdkCredentials
+import de.tutao.tutashared.toSdkIdTupleGenerated
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.security.SecureRandom
 
 /**
  * Performs mail notification actions
@@ -41,19 +42,24 @@ class MailNotificationActionReceiver : BroadcastReceiver() {
 				val keyStoreFacade = createAndroidKeyStoreFacade()
 				val sseStorage = SseStorage(db, keyStoreFacade)
 
-				val crypto = AndroidNativeCryptoFacade(context)
+				val crypto = AndroidNativeCryptoFacade(context, TempFs(context, SecureRandom(), TempDir(context)))
 				val nativeCredentialsFacade = CredentialsEncryptionFactory.create(context, crypto, db)
 				val credentials = nativeCredentialsFacade.loadByUserId(notificationInfo.userId)!!.toSdkCredentials()
 
-				val sdk = Sdk(sseStorage.getSseOrigin()!!, SdkRestClient(), SdkFileClient(context.filesDir)).login(credentials)
+				val sdk = Sdk(
+					sseStorage.getSseOrigin()!!,
+					SdkRestClient(),
+					SdkFileClient(context.filesDir)
+				).login(credentials)
 
 				when (action) {
 					TRASH_ACTION -> sendMailToTrash(sdk, notificationInfo)
 					READ_ACTION -> markMailAsRead(sdk, notificationInfo)
+					ARCHIVE_ACTION -> sendMailToArchive(sdk, notificationInfo)
 					else -> {
 						Log.e(
 							TAG,
-							"Invalid notification action received: $action (valid actions are $TRASH_ACTION and $READ_ACTION)"
+							"Invalid notification action received: $action (valid actions are $TRASH_ACTION, $READ_ACTION, and $ARCHIVE_ACTION)"
 						)
 					}
 				}
@@ -76,6 +82,10 @@ class MailNotificationActionReceiver : BroadcastReceiver() {
 		sdk.mailFacade().setUnreadStatusForMails(listOf(notificationInfo.mailId!!.toSdkIdTupleGenerated()), false)
 	}
 
+	private suspend fun sendMailToArchive(sdk: LoggedInSdk, notificationInfo: NotificationInfo) {
+		sdk.mailFacade().archiveMails(listOf(notificationInfo.mailId!!.toSdkIdTupleGenerated()))
+	}
+
 	private fun dismissNotification(notificationManager: NotificationManager, notificationIdToDismiss: Int) {
 		notificationManager.cancel(notificationIdToDismiss)
 		// Filter manually because cancel might not be quick enough
@@ -93,6 +103,7 @@ class MailNotificationActionReceiver : BroadcastReceiver() {
 		private const val TAG = "NotifAction"
 		private const val TRASH_ACTION = "trash"
 		private const val READ_ACTION = "read"
+		private const val ARCHIVE_ACTION = "archive"
 		private const val NOTIFICATION_INFO_EXTRA = "NotifInfo"
 
 		fun makeTrashIntent(context: Context, notificationId: Int, notificationInfo: NotificationInfo): Intent {
@@ -102,6 +113,10 @@ class MailNotificationActionReceiver : BroadcastReceiver() {
 
 		fun makeReadIntent(context: Context, notificationId: Int, notificationInfo: NotificationInfo): Intent {
 			return makeIntent(READ_ACTION, context, notificationId, notificationInfo)
+		}
+
+		fun makeArchiveIntent(context: Context, notificationId: Int, notificationInfo: NotificationInfo): Intent {
+			return makeIntent(ARCHIVE_ACTION, context, notificationId, notificationInfo)
 		}
 
 		private fun makeIntent(

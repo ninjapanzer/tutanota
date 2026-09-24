@@ -2,7 +2,8 @@ import type { BrowserWindow, ContextMenuParams, HandlerDetails, NativeImage, Res
 import type { WindowBounds, WindowManager } from "./DesktopWindowManager"
 import type { lazy } from "@tutao/utils"
 import { capitalizeFirstLetter, newPromise, noOp, typedEntries, typedKeys } from "@tutao/utils"
-import { CancelledError, Keys } from "@tutao/app-env"
+
+import { CancelledError } from "@tutao/app-env"
 import type { Key } from "../../../ui/utils/KeyManager"
 import path from "node:path"
 import type { TranslationKey } from "../../../ui/utils/LanguageViewModel"
@@ -11,12 +12,13 @@ import { log } from "./DesktopLog"
 import { parseUrlOrNull } from "./PathUtils"
 import type { LocalShortcutManager } from "./electron-localshortcut/LocalShortcut"
 import { DesktopThemeFacade } from "./DesktopThemeFacade"
-import { CommonNativeFacade, DesktopFacade } from "@tutao/native-bridge/generatedIpc/types"
+import { CommonNativeFacade, DesktopFacade, ImapSyncFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { CalendarOpenAction } from "@tutao/native-bridge/generatedIpc/enums"
 import { RemoteBridge, WindowCleanup } from "./ipc/RemoteBridge.js"
 import { InterWindowEventFacadeSendDispatcher } from "@tutao/native-bridge/generatedIpc/dispatchers"
 import { handleProtocols } from "./net/ProtocolProxy.js"
 import { DesktopMailImportFacade } from "./mailimport/DesktopMailImportFacade"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 const MINIMUM_WINDOW_SIZE: number = 350
 export type UserInfo = {
@@ -50,6 +52,7 @@ export class ApplicationWindow {
 	private _interWindowEventSender!: InterWindowEventFacadeSendDispatcher
 	private _desktopMailImportFacade!: DesktopMailImportFacade
 	private windowCleanup!: WindowCleanup
+	private _imapSyncFacade!: ImapSyncFacade
 
 	_browserWindow!: BrowserWindow
 
@@ -242,12 +245,17 @@ export class ApplicationWindow {
 		})
 	}
 
+	get imapSyncFacade(): ImapSyncFacade {
+		return this._imapSyncFacade
+	}
+
 	private initFacades() {
 		const sendingFacades = this.remoteBridge.createBridge(this)
 		this._desktopFacade = sendingFacades.desktopFacade
 		this._commonNativeFacade = sendingFacades.commonNativeFacade
 		this._interWindowEventSender = sendingFacades.interWindowEventSender
 		this.windowCleanup = sendingFacades.windowCleanup
+		this._imapSyncFacade = sendingFacades.imapSyncFacade
 	}
 
 	private async loadInitialUrl(noAutoLogin: boolean) {

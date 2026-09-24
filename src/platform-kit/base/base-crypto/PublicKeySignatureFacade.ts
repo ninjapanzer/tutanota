@@ -1,0 +1,196 @@
+import { Ed25519Facade } from "./Ed25519Facade"
+import { byteArraysToBytes, bytesToByteArrays, KeyVersion, Versioned } from "@tutao/utils"
+import { InvalidDataError } from "@tutao/rest-client/error"
+import {
+	AsymmetricKeyPair,
+	cryptoUtils,
+	CryptoWrapper,
+	Ed25519PrivateKey,
+	Ed25519PublicKey,
+	EncodedEd25519Signature,
+	isPqKeyPairs,
+	isPqPublicKey,
+	isRsaOrRsaX25519KeyPair,
+	isRsaPublicKey,
+	isRsaX25519KeyPair,
+	isRsaX25519PublicKey,
+	kyberPublicKeyToBytes,
+	PQPublicKeys,
+	PublicKey,
+	rsaPublicKeyToBytes,
+	RsaX25519PublicKey,
+} from "@tutao/crypto"
+import { EnvProvider } from "@tutao/app-env"
+import { asPublicKeySignatureType, PublicKeySignatureType } from "./Constants"
+import { createPublicKeySignature, PublicKeySignature } from "@tutao/entities/sys"
+
+EnvProvider.assertWorkerOrNode()
+
+export type DeserializedPublicKeyForSigning = {
+	encryptionKeyPairVersion: KeyVersion
+	signatureType: PublicKeySignatureType
+	pubEccKey: Uint8Array<ArrayBuffer> | null
+	pubKyberKey: Uint8Array<ArrayBuffer> | null
+	pubRsaKey: Uint8Array<ArrayBuffer> | null
+}
+
+/**
+ * Helper class to encode/decode key pairs in order to sign and verify public encryption keys with identity keys.
+ */
+export class PublicKeySignatureFacade {
+	constructor(
+		private readonly ed25519Facade: Ed25519Facade,
+		private readonly cryptoWrapper: CryptoWrapper,
+	) {}
+
+	/*
+	 * Returns the public keys canonicalized in the following order:
+	 * | SignatureType | PublicKeyVersion | PubEccKey | PubRsaKey or PubKyberKey |
+	 * Throws for invalid key pair types or key pair version that do not fit into a byte or are not integers
+	 * @VisibleForTesting
+	 */
+	serializePublicKeyForSigning(versionedPublicKey: Versioned<PublicKey>): EncodedKeyPairAndSignatureType {
+		const publicKey = versionedPublicKey.object
+		let firstPubKeyComponent: Uint8Array<ArrayBuffer>
+		let secondPubKeyComponent: Uint8Array<ArrayBuffer>
+		let signatureType: PublicKeySignatureType
+		if (isPqPublicKey(publicKey)) {
+			firstPubKeyComponent = publicKey.x25519PublicKey
+			secondPubKeyComponent = kyberPublicKeyToBytes(publicKey.kyberPublicKey)
+			signatureType = PublicKeySignatureType.TutaCrypt
+		} else if (isRsaX25519PublicKey(publicKey)) {
+			firstPubKeyComponent = publicKey.publicEccKey
+			secondPubKeyComponent = rsaPublicKeyToBytes(publicKey)
+			signatureType = PublicKeySignatureType.RsaEcc
+		} else if (isRsaPublicKey(publicKey)) {
+			firstPubKeyComponent = new Uint8Array(0)
+			secondPubKeyComponent = rsaPublicKeyToBytes(publicKey)
+			signatureType = PublicKeySignatureType.RsaFormerGroupKey
+		} else {
+			throw new Error("invalid key pair type")
+		}
+
+		const keyPairVersionAsBytes = new Uint8Array(1)
+		const signatureTypeAsBytes = new Uint8Array(1)
+		if (versionedPublicKey.version > 255) {
+			throw new InvalidDataError("currently not possible to parse key pair versions that do not fit into one byte")
+		}
+		keyPairVersionAsBytes[0] = versionedPublicKey.version
+
+		const signatureTypeEnumValue = parseInt(signatureType)
+		if (signatureTypeEnumValue > 255) {
+			throw new InvalidDataError("currently not possible to parse signature types that do not fit into one byte")
+		}
+		signatureTypeAsBytes[0] = signatureTypeEnumValue
+
+		return {
+			encodedKeyPairForSigning: byteArraysToBytes([signatureTypeAsBytes, keyPairVersionAsBytes, firstPubKeyComponent, secondPubKeyComponent]),
+			signatureType,
+		}
+	}
+
+	/**
+	 * @VisibleForTesting
+	 */
+	deserializePublicKeyForSigning(serializedPublicKey: Uint8Array<ArrayBuffer>): DeserializedPublicKeyForSigning {
+		const byteArrays = bytesToByteArrays(serializedPublicKey, 4)
+
+		if (byteArrays[0].length !== 1) {
+			throw new InvalidDataError("signature types greater than one byte are not yet supported")
+		}
+		if (byteArrays[1].length !== 1) {
+			throw new InvalidDataError("key pair versions greater than one byte are not yet supported")
+		}
+		const signatureType: PublicKeySignatureType = asPublicKeySignatureType(byteArrays[0][0].toString())
+		const encryptionKeyPairVersion = cryptoUtils.checkKeyVersionConstraints(byteArrays[1][0])
+		const pubEccKey = byteArrays[2]
+		const secondPubKeyComponent = byteArrays[3]
+		switch (signatureType) {
+			case PublicKeySignatureType.RsaEcc:
+				return {
+					encryptionKeyPairVersion,
+					signatureType,
+					pubEccKey,
+					pubKyberKey: null,
+					pubRsaKey: secondPubKeyComponent,
+				}
+			case PublicKeySignatureType.TutaCrypt:
+				return {
+					encryptionKeyPairVersion,
+					signatureType,
+					pubEccKey,
+					pubKyberKey: secondPubKeyComponent,
+					pubRsaKey: null,
+				}
+			case PublicKeySignatureType.RsaFormerGroupKey:
+				return {
+					encryptionKeyPairVersion,
+					signatureType,
+					pubEccKey: null,
+					pubKyberKey: null,
+					pubRsaKey: secondPubKeyComponent,
+				}
+			default:
+				throw new Error(`PublicKeySignatureType ${signatureType} not implemented`)
+		}
+	}
+
+	async signPublicKey(
+		versionedEncryptionKeyPair: Versioned<AsymmetricKeyPair>,
+		privateIdentityKey: Versioned<Ed25519PrivateKey>,
+	): Promise<PublicKeySignature> {
+		const encryptionKeyPair = versionedEncryptionKeyPair.object
+		let publicEncryptionKey = this.extractAndValidatePublicKey(encryptionKeyPair)
+		const { encodedKeyPairForSigning, signatureType } = this.serializePublicKeyForSigning({
+			object: publicEncryptionKey,
+			version: versionedEncryptionKeyPair.version,
+		})
+		const signatureBytes = await this.ed25519Facade.sign(privateIdentityKey.object, encodedKeyPairForSigning)
+		return createPublicKeySignature({
+			signature: signatureBytes,
+			signingKeyVersion: privateIdentityKey.version.toString(),
+			signatureType,
+			publicKeyVersion: versionedEncryptionKeyPair.version.toString(),
+		})
+	}
+
+	async verifyPublicKeySignature(
+		publicEncryptionKey: Versioned<PublicKey>,
+		publicIdentityKey: Ed25519PublicKey,
+		signatureBytes: EncodedEd25519Signature,
+	): Promise<boolean> {
+		const { encodedKeyPairForSigning } = this.serializePublicKeyForSigning(publicEncryptionKey)
+		return this.ed25519Facade.verifySignature(publicIdentityKey, signatureBytes, encodedKeyPairForSigning)
+	}
+
+	/**
+	 * Public keys are saved without authentication on the server. Therefore, we extract them from the private key to make sure, that the server delivered the correct one.
+	 * @param encryptionKeyPair
+	 * @private
+	 */
+	private extractAndValidatePublicKey(encryptionKeyPair: AsymmetricKeyPair): PublicKey {
+		if (isPqKeyPairs(encryptionKeyPair)) {
+			const x25519PublicKey = this.cryptoWrapper.verifyPublicX25519Key(encryptionKeyPair.x25519KeyPair)
+			const kyberPublicKey = this.cryptoWrapper.verifyKyberPublicKey(encryptionKeyPair.kyberKeyPair)
+			return new PQPublicKeys(x25519PublicKey, kyberPublicKey)
+		} else if (isRsaOrRsaX25519KeyPair(encryptionKeyPair)) {
+			const rsaPublicKey = this.cryptoWrapper.verifyRsaPublicKey(encryptionKeyPair)
+			if (isRsaX25519KeyPair(encryptionKeyPair)) {
+				const x25519PublicKey = this.cryptoWrapper.verifyPublicX25519Key({
+					publicKey: encryptionKeyPair.publicEccKey,
+					privateKey: encryptionKeyPair.privateEccKey,
+				})
+				return new RsaX25519PublicKey(rsaPublicKey, x25519PublicKey)
+			} else {
+				return rsaPublicKey
+			}
+		} else {
+			throw new Error("invalid key pair type")
+		}
+	}
+}
+
+type EncodedKeyPairAndSignatureType = {
+	encodedKeyPairForSigning: Uint8Array<ArrayBuffer>
+	signatureType: PublicKeySignatureType
+}

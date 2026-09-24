@@ -1,24 +1,22 @@
 import o from "@tutao/otest"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver } from "../../../TestUtils"
 import { matchers, object, verify, when } from "testdouble"
-import { assertNotNull } from "../../../../../src/platform-kit/utils"
-import { AesKey, base64ToKey, CryptoWrapper, VersionedKey } from "../../../../../src/platform-kit/crypto"
-import { InstancePipeline } from "../../../../../src/platform-kit/instance-pipeline"
+import { AesKey, base64ToKey, VersionedKey } from "../../../../../src/platform-kit/crypto"
+import { InstancePipeline, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
 import { AlarmFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/AlarmFacade"
 import { InfoMessageHandler } from "../../../../../src/applications/common/gui/InfoMessageHandler"
 import { AlarmInfoTemplate, EventWithUserAlarmInfos } from "../../../../../src/applications/common/api/worker/facades/lazy/CalendarFacade"
 import { makeEmptyCalendarEvent } from "../../../../../src/applications/common/api/common/utils/CommonCalendarUtils"
-import type { EventAlarmInfoTemplatesTuple } from "../../../../../src/applications/common/calendar/gui/ImportExportUtils"
 import { NativePushFacade } from "../../../../../src/app-kit/native-bridge/common/generatedipc/types"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade"
 import { IServiceExecutor } from "../../../../../src/platform-kit/network/ServiceRequest"
-import { CryptoFacade } from "../../../../../src/platform-kit/base/crypto/CryptoFacade"
-import { elementIdPart, listIdPart, OperationType } from "../../../../../src/platform-kit/meta"
+import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/CryptoFacade"
+import { elementIdPart, elementIdToId, idToElementId, listIdPart, OperationType } from "../../../../../src/platform-kit/meta"
 import {
 	AlarmInfoTypeRef,
 	AlarmNotification,
 	AlarmNotificationTypeRef,
-	AlarmService,
+	AlarmService_POST,
 	CalendarEventRefTypeRef,
 	createAlarmInfo,
 	createAlarmNotification,
@@ -35,6 +33,9 @@ import {
 	UserTypeRef,
 } from "@tutao/entities/sys"
 import { CalendarEvent, CalendarEventTypeRef, createCalendarEvent } from "@tutao/entities/tutanota"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
+import { EventAlarmInfoTemplatesTuple } from "../../../../../src/applications/common/calendar/import/ImportExportUtils"
+import { IncomingServerJson } from "../../../../../src/platform-kit/instance-pipeline/TypeMapper"
 
 o.spec("AlarmFacadeTest", function () {
 	let nativePushFacadeMock: NativePushFacade
@@ -46,12 +47,13 @@ o.spec("AlarmFacadeTest", function () {
 
 	let instancePipeline: InstancePipeline
 	let alarmFacade: AlarmFacade
+	let typeModelResolver: TypeModelResolver
 
 	let user: User
 	let userGroupMembership: GroupMembership
 
 	o.beforeEach(function () {
-		const typeModelResolver = clientInitializedTypeModelResolver()
+		typeModelResolver = clientInitializedTypeModelResolver()
 		instancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
 		nativePushFacadeMock = object()
 		userFacadeMock = object()
@@ -63,7 +65,7 @@ o.spec("AlarmFacadeTest", function () {
 		userGroupMembership = createTestEntity(GroupMembershipTypeRef, {
 			group: "userGroupId",
 		})
-		user = createTestEntity(UserTypeRef, { _id: "userId", userGroup: userGroupMembership })
+		user = createTestEntity(UserTypeRef, { _id: idToElementId("userId"), userGroup: userGroupMembership })
 
 		when(userFacadeMock.getLoggedInUser()).thenReturn(user)
 
@@ -116,19 +118,19 @@ o.spec("AlarmFacadeTest", function () {
 					summary: personalCalendarEvent.summary,
 					eventStart: personalCalendarEvent.startTime,
 					eventEnd: personalCalendarEvent.endTime,
-					user: user._id,
+					user: elementIdToId(user._id),
 				}),
 			]
 			const userAlarmInfoData: UserAlarmInfoData[] = [
 				createUserAlarmInfoData({
-					ownerEncSessionKey,
-					ownerKeyVersion: userGroupKey.version.toString(),
 					encryptedTrigger,
 					alarmIdentifier: personalAlarmInfoTemplate.alarmIdentifier,
 					ownerGroup: user.userGroup.group,
 					calendarEventRef: calendarEventRef,
 				}),
 			]
+			userAlarmInfoData[0].ownerEncSessionKey = ownerEncSessionKey
+			userAlarmInfoData[0].ownerKeyVersion = userGroupKey.version.toString()
 			const alarmServicePostData = createAlarmServicePost({ alarmNotifications, userAlarmInfoData })
 
 			const eventAlarmsTuple: EventAlarmInfoTemplatesTuple = {
@@ -139,7 +141,7 @@ o.spec("AlarmFacadeTest", function () {
 
 			await alarmFacade.createAlarms(user, [eventAlarmsTuple], [pushIdentifier])
 
-			verify(serviceExecutorMock.post(AlarmService, alarmServicePostData, matchers.anything()), { times: 1 })
+			verify(serviceExecutorMock.execute(AlarmService_POST, alarmServicePostData, matchers.anything()), { times: 1 })
 		})
 	})
 
@@ -168,7 +170,7 @@ o.spec("AlarmFacadeTest", function () {
 			const pushIdentifierSessionKey: AesKey = object()
 			when(cryptoFacadeMock.resolveSessionKey(pushIdentifier)).thenResolve(pushIdentifierSessionKey)
 
-			const pushIdentifierEncNotificationSessionKey: Uint8Array = new Uint8Array(0x01)
+			const pushIdentifierEncNotificationSessionKey: Uint8Array<ArrayBuffer> = new Uint8Array(0x01)
 			when(cryptoWrapperMock.encryptKey(pushIdentifierSessionKey, matchers.anything())).thenReturn(pushIdentifierEncNotificationSessionKey)
 
 			const instanceCaptor = matchers.captor()
@@ -179,10 +181,10 @@ o.spec("AlarmFacadeTest", function () {
 
 			const sessionKey = base64ToKey(sessionKeyCaptor.value)
 			const allInstanceSentToFacade = instanceCaptor.value
-			const instanceLiteralSentToFacade = assertNotNull(JSON.parse(allInstanceSentToFacade)[0])
-
+			const typeModel = await typeModelResolver.resolveServerTypeReference(AlarmNotificationTypeRef)
+			const incoming = IncomingServerJson.expectMultipleInstance(allInstanceSentToFacade, typeModel)
 			// if we were able to decryptAndMap, it already verifies that no field has network debug info,
-			const instanceSentToFacade = await instancePipeline.decryptAndMap(AlarmNotificationTypeRef, instanceLiteralSentToFacade, sessionKey)
+			const instanceSentToFacade = await instancePipeline.decryptAndMap<AlarmNotification>(incoming[0], sessionKey)
 			o(instanceSentToFacade.operation).equals(OperationType.CREATE)
 		})
 	})

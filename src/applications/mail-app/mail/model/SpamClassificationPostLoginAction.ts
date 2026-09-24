@@ -3,8 +3,9 @@ import { CustomerFacade } from "../../../common/api/worker/facades/lazy/Customer
 import { filterMailMemberships } from "../../../common/api/common/utils/IndexUtils"
 import { assertNotNull } from "../../../../platform-kit/utils"
 import { isInternalUser } from "../../../common/api/common/utils/UserUtils"
-import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SyncTracker } from "../../../common/api/main/SyncTracker"
 import { LoggedInEvent, PostLoginAction } from "../../../../app-kit/native-bridge/common/PostLoginAction.js"
+import { CacheSyncStatus, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 /**
  * Initialize SpamClassifier if FeatureType.SpamClientClassification feature is enabled for the customer.
@@ -35,13 +36,15 @@ export class SpamClassificationPostLoginAction implements PostLoginAction {
 		if (isInternalUser(user) && this.spamClassifier) {
 			const ownerGroups = filterMailMemberships(user)
 			for (const ownerGroup of ownerGroups) {
-				this.syncTracker.addSyncDoneListener({
-					onSyncDone: async () => {
+				this.syncTracker.addSyncListener({
+					id: "SpamClassificationPostLoginAction",
+					priority: ListenerPriority.NORMAL,
+					targetStatus: CacheSyncStatus.OnlineSyncDone,
+					onSyncStatusChange: async () => {
 						await this.spamClassifier.initializeWithTraining(ownerGroup.group).catch((e) => {
 							console.log(`failed to completely initialize spam classification model for group: ${ownerGroup.group}`, e)
 						})
 					},
-					priority: SyncDonePriority.NORMAL,
 				})
 			}
 		}

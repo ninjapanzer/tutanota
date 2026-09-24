@@ -7,7 +7,7 @@ import { lang } from "../../../ui/utils/LanguageViewModel.js"
 import { IconButton } from "../../../ui/base/IconButton.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { ButtonSize } from "../../../ui/base/ButtonSize.js"
-import { isApp, isBrowser, isDesktop, PushServiceType } from "../../../platform-kit/app-env"
+import { EnvProvider, PushServiceType } from "../../../platform-kit/app-env"
 import { mailLocator } from "../mailLocator.js"
 import { UpdatableSettingsViewer } from "../../common/settings/Interfaces.js"
 import { NotificationContentSelector } from "./NotificationContentSelector.js"
@@ -16,9 +16,10 @@ import { IdentifierRow } from "../../common/settings/IdentifierRow.js"
 import { DropDownSelector, type DropDownSelectorAttrs } from "../../../ui/base/DropDownSelector.js"
 import { NotificationSettingsViewerModel } from "./NotificationSettingsViewerModel"
 import { noOp, ofClass } from "../../../platform-kit/utils"
-import * as restError from "../../../platform-kit/rest-client/error"
 import { PushIdentifier, PushIdentifierTypeRef, User } from "@tutao/entities/sys"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { NotFoundError } from "@tutao/rest-client/error"
+import { elementIdToId } from "@tutao/meta"
 
 export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 	private extendedNotificationMode: ExtendedNotificationMode | null = null
@@ -31,12 +32,12 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 	constructor() {
 		this.expanded = stream<boolean>(false)
 		this.user = locator.logins.getUserController().user
-		this.model = new NotificationSettingsViewerModel(isBrowser() ? null : locator.pushService, this.user, locator.entityClient)
+		this.model = new NotificationSettingsViewerModel(EnvProvider.get().isBrowser() ? null : locator.pushService, this.user, locator.entityClient)
 
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			const promises: Promise<any>[] = [locator.pushService.getExtendedNotificationMode()]
 
-			if (isApp()) {
+			if (EnvProvider.get().isApp()) {
 				promises.push(
 					locator.systemPermissionHandler.hasPermission(PermissionType.Notification),
 					locator.pushService.getReceiveCalendarNotificationConfig(),
@@ -44,7 +45,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 			}
 			Promise.all(promises).then(([extendedNotificationMode, hasPermission, canReceiveCalendarNotifications]) => {
 				this.extendedNotificationMode = extendedNotificationMode
-				if (isApp()) {
+				if (EnvProvider.get().isApp()) {
 					if (this.hasNotificationPermission !== hasPermission) this.hasNotificationPermission = hasPermission
 					if (this.receiveCalendarNotifications !== canReceiveCalendarNotifications)
 						this.receiveCalendarNotifications = canReceiveCalendarNotifications
@@ -60,9 +61,9 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 		identifier.disabled = !identifier.disabled
 		locator.entityClient.update(identifier).then(() => m.redraw)
 
-		if (!isBrowser() && identifier.identifier === this.model.getCurrentIdentifier()) {
+		if (!EnvProvider.get().isBrowser() && identifier.identifier === this.model.getCurrentIdentifier()) {
 			if (identifier.disabled) {
-				locator.pushService.invalidateAlarmsForUser(this.user._id)
+				locator.pushService.invalidateAlarmsForUser(elementIdToId(this.user._id))
 			} else {
 				locator.pushService.reRegister()
 			}
@@ -73,7 +74,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 		const rowAdd = m(".full-width.flex-space-between.items-center.mb-8", [
 			lang.get("emailPushNotification_action"),
 			m(IconButton, {
-				title: "emailPushNotification_action",
+				label: "emailPushNotification_action",
 				click: () => this.showAddEmailNotificationDialog(),
 				icon: Icons.Plus,
 				size: ButtonSize.Compact,
@@ -81,7 +82,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 		])
 
 		const rows = this.model.getLoadedPushIdentifiers().map((identifier) => {
-			const isCurrentDevice = (isApp() || isDesktop()) && identifier.identifier === this.model.getCurrentIdentifier()
+			const isCurrentDevice = (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && identifier.identifier === this.model.getCurrentIdentifier()
 
 			return m(IdentifierRow, {
 				name: this.identifierDisplayName(isCurrentDevice, identifier.pushServiceType, identifier.displayName),
@@ -89,7 +90,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 				identifier: identifier.identifier,
 				current: isCurrentDevice,
 				removeClicked: () => {
-					locator.entityClient.erase(identifier).catch(ofClass(restError.NotFoundError, noOp))
+					locator.entityClient.erase(identifier).catch(ofClass(NotFoundError, noOp))
 				},
 				formatIdentifier: identifier.pushServiceType !== PushServiceType.EMAIL,
 				disableClicked: () => this.togglePushIdentifier(identifier),
@@ -115,7 +116,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 							}),
 						)
 					: null,
-				isApp() ? this.renderCalendarNotificationsDropdown() : null,
+				EnvProvider.get().isApp() ? this.renderCalendarNotificationsDropdown() : null,
 				m("#targets", m(NotificationTargetsList, { rows, rowAdd, onExpandedChange: this.expanded } satisfies NotificationTargetsListAttrs)),
 			]),
 		])
@@ -142,7 +143,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 					if (value) {
 						await locator.pushService.reRegister()
 					} else {
-						await locator.pushService.invalidateAlarmsForUser(this.user._id)
+						await locator.pushService.invalidateAlarmsForUser(elementIdToId(this.user._id))
 					}
 				}
 			},
@@ -166,7 +167,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 		}
 	}
 
-	async entityEventsReceived(updates: readonly EntityUpdateData[]): Promise<void> {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[]): Promise<void> {
 		if (updates.some((update) => isUpdateForTypeRef(PushIdentifierTypeRef, update))) {
 			await this.reloadPushIdentifiers()
 		}

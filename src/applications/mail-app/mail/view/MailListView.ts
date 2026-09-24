@@ -2,10 +2,10 @@ import m, { Children, Component, Vnode } from "mithril"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { Mail } from "@tutao/entities/tutanota"
 import { MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
-import { assertMainOrNode, Keys } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import { getElementId, getLetId, haveSameId } from "../../../../platform-kit/meta"
 import { component_size } from "../../../../ui/size"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { Icon } from "../../../../ui/base/Icon"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import type { ButtonAttrs } from "../../../../ui/base/Button.js"
@@ -26,14 +26,17 @@ import { theme } from "../../../../ui/theme.js"
 import { VirtualRow } from "../../../../ui/base/ListUtils.js"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager.js"
 import { mailLocator } from "../../mailLocator.js"
-import { canDoDragAndDropExport } from "./MailViewerUtils.js"
+import { canDoDragAndDropExport, getSenderOrRecipientHeading } from "./MailViewerUtils.js"
 import { isDraft, isMailMovable, isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
-import { DropType } from "../../../../ui/base/GuiUtils"
+import { DropType, renderDragElement } from "../../../../ui/base/GuiUtils"
 import { ListElementListModel } from "../../../common/misc/ListElementListModel"
 import { generateExportFileName } from "../export/emlUtils.js"
 import { makeTrackedProgressMonitor } from "../../../common/api/common/utils/ProgressMonitor"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { AsyncResultStateOptions } from "../../../../platform-kit/utils/AsyncResult"
+import { DropdownButtonAttrs } from "../../../../ui/base/Dropdown"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface MailListViewAttrs {
 	// We would like to not get and hold to the whole MailView eventually
@@ -46,6 +49,7 @@ export interface MailListViewAttrs {
 	onSingleExclusiveSelection: ListElementListModel<Mail>["onSingleExclusiveSelection"]
 	onTrashSwipe: (ownerGroup: Id, mails: readonly IdTuple[]) => unknown
 	onMoveSwipe: (targetFolderType: SystemFolderType, mails: readonly IdTuple[]) => Promise<boolean>
+	contextDropdownAttrs?: (mail: Mail) => DropdownButtonAttrs[]
 }
 
 export class MailListView implements Component<MailListViewAttrs> {
@@ -66,11 +70,6 @@ export class MailListView implements Component<MailListViewAttrs> {
 	showingDraft: boolean = false
 	showingArchive: boolean = false
 	private attrs: MailListViewAttrs
-
-	private get mailViewModel(): MailViewModel {
-		return this.attrs.mailViewModel
-	}
-
 	private readonly renderConfig: RenderConfig<Mail, MailRow> = {
 		itemHeight: component_size.list_row_height,
 		multiselectionAllowed: MultiselectMode.Enabled,
@@ -116,7 +115,12 @@ export class MailListView implements Component<MailListViewAttrs> {
 		this.view = this.view.bind(this)
 	}
 
+	private get mailViewModel(): MailViewModel {
+		return this.attrs.mailViewModel
+	}
+
 	// NOTE we do all of the electron drag handling directly inside MailListView, because we currently have no need to generalise
+
 	// would strongly suggest with starting generalising this first if we ever need to support dragging more than just mails
 	_newDragStart(event: DragEvent, row: Mail, selected: ReadonlySet<Mail>) {
 		if (!row) return
@@ -135,7 +139,14 @@ export class MailListView implements Component<MailListViewAttrs> {
 			const draggedMails = selected.has(mailUnderCursor) ? [...selected] : [mailUnderCursor]
 
 			this._doExportDrag(draggedMails)
-		} else if (styles.isDesktopLayout()) {
+		} else if (Styles.get().isDesktopLayout()) {
+			// provide the element that will be displayed as a dragged item
+			// it has to be in the DOM
+
+			const name = getSenderOrRecipientHeading(row, true)
+			const el = renderDragElement(name, Icons.MailFilled, selected.size, row.subject)
+			event.dataTransfer?.setDragImage(el, 10, 10)
+
 			// Desktop layout only because it doesn't make sense to drag mails to mailSets when the folder list and mail list aren't visible at the same time
 			event.dataTransfer?.setData(DropType.Mail, getElementId(mailUnderCursor))
 		} else {
@@ -161,7 +172,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 			const draggedMails = selected.some((mail) => haveSameId(mail, mailUnderCursor)) ? selected.slice() : [mailUnderCursor]
 
 			this._doExportDrag(draggedMails)
-		} else if (styles.isDesktopLayout()) {
+		} else if (Styles.get().isDesktopLayout()) {
 			// Desktop layout only because it doesn't make sense to drag mails to mailSets when the folder list and mail list aren't visible at the same time
 			event.dataTransfer?.setData(DropType.Mail, getElementId(mailUnderCursor))
 		} else {
@@ -235,21 +246,21 @@ export class MailListView implements Component<MailListViewAttrs> {
 			const key = mapKey(mail)
 			const existing = this.exportedMails.get(key)
 
-			if (!existing || existing.result.state().status === "failure") {
+			if (!existing || existing.result.state().state === AsyncResultStateOptions.Failure) {
 				// Something went wrong last time we tried to drag this file,
 				// so try again (not confident that it will work this time, though)
 				handleNotDownloaded(mail)
 			} else {
 				const state = existing.result.state()
 
-				switch (state.status) {
+				switch (state.state) {
 					// Mail is still being prepared, already has a file path assigned to it
-					case "pending": {
-						handleDownloaded(existing.fileName, state.promise)
-						continue
+					case AsyncResultStateOptions.Pending: {
+						handleDownloaded(existing.fileName, state.promise!)
+						break
 					}
 
-					case "complete": {
+					case AsyncResultStateOptions.Complete: {
 						// We have downloaded it, but we need to check if it still exists
 						const exists = await locator.fileApp.checkFileExistsInExportDir(existing.fileName)
 
@@ -303,23 +314,11 @@ export class MailListView implements Component<MailListViewAttrs> {
 		return newFiles.concat(existingFiles)
 	}
 
-	// listeners to indicate the when mod key is held, dragging will do something
-	private readonly onKeyDown = (event: KeyboardEvent) => {
-		if (isDragAndDropModifierHeld(event)) {
-			this._listDom?.classList.add("drag-mod-key")
-		}
-	}
-
-	private readonly onKeyUp = (event: KeyboardEvent) => {
-		// The event doesn't have a
-		this._listDom?.classList.remove("drag-mod-key")
-	}
-
 	view(vnode: Vnode<MailListViewAttrs>): Children {
 		this.attrs = vnode.attrs
 
 		// Save the folder before showing the dialog so that there's no chance that it will change
-		const folder = this.mailViewModel.getFolder()
+		const folder = this.mailViewModel.getMailSet()
 		const purgeButtonAttrs: ButtonAttrs = {
 			label: "clearFolder_action",
 			type: ButtonType.Primary,
@@ -354,7 +353,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 				ListColumnWrapper,
 				{
 					headerContent: this.renderListHeader(purgeButtonAttrs),
-					class: styles.isSingleColumnLayout() ? undefined : "column-resize-margin",
+					class: Styles.get().isSingleColumnLayout() ? undefined : "column-resize-margin",
 				},
 				listModel == null || listModel.isEmptyAndDone()
 					? m(ColumnEmptyMessageBox, {
@@ -375,7 +374,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 								vnode.attrs.onSingleSelection(item)
 							},
 							onSingleTogglingMultiselection: (item: Mail) => {
-								vnode.attrs.onSingleInclusiveSelection(item, styles.isSingleColumnLayout())
+								vnode.attrs.onSingleInclusiveSelection(item, Styles.get().isSingleColumnLayout())
 							},
 							onRangeSelectionTowards: (item: Mail) => {
 								vnode.attrs.onRangeSelectionTowards(item)
@@ -383,9 +382,22 @@ export class MailListView implements Component<MailListViewAttrs> {
 							onStopLoading() {
 								listModel.stopLoading()
 							},
+							contextDropdownAttrs: this.attrs.contextDropdownAttrs,
 						} satisfies ListAttrs<Mail, MailRow>),
 			),
 		)
+	}
+
+	// listeners to indicate the when mod key is held, dragging will do something
+	private readonly onKeyDown = (event: KeyboardEvent) => {
+		if (isDragAndDropModifierHeld(event)) {
+			this._listDom?.classList.add("drag-mod-key")
+		}
+	}
+
+	private readonly onKeyUp = (event: KeyboardEvent) => {
+		// The event doesn't have a
+		this._listDom?.classList.remove("drag-mod-key")
 	}
 
 	private renderListHeader(purgeButtonAttrs: ButtonAttrs): Children {
@@ -402,7 +414,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 	}
 
 	private async targetInbox(): Promise<boolean> {
-		const selectedFolder = this.mailViewModel.getFolder()
+		const selectedFolder = this.mailViewModel.getMailSet()
 		if (selectedFolder) {
 			const mailDetails = await this.mailViewModel.getMailboxDetails()
 			const folders = await mailLocator.mailModel.getMailboxFoldersForId(mailDetails.mailbox.mailSets._id)
@@ -413,7 +425,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 
 	private async onSwipeLeft(listElement: Mail): Promise<ListSwipeDecision> {
 		const actionableMails = await this.mailViewModel.getResolvedMails([listElement])
-		const currentFolder = this.mailViewModel.getFolder()
+		const currentFolder = this.mailViewModel.getMailSet()
 
 		if (this.mailViewModel.isPermanentDeleteAllowed()) {
 			const wereDeleted = await promptAndDeleteMails(mailLocator.mailModel, actionableMails, assertNotNull(currentFolder)._id, () =>
@@ -432,7 +444,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 			this.mailViewModel.listModel?.selectNone()
 			return ListSwipeDecision.Cancel
 		} else {
-			const folder = this.mailViewModel.getFolder()
+			const folder = this.mailViewModel.getMailSet()
 			if (folder) {
 				//Check if the user is in the trash/spam folder or if it's in Inbox or Archive
 				//to determinate the target folder

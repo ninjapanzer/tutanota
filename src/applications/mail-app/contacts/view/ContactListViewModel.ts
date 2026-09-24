@@ -2,11 +2,11 @@ import { ListElementListModel } from "../../../common/misc/ListElementListModel.
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { GroupManagementFacade } from "../../../../platform-kit/base/facades/lazy/GroupManagementFacade.js"
 import { LoginController } from "../../../common/api/main/LoginController.js"
-import { arrayEquals, debounce, lazy, lazyMemoized, memoized } from "../../../../platform-kit/utils"
+import { arrayEquals, assertNotNull, debounce, lazy, lazyMemoized, memoized } from "../../../../platform-kit/utils"
 import { EventController } from "../../../common/api/main/EventController.js"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
-import { Router } from "../../../../ui/ScopedRouter.js"
+import { Router } from "../../../../ui/ScopedThrottledRouter.js"
 import { ContactListInfo, ContactModel } from "../../../common/contactsFunctionality/ContactModel.js"
 import { ReceivedGroupInvitationsModel } from "../../../common/sharing/model/ReceivedGroupInvitationsModel.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
@@ -24,12 +24,12 @@ import {
 import { GroupInfo, ReceivedGroupInvitation } from "@tutao/entities/sys"
 import { GroupType } from "../../../../entities/sys/Utils"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { getEtId, isSameId } from "../../../../platform-kit/meta"
+import { elementIdToId, isSameSingleId } from "../../../../platform-kit/meta"
 
 export class ContactListViewModel {
 	private selectedContactList: Id | null = null
@@ -71,7 +71,7 @@ export class ContactListViewModel {
 	}
 
 	readonly init = lazyMemoized(async () => {
-		this.eventController.addEntityListener(this.entityEventsReceived)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		this.sortedContactListInfos = this.contactModel.getOwnContactListInfos().map((infos) => {
 			this.updateUi()
 			return infos.slice().sort((a, b) => a.name.localeCompare(b.name))
@@ -186,9 +186,9 @@ export class ContactListViewModel {
 		for (const address of addresses) {
 			if (!listAddresses.includes(address)) {
 				const recipient = createContactListEntry({
-					_ownerGroup: contactListGroupRoot._id,
 					emailAddress: address,
 				})
+				recipient._ownerGroup = elementIdToId(contactListGroupRoot._id)
 
 				this.addEntryOnList(contactListGroupRoot.entries, recipient)
 			}
@@ -196,15 +196,16 @@ export class ContactListViewModel {
 	}
 
 	addEntryOnList(recipientsId: Id, recipient: ContactListEntry) {
-		this.entityClient.setup(recipientsId, recipient)
+		this.entityClient.setup(recipientsId, recipient, null, null)
 	}
 
-	private readonly entityEventsReceived: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ContactListViewModel",
 		onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>): Promise<void> => {
 			for (const update of updates) {
 				if (this.selectedContactList) {
-					if (isUpdateForTypeRef(ContactListEntryTypeRef, update) && isSameId(this.selectedContactList, update.instanceListId)) {
-						await this.listModel?.entityEventReceived(update.instanceListId, update.instanceId, update.operation)
+					if (isUpdateForTypeRef(ContactListEntryTypeRef, update) && isSameSingleId(this.selectedContactList, update.instanceListId)) {
+						await this.listModel?.onEntityUpdateReceived(assertNotNull(update.instanceListId), update.instanceId, update.operation)
 					} else if (isUpdateForTypeRef(ContactTypeRef, update)) {
 						this.getContactsForSelectedContactListEntry()
 					}
@@ -213,7 +214,7 @@ export class ContactListViewModel {
 				this.updateUi()
 			}
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	updateSelectedContactList(selected: Id): void {
@@ -254,7 +255,7 @@ export class ContactListViewModel {
 	}
 
 	removeUserFromContactList(contactList: ContactListInfo) {
-		return locator.groupManagementFacade.removeUserFromGroup(getEtId(this.loginController.getUserController().user), contactList.groupInfo.group)
+		return locator.groupManagementFacade.removeUserFromGroup(elementIdToId(this.loginController.getUserController().user._id), contactList.groupInfo.group)
 	}
 
 	async deleteSelectedEntries() {
@@ -270,7 +271,7 @@ export class ContactListViewModel {
 	}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.entityEventsReceived)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 		this.sortedContactListInfos.end(true)
 		this.sortedSharedContactListInfos.end(true)
 		this.contactListInvitations.dispose()

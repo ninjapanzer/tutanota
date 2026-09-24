@@ -10,8 +10,8 @@ import { ExternalLink } from "../../../ui/base/ExternalLink.js"
 import { px, size } from "../../../ui/size.js"
 import { getTutaLogo } from "../../../ui/base/Logo.js"
 import { prepareLogContent, showLogsDialog } from "../gui/LogDialogUtils"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
-import { isApp } from "@tutao/app-env"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { EnvProvider } from "@tutao/app-env"
 
 interface AboutDialogAttrs {
 	onShowSetupWizard: () => unknown
@@ -54,7 +54,7 @@ export class AboutDialog implements Component<AboutDialogAttrs> {
 			]),
 			this.logsLink(),
 			// wrap it in a div so that it's not filling the whole width
-			isApp()
+			EnvProvider.get().isApp()
 				? m(
 						"",
 						m(Button, {
@@ -68,7 +68,7 @@ export class AboutDialog implements Component<AboutDialogAttrs> {
 	}
 
 	logsLink(): Children {
-		if (client.isMailApp()) {
+		if (ClientDetector.get().isMailApp()) {
 			// Sending logs opens a mail editor, we only want to do this in an app that handles mail
 			return this.sendLogsLink()
 		} else {

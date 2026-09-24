@@ -3,19 +3,20 @@ import { NativeCredentialsFacade, UnencryptedCredentials } from "@tutao/native-b
 import { ExtendedNotificationMode } from "@tutao/native-bridge/generatedIpc/enums"
 import { DesktopNotifier } from "../notifications/DesktopNotifier"
 import { LanguageViewModel } from "../../../../ui/utils/LanguageViewModel"
-import { AttributeModel, EncryptedParsedInstance, ServerModelUntypedInstance, StrippedEntity, TypeModel } from "../../../../platform-kit/meta"
-import { CredentialEncryptionMode } from "../../../../platform-kit/app-env"
-import { assertNotNull, base64ToBase64Url, getFirstOrThrow, groupBy, neverNull } from "../../../../platform-kit/utils"
+import { elementIdPart, isSameSingleId } from "@tutao/meta"
+import { CredentialEncryptionMode } from "@tutao/app-env"
+import { assert, assertNotNull, base64ToBase64Url, getFirstOrThrow, groupBy, neverNull, promiseMap } from "@tutao/utils"
 import { log } from "../DesktopLog"
 import { DesktopAlarmScheduler } from "./DesktopAlarmScheduler.js"
 import { DesktopAlarmStorage } from "./DesktopAlarmStorage.js"
 import { SseInfo } from "./SseInfo.js"
 import { SseStorage } from "./SseStorage.js"
 import { FetchImpl } from "../net/NetAgent"
-import { ClientTypeModelResolver, InstancePipeline } from "../../../../platform-kit/instance-pipeline"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { IdTupleWrapper, NotificationInfo } from "@tutao/entities/sys"
-import { MailAddressTypeRef, MailTypeRef, tutanotaModelInfo } from "@tutao/entities/tutanota"
+import { ClientOnlyTypeModelResolver, EncryptedParsedInstance, InstancePipeline } from "@tutao/instance-pipeline"
+import { handleRestError } from "@tutao/rest-client/error"
+import { IdTupleWrapper, NotificationInfoParams } from "@tutao/entities/sys"
+import { MailTypeRef, tutanotaModelInfo } from "@tutao/entities/tutanota"
+import { IncomingServerJson } from "../../../../platform-kit/instance-pipeline/TypeMapper"
 
 const TAG = "[notifications]"
 
@@ -23,7 +24,7 @@ export type MailMetadata = {
 	senderAddress: string
 	firstRecipientAddress: string | null
 	id: IdTuple
-	notificationInfo: StrippedEntity<NotificationInfo>
+	notificationInfo: NotificationInfoParams
 }
 
 class TutaNotificationHandler {
@@ -38,10 +39,14 @@ class TutaNotificationHandler {
 		private readonly fetch: FetchImpl,
 		private readonly appVersion: string,
 		private readonly nativeInstancePipeline: InstancePipeline,
-		private readonly typeModelResolver: ClientTypeModelResolver,
-	) {}
+	) {
+		assert(
+			this.nativeInstancePipeline.typeModelResolver instanceof ClientOnlyTypeModelResolver,
+			"NativeInstancePipeline expected in TutaNotificationHandler",
+		)
+	}
 
-	async onMailNotification(sseInfo: SseInfo, notificationInfos: Array<StrippedEntity<NotificationInfo>>) {
+	async onMailNotification(sseInfo: SseInfo, notificationInfos: Array<NotificationInfoParams>) {
 		const infosByListId = groupBy(notificationInfos, (ni) => assertNotNull(ni.mailId).listId)
 		for (const [listId, infos] of infosByListId.entries()) {
 			const firstNotificationInfo = getFirstOrThrow(infos)
@@ -85,7 +90,7 @@ class TutaNotificationHandler {
 		}
 	}
 
-	private onMailNotificationClick(notificationInfo: StrippedEntity<NotificationInfo>) {
+	private onMailNotificationClick(notificationInfo: NotificationInfoParams) {
 		let requestedPath: string | null
 		if (notificationInfo.mailId) {
 			const mailIdParam = encodeURIComponent(`${notificationInfo.mailId.listId},${notificationInfo.mailId.listElementId}`)
@@ -105,7 +110,7 @@ class TutaNotificationHandler {
 	private async downloadMailMetadata(
 		sseInfo: SseInfo,
 		listId: Id,
-		notificationInfos: Array<StrippedEntity<NotificationInfo>>,
+		notificationInfos: Array<NotificationInfoParams>,
 		credentials: UnencryptedCredentials,
 	): Promise<Array<MailMetadata>> {
 		const result: Array<MailMetadata> = []
@@ -128,27 +133,25 @@ class TutaNotificationHandler {
 		try {
 			const response = await this.fetch(url, { headers })
 			if (!response.ok) {
-				throw restError.handleRestError(neverNull(response.status), url.toString(), response.headers.get("Error-Id"), null)
+				throw handleRestError(neverNull(response.status), url.toString(), response.headers.get("Error-Id"), null)
 			}
 
-			const untypedInstances = (await response.json()) as Array<ServerModelUntypedInstance>
-
-			const mailModel = await this.typeModelResolver.resolveClientTypeReference(MailTypeRef)
-			const mailAddressModel = await this.typeModelResolver.resolveClientTypeReference(MailAddressTypeRef)
+			const mailTypeModel = await this.nativeInstancePipeline.typeModelResolver.resolveServerTypeReference(MailTypeRef)
+			const mailResponses = IncomingServerJson.expectMultipleInstance(await response.text(), mailTypeModel)
+			const notificationParsedInstances = await promiseMap(
+				mailResponses,
+				async (json) => await this.nativeInstancePipeline.typeMapper.parseServerJson(json),
+			)
 
 			result.push(
 				...(await Promise.all(
-					untypedInstances.map(async (untypedInstance) => {
-						const mailEncryptedParsedInstance: EncryptedParsedInstance = await this.nativeInstancePipeline.typeMapper.applyJsTypes(
-							mailModel,
-							untypedInstance,
-						)
-						const notificationInfo = notificationInfos.filter(
-							(info) =>
-								assertNotNull(info.mailId).listElementId ===
-								AttributeModel.getAttribute<IdTuple>(mailEncryptedParsedInstance, "_id", mailModel)[1],
-						)[0]
-						return this.encryptedMailToMailMetaData(mailModel, mailAddressModel, mailEncryptedParsedInstance, notificationInfo)
+					notificationParsedInstances.map(async (encParsedInstance) => {
+						const notificationInfo = notificationInfos.filter((info) => {
+							const mailElementId = assertNotNull(info.mailId).listElementId
+							const alarmElementId = elementIdPart(encParsedInstance.getAttributeByName("_id").asIdTuple())
+							return isSameSingleId(mailElementId, alarmElementId)
+						})[0]
+						return this.encryptedMailToMailMetaData(encParsedInstance, notificationInfo)
 					}),
 				)),
 			)
@@ -158,24 +161,20 @@ class TutaNotificationHandler {
 		return result
 	}
 
-	private encryptedMailToMailMetaData(
-		mailModel: TypeModel,
-		mailAddressModel: TypeModel,
-		mi: EncryptedParsedInstance,
-		notificationInfo: StrippedEntity<NotificationInfo>,
-	): MailMetadata {
-		const mailId = AttributeModel.getAttribute<IdTuple>(mi, "_id", mailModel)
+	private encryptedMailToMailMetaData(mailInstance: EncryptedParsedInstance, notificationInfo: NotificationInfoParams): MailMetadata {
+		const mailId = mailInstance.getAttributeByName("_id").asIdTuple()
 
-		const firstRecipient = AttributeModel.getAttributeorNull<EncryptedParsedInstance[] | null>(mi, "firstRecipient", mailModel)
-		const sender = AttributeModel.getAttribute<EncryptedParsedInstance[]>(mi, "sender", mailModel)[0]
+		const sender = mailInstance.getAttributeByName("sender").asNestedObjList()[0]
+		const senderAddress = sender.getAttributeByName("address").asId()
+		const firstRecipient = mailInstance.getAttributeByName("firstRecipient").asNestedObjList()
+		const firstRecipientAddress = firstRecipient.at(0)?.getAttributeByName("address").getNullWhenNull()?.asString() ?? null
 
-		const senderAddress = AttributeModel.getAttribute<string>(sender, "address", mailAddressModel)
 		return {
 			id: mailId,
-			senderAddress: senderAddress,
-			firstRecipientAddress: firstRecipient ? AttributeModel.getAttribute(firstRecipient[0], "address", mailAddressModel) : null,
+			senderAddress,
+			firstRecipientAddress,
 			notificationInfo,
-		}
+		} satisfies MailMetadata
 	}
 
 	private makeMailMetadataUrl(sseInfo: SseInfo, listId: Id, mailIds: Array<IdTupleWrapper>): URL {

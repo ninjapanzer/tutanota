@@ -1,7 +1,6 @@
 /* generated file, don't edit. */
 
 import { UnencryptedCredentials } from "../types/UnencryptedCredentials"
-
 /**
  * Facade implemented by the native desktop client enabling mail imports, both from files, and via IMAP.
  */
@@ -18,7 +17,7 @@ export interface NativeMailImportFacade {
 		mailboxId: string,
 		targetOwnerGroup: string,
 		targetMailSet: ReadonlyArray<string>,
-		filePaths: ReadonlyArray<string>,
+		fileUris: ReadonlyArray<string>,
 		unencryptedTutaCredentials: UnencryptedCredentials,
 		apiUrl: string,
 	): Promise<IdTuple>

@@ -1,9 +1,10 @@
 import m, { ClassComponent, Component, Vnode } from "mithril"
 import { theme } from "../theme.js"
 import { SingleLineTextField } from "./SingleLineTextField.js"
-import { px, size } from "../size.js"
+import { font_size, px, size } from "../size.js"
 import { LegacyTextFieldType } from "./LegacyTextField.js"
-import { TabIndex } from "../../platform-kit/app-env"
+import { TabIndex } from "@tutao/app-env"
+import { Translation } from "../utils/LanguageViewModel"
 
 export enum InputButtonVariant {
 	OUTLINE = "outline",
@@ -12,7 +13,7 @@ export enum InputButtonVariant {
 export interface InputButtonAttributes extends Pick<Component, "oncreate"> {
 	inputValue: string
 	display: string
-	ariaLabel: string
+	ariaLabel: Translation
 	disabled?: boolean
 	classes?: Array<string>
 	variant?: InputButtonVariant
@@ -53,7 +54,7 @@ export class InputButton implements ClassComponent<InputButtonAttributes> {
 		return m(
 			"button",
 			{
-				title: attrs.ariaLabel,
+				title: attrs.ariaLabel.text,
 				"aria-live": "off", // Button contents and label will be handled by the input field
 				class: this.resolveContainerClasses(attrs.variant, attrs.classes, attrs.disabled),
 				tabIndex: attrs.tabIndex,
@@ -112,6 +113,7 @@ export class InputButton implements ClassComponent<InputButtonAttributes> {
 						classes: this.resolveInputClasses(attrs.variant),
 						style: {
 							padding: `${px(size.spacing_8)} 0`,
+							fontSize: px(font_size.smaller),
 						},
 						type: LegacyTextFieldType.Text,
 					}),
@@ -122,6 +124,7 @@ export class InputButton implements ClassComponent<InputButtonAttributes> {
 						style: {
 							display: this.isFocused ? "none" : "block",
 							padding: `${px(size.spacing_8)} 0`,
+							fontSize: px(font_size.smaller),
 							...attrs.displayStyle,
 						},
 					},

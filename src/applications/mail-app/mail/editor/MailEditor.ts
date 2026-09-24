@@ -10,7 +10,7 @@ import {
 	Mail,
 	MailboxProperties,
 	MailDetails,
-	TranslationService,
+	TranslationService_GET,
 } from "@tutao/entities/tutanota"
 import {
 	Attachment,
@@ -38,20 +38,14 @@ import { locator } from "../../../common/api/main/CommonLocator"
 import {
 	ALLOWED_IMAGE_FORMATS,
 	CancelledError,
+	EnvProvider,
 	FeatureType,
-	isApp,
-	isBrowser,
-	isDesktop,
-	isIOSApp,
-	Keys,
 	MailAuthenticationStatus,
-	minutesToMillis,
-	secondsToMillis,
+	TimeConstants,
 	UNDO_SEND_TIMEOUT_SECONDS,
 	UpgradePromptType,
 } from "../../../../platform-kit/app-env"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { isOfflineError } from "../../../../platform-kit/rest-client/error"
+import { isOfflineError, TooManyRequestsError } from "../../../../platform-kit/rest-client/error"
 import type { DialogHeaderBarAttrs } from "../../../../ui/base/DialogHeaderBar"
 import { Button, ButtonColor, ButtonType } from "../../../../ui/base/Button.js"
 import { attachDropdown, createDropdown, DropdownChildAttrs } from "../../../../ui/base/Dropdown.js"
@@ -69,6 +63,7 @@ import { DropDownSelector } from "../../../../ui/base/DropDownSelector.js"
 import { FileOpenError } from "../../../common/api/common/error/FileOpenError"
 import { assertNotNull, cleanMatch, debounce, downcast, isNotNull, lazy, noOp, ofClass, throttle, typedValues } from "../../../../platform-kit/utils"
 import {
+	AttachmentDownloader,
 	createInlineImage,
 	replaceCidsWithInlineImages,
 	replaceInlineImagesWithCids,
@@ -81,7 +76,7 @@ import { registerTemplateShortcutListener } from "../../templates/view/TemplateS
 import { TemplatePopupModel } from "../../templates/model/TemplatePopupModel"
 import { createKnowledgeBaseDialogInjection } from "../../knowledgebase/view/KnowledgeBaseDialog"
 import { KnowledgeBaseModel } from "../../knowledgebase/model/KnowledgeBaseModel"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { showMinimizedMailEditor } from "../view/MinimizedMailEditorOverlay"
 import { MinimizedMailEditorViewModel, SaveErrorReason, SaveStatus, SaveStatusEnum } from "../model/MinimizedMailEditorViewModel"
 import { fileListToArray } from "../../../../ui/utils/FileUtils"
@@ -131,23 +126,25 @@ import { showInfoSnackbar } from "../../../../ui/base/SnackBar"
 import { loadMailDetails } from "../view/MailViewerUtils"
 import { canSeeTutaLinks } from "../../../common/gui/base/TutaLinkUtils"
 import { createDataFile } from "../../../common/api/worker/utils/DataFile"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { DataFile } from "../../../../entities/tutanota/MailBundle"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 // Interval where we save drafts locally.
 //
 // This will save while the user is typing, thus the user only loses a few seconds of progress at most if the app
 // unexpectedly closes (crash, power outage, etc.).
-const AUTOSAVE_LOCAL_TIMEOUT: number = secondsToMillis(5)
+const AUTOSAVE_LOCAL_TIMEOUT: number = TimeConstants.secondsToMillis(5)
 
 // If the editor is left untouched for this amount of time, then the draft will automatically save to the server.
-const AUTOSAVE_REMOTE_TIMEOUT: number = minutesToMillis(5)
+const AUTOSAVE_REMOTE_TIMEOUT: number = TimeConstants.minutesToMillis(5)
 
 // Maximum allowed time before the undo button hides.
-const UNDO_SEND_TIMEOUT: number = secondsToMillis(UNDO_SEND_TIMEOUT_SECONDS)
+const UNDO_SEND_TIMEOUT: number = TimeConstants.secondsToMillis(UNDO_SEND_TIMEOUT_SECONDS)
 
 export type MailEditorAttrs = {
 	model: SendMailModel
+	attachmentDownloader: AttachmentDownloader
 	doBlockExternalContent: Stream<boolean>
 	doShowToolbar: Stream<boolean>
 	onChange?: () => unknown
@@ -162,6 +159,7 @@ export type MailEditorAttrs = {
 
 export function createMailEditorAttrs(
 	model: SendMailModel,
+	attachmentDownloader: AttachmentDownloader,
 	doBlockExternalContent: boolean,
 	doFocusEditorOnLoad: boolean,
 	dialog: lazy<Dialog>,
@@ -172,6 +170,7 @@ export function createMailEditorAttrs(
 ): MailEditorAttrs {
 	return {
 		model,
+		attachmentDownloader,
 		doBlockExternalContent: stream(doBlockExternalContent),
 		doShowToolbar: stream<boolean>(false),
 		selectedNotificationLanguage: stream(""),
@@ -229,7 +228,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 					blockExternalContent: !isPaste && this.blockExternalContent,
 				})
 
-				if (isPaste && isIOSApp()) {
+				if (isPaste && EnvProvider.get().isIOSApp()) {
 					// For iOS, we want to clear styling because WebKit, when copying, includes way more styling than
 					// desired (regardless of the origin of the text) and all of this styling is then pasted in. This
 					// results in emails being sent with light text and sans-serif fonts that the user did not manually
@@ -259,8 +258,17 @@ export class MailEditor implements Component<MailEditorAttrs> {
 			null,
 		)
 
+		const startInlineAttachmentCleanup = debounce(50, () => {
+			cleanupInlineAttachments(
+				[this.editor.getDOM(), this.collapsedReply],
+				model.getAttachments(),
+				model.getRemovedInlineImages(),
+				model.getNonInlineAttachmentsCids(),
+			)
+		})
+
 		const onEditorChanged = () => {
-			cleanupInlineAttachments(this.editor.getDOM(), model.getAttachments(), model.getRemovedInlineImages())
+			startInlineAttachmentCleanup()
 			model.markAsChangedIfNecessary(true)
 			m.redraw()
 		}
@@ -456,8 +464,8 @@ export class MailEditor implements Component<MailEditorAttrs> {
 				},
 				m(IconButton, {
 					icon: Icons.More,
-					title: "showText_action",
-					size: ButtonSize.Normal,
+					label: "showText_action",
+					size: ButtonSize.Small,
 					colors: ButtonColor.MailTextEditor,
 					click: () => this.expandQuotedReply(quoteWrap),
 				}),
@@ -498,7 +506,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 	view(vnode: Vnode<MailEditorAttrs>): Children {
 		const a = vnode.attrs
 		this.attrs = a
-		const { model } = a
+		const { model, attachmentDownloader } = a
 		this.sendMailModel = model
 
 		const showConfidentialButton = model.containsExternalRecipients()
@@ -517,9 +525,17 @@ export class MailEditor implements Component<MailEditorAttrs> {
 		let sendAt: Date | null = model.getSendAtDate()
 
 		const attachFilesButtonAttrs: IconButtonAttrs = {
-			title: "attachFiles_action",
+			label: "attachFiles_action",
 			click: (ev, dom) => chooseAndAttachFile(model, dom.getBoundingClientRect()).then(() => m.redraw()),
 			icon: Icons.Paperclip,
+			size: ButtonSize.Compact,
+		}
+		const templatePopupButtonAttrs: IconButtonAttrs = {
+			label: "openTemplatePopup_msg",
+			click: () => {
+				this.openTemplates()
+			},
+			icon: Icons.Template,
 			size: ButtonSize.Compact,
 		}
 
@@ -555,7 +571,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 			oninput: (val) => model.setSubject(val),
 		}
 
-		const attachmentBubbleAttrs = createAttachmentBubbleAttrs(model, () => {
+		const attachmentBubbleAttrs = createAttachmentBubbleAttrs(model, attachmentDownloader, () => {
 			return this.editor.getDOM()
 		})
 
@@ -564,11 +580,11 @@ export class MailEditor implements Component<MailEditorAttrs> {
 		if (locator.logins.getUserController().isGlobalAdmin()) {
 			editCustomNotificationMailAttrs = attachDropdown({
 				mainButtonAttrs: {
-					title: "more_label",
+					label: "more_label",
 					icon: Icons.More,
 					size: ButtonSize.Compact,
 				},
-				childAttrs: () => [
+				childAttrs: async () => [
 					{
 						label: "add_action",
 						click: () => {
@@ -735,12 +751,12 @@ export class MailEditor implements Component<MailEditorAttrs> {
 												},
 											},
 											m(DatePicker, {
-												date: model.getSendAtDate() ?? new Date(),
+												date: sendAt,
 												onDateSelected: (date) => {
 													model.setSendAtDate(date)
 												},
 												startOfTheWeekOffset: getStartOfTheWeekOffsetForUser(model.logins.getUserController().userSettingsGroupRoot),
-												label: lang.makeTranslation("sendDate_label", "Send date"),
+												label: lang.getTranslation("sendDate_label"),
 											}),
 										),
 										m(
@@ -751,15 +767,11 @@ export class MailEditor implements Component<MailEditorAttrs> {
 												},
 											},
 											m(TimePicker, {
-												time: model.getSendAtTime(),
-												onTimeSelected: (time: Time | null) => {
-													if (time) {
-														model.setSendAtTime(time)
-													}
-												},
+												time: Time.fromDate(sendAt),
+												onTimeSelected: (time: Time) => model.setSendAtTime(time),
 												timeFormat: getTimeFormatForUser(model.logins.getUserController().userSettingsGroupRoot),
 												ariaLabel: lang.getTranslation("sendTime_label"),
-												renderAsTextField: true,
+												forMailSendTime: true,
 											} satisfies TimePickerAttrs),
 										),
 										this.renderInvalidSendAtMessage(),
@@ -775,7 +787,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 					showConfidentialButton ? m(ToggleButton, confidentialButtonAttrs) : null,
 					isDarkTheme()
 						? m(IconButton, {
-								title: "viewInLightMode_action",
+								label: "viewInLightMode_action",
 								click: (e) => {
 									this.forceLightMode = !forcedLightMode
 									// Stop the subject bar from being focused
@@ -809,6 +821,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 								toggled: model.getSendAtDate() != null,
 							})
 						: null,
+					this.templateModel ? m(IconButton, templatePopupButtonAttrs) : null,
 					toolbarButton(),
 					m(IconButton, attachFilesButtonAttrs),
 				]),
@@ -925,21 +938,9 @@ export class MailEditor implements Component<MailEditorAttrs> {
 				m(RichTextToolbar, {
 					editor: this.editor,
 					//Inline images require transporting over IPC boundary and we have not implemented a suitable way yet
-					imageButtonClickHandler: isApp()
+					imageButtonClickHandler: EnvProvider.get().isApp()
 						? null
 						: (event: Event) => this.imageButtonClickHandler(model, (event.target as HTMLElement).getBoundingClientRect()),
-					customButtonAttrs: this.templateModel
-						? [
-								{
-									title: "openTemplatePopup_msg",
-									click: () => {
-										this.openTemplates()
-									},
-									icon: Icons.Template,
-									size: ButtonSize.Compact,
-								},
-							]
-						: [],
 				}),
 				m("hr.hr"),
 			],
@@ -1011,7 +1012,7 @@ export class MailEditor implements Component<MailEditorAttrs> {
 				} catch (e) {
 					if (isOfflineError(e)) {
 						// we are offline but we want to show the error dialog only when we click on send.
-					} else if (e instanceof restError.TooManyRequestsError) {
+					} else if (e instanceof TooManyRequestsError) {
 						await Dialog.message("tooManyAttempts_msg")
 					} else {
 						throw e
@@ -1128,12 +1129,18 @@ export class MailEditor implements Component<MailEditorAttrs> {
 /**
  * Creates a new Dialog with a MailEditor inside.
  * @param model
+ * @param attachmentDownloader
  * @param blockExternalContent
  * @param alwaysBlockExternalContent
  * @returns {Dialog}
  * @private
  */
-async function createMailEditorDialog(model: SendMailModel, blockExternalContent = false, alwaysBlockExternalContent = false): Promise<Dialog> {
+async function createMailEditorDialog(
+	model: SendMailModel,
+	attachmentDownloader: AttachmentDownloader,
+	blockExternalContent = false,
+	alwaysBlockExternalContent = false,
+): Promise<Dialog> {
 	let dialog: Dialog
 	let mailEditorAttrs: MailEditorAttrs
 	let isSending = false
@@ -1280,6 +1287,7 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 								const conversationEntry = await model.entity.load(ConversationEntryTypeRef, model.draft.conversationEntry)
 								// blockExternalContent is just passed as true here, this should be fine as the lookup should find the actual setting and this is just used as a fallback
 								const editorDialog = await newMailEditorFromDraft(
+									attachmentDownloader,
 									model.draft,
 									await loadMailDetails(model.mailFacade, model.draft),
 									conversationEntry,
@@ -1360,7 +1368,7 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 			saveStatus = stream<SaveStatus>({ status: SaveStatusEnum.Saved })
 		}
 
-		if (client.isCalendarApp()) {
+		if (ClientDetector.get().isCalendarApp()) {
 			return dialog.close()
 		}
 
@@ -1371,11 +1379,11 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 
 	const headerBarAttrs: DialogHeaderBarAttrs = {
 		leftChildren: () =>
-			styles.isMobileLayout()
+			Styles.get().isMobileLayout()
 				? m(
 						".ml-negative-8",
 						m(IconButton, {
-							title: "close_alt",
+							label: "close_alt",
 							click: () => minimize(),
 							icon: Icons.X,
 							colors: ButtonColor.Primary,
@@ -1389,9 +1397,9 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 		rightChildren: () => {
 			const scheduledMail = model.getSendAtDate() != null
 
-			return styles.isMobileLayout()
+			return Styles.get().isMobileLayout()
 				? m(IconButton, {
-						title: scheduledMail ? "sendLater_action" : "send_action",
+						label: scheduledMail ? "sendLater_action" : "send_action",
 						click: () => {
 							send()
 						},
@@ -1408,10 +1416,10 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 		},
 		middle: dialogTitleTranslationKey(model.getConversationType()),
 		create: () => {
-			if (isBrowser()) {
+			if (EnvProvider.get().isBrowser()) {
 				// Have a simple listener on browser, so their browser will make the user ask if they are sure they want to close when closing the tab/window
 				windowCloseUnsubscribe = windowFacade.addWindowCloseListener(() => {})
-			} else if (isDesktop()) {
+			} else if (EnvProvider.get().isDesktop()) {
 				// Simulate clicking the Close button when on the desktop so they can see they can save a draft rather than completely closing it
 				windowCloseUnsubscribe = windowFacade.addWindowCloseListener(() => {
 					minimize()
@@ -1422,17 +1430,16 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 			windowCloseUnsubscribe()
 		},
 	}
-	const templatePopupModel =
-		locator.logins.isInternalUserLoggedIn() && client.isDesktopDevice()
-			? new TemplatePopupModel(locator.eventController, locator.logins, locator.entityClient)
-			: null
+	const templatePopupModel = locator.logins.isInternalUserLoggedIn()
+		? new TemplatePopupModel(locator.eventController, locator.logins, locator.entityClient)
+		: null
 
 	const createKnowledgebaseButtonAttrs = async (editor: Editor) => {
 		if (locator.logins.isInternalUserLoggedIn()) {
 			const customer = await locator.logins.getUserController().reloadCustomer()
 			// only create knowledgebase button for internal users with valid template group and enabled KnowledgebaseFeature
 			if (
-				styles.isDesktopLayout() &&
+				Styles.get().isDesktopLayout() &&
 				templatePopupModel &&
 				locator.logins.getUserController().getTemplateMemberships().length > 0 &&
 				isCustomizationEnabledForCustomer(customer, FeatureType.KnowledgeBase)
@@ -1456,6 +1463,7 @@ async function createMailEditorDialog(model: SendMailModel, blockExternalContent
 
 	mailEditorAttrs = createMailEditorAttrs(
 		model,
+		attachmentDownloader,
 		blockExternalContent,
 		model.toRecipients().length !== 0,
 		() => dialog,
@@ -1579,6 +1587,7 @@ export async function newMailEditorAsResponse(
 	args: InitAsResponseArgs,
 	blockExternalContent: boolean,
 	inlineImages: InlineImages,
+	attachmentDownloader: AttachmentDownloader,
 	mailboxDetails?: MailboxDetail,
 ): Promise<Dialog | null> {
 	if (!(await confirmNewEditor(mailLocator.autosaveFacade, mailLocator.minimizedMailModel))) {
@@ -1590,10 +1599,11 @@ export async function newMailEditorAsResponse(
 	await model.initAsResponse(args, inlineImages)
 
 	const externalImageRules = await getExternalContentRulesForEditor(model, blockExternalContent)
-	return createMailEditorDialog(model, externalImageRules?.blockExternalContent, externalImageRules?.alwaysBlockExternalContent)
+	return createMailEditorDialog(model, attachmentDownloader, externalImageRules?.blockExternalContent, externalImageRules?.alwaysBlockExternalContent)
 }
 
 export async function newMailEditorFromDraft(
+	attachmentDownloader: AttachmentDownloader,
 	mail: Mail,
 	mailDetails: MailDetails,
 	conversationEntry: ConversationEntry,
@@ -1635,7 +1645,7 @@ export async function newMailEditorFromDraft(
 		await model.addRecipients({ to: localDraftData.to, cc: localDraftData.cc, bcc: localDraftData.bcc })
 	}
 
-	return createMailEditorDialog(model, externalImageRules?.blockExternalContent, externalImageRules?.alwaysBlockExternalContent)
+	return createMailEditorDialog(model, attachmentDownloader, externalImageRules?.blockExternalContent, externalImageRules?.alwaysBlockExternalContent)
 }
 
 async function confirmNewEditor(autosaveFacade: AutosaveFacade, minimizedEditorViewModel: MinimizedMailEditorViewModel): Promise<boolean> {
@@ -1667,7 +1677,7 @@ export async function newMailtoUrlMailEditor(mailtoUrl: string, confidential: bo
 	if (mailTo.attach) {
 		const attach = mailTo.attach
 
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			const files = await Promise.all(attach.map((uri) => locator.fileApp.readDataFile(uri)))
 			dataFiles = files.filter(isNotNull)
 		}
@@ -1727,7 +1737,10 @@ export async function newMailEditorFromTemplate(
 	const mailboxProperties = await locator.mailboxModel.getMailboxProperties(mailboxDetails.mailboxGroupRoot)
 	const model = await locator.sendMailModel(mailboxDetails, mailboxProperties)
 	await model.initWithTemplate(recipients, subject, bodyText, attachments, confidential, senderMailAddress, initialChangedState)
-	return await createMailEditorDialog(model)
+	return await createMailEditorDialog(
+		model,
+		new AttachmentDownloader(locator.fileController, EnvProvider.get().isBrowser() ? null : mailLocator.fileApp, locator.transferProgressDispatcher),
+	)
 }
 
 /**
@@ -1738,7 +1751,11 @@ export async function newMailEditorFromTemplate(
  * @param mailboxModel
  * @param draft
  */
-export async function newMailEditorFromLocalDraftData(mailboxModel: MailboxModel, draft: LocalAutosavedDraftData): Promise<Dialog | null> {
+export async function newMailEditorFromLocalDraftData(
+	mailboxModel: MailboxModel,
+	attachmentDownloader: AttachmentDownloader,
+	draft: LocalAutosavedDraftData,
+): Promise<Dialog | null> {
 	const details = await mailboxModel.getMailboxDetailsForMailGroup(draft.mailGroupId)
 	const recipients = {
 		to: draft.to,
@@ -1750,7 +1767,7 @@ export async function newMailEditorFromLocalDraftData(mailboxModel: MailboxModel
 	const model = await locator.sendMailModel(details, mailboxProperties)
 	await model.initWithTemplate(recipients, draft.subject, draft.body, [], draft.confidential, draft.senderAddress, true)
 	model.markAsChangedIfNecessary(true)
-	return await createMailEditorDialog(model)
+	return await createMailEditorDialog(model, attachmentDownloader)
 }
 
 /**
@@ -1765,7 +1782,7 @@ export async function writeInviteMail(referralLink: string) {
 		"{registrationLink}": referralLink,
 		"{username}": username,
 	})
-	const { invitationSubject } = await locator.serviceExecutor.get(TranslationService, createTranslationGetIn({ lang: lang.code }))
+	const { invitationSubject } = await locator.serviceExecutor.execute(TranslationService_GET, createTranslationGetIn({ lang: lang.code }), null)
 	const dialog = await newMailEditorFromTemplate(detailsProperties.mailboxDetails, {}, invitationSubject, body, [], false)
 	dialog?.show()
 }
@@ -1785,11 +1802,17 @@ export async function writeGiftCardMail(link: string, mailboxDetails?: MailboxDe
 		})
 		.split("\n")
 		.join("<br />")
-	const { giftCardSubject } = await locator.serviceExecutor.get(TranslationService, createTranslationGetIn({ lang: lang.code }))
+	const { giftCardSubject } = await locator.serviceExecutor.execute(TranslationService_GET, createTranslationGetIn({ lang: lang.code }), null)
 	locator
 		.sendMailModel(detailsProperties.mailboxDetails, detailsProperties.mailboxProperties)
 		.then((model) => model.initWithTemplate({}, giftCardSubject, appendEmailSignature(bodyText, locator.logins.getUserController().props), [], false))
-		.then((model) => createMailEditorDialog(model, false))
+		.then((model) =>
+			createMailEditorDialog(
+				model,
+				new AttachmentDownloader(locator.fileController, EnvProvider.get().isBrowser() ? null : locator.fileApp, locator.transferProgressDispatcher),
+				false,
+			),
+		)
 		.then((dialog) => dialog.show())
 }
 

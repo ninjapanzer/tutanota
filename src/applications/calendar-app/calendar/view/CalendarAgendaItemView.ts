@@ -1,6 +1,6 @@
 import m, { Children, Component, Vnode } from "mithril"
 import { theme } from "../../../../ui/theme.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { DefaultAnimationTime } from "../../../../ui/animation/Animations.js"
 import { px } from "../../../../ui/size.js"
 import { TabIndex } from "../../../../platform-kit/app-env"
@@ -9,7 +9,7 @@ import { EventWrapper } from "./CalendarViewModel.js"
 
 export interface CalendarAgendaItemViewAttrs {
 	day: Date
-	zone: string
+	calendarTimeZone: string
 	event: EventWrapper
 	calendarColor: string
 	click: (domEvent: MouseEvent) => unknown
@@ -37,7 +37,7 @@ export class CalendarAgendaItemView implements Component<CalendarAgendaItemViewA
 			".flex.items-center.click.plr-12.border-radius.pt-8.pb-8.rel.limit-width.full-width",
 			{
 				// Implement the background color via JavaScript on Desktop, so we can react to `attrs.selected`
-				class: styles.isDesktopLayout() ? "hide-outline" : "state-bg",
+				class: Styles.get().isDesktopLayout() ? "hide-outline" : "state-bg",
 				id: attrs.id,
 				tabIndex: TabIndex.Default,
 				onclick: attrs.click,
@@ -58,13 +58,13 @@ export class CalendarAgendaItemView implements Component<CalendarAgendaItemViewA
 						backgroundColor: `#${attrs.calendarColor}`,
 					} satisfies Partial<CSSStyleDeclaration>,
 				}),
-				m(".flex.col.min-width-0.pl-32", [m("p.b.m-0.text-ellipsis", eventTitle), m("", attrs.timeText)]),
+				m(".flex.col.min-width-0.pl-32", [m("p.b.m-0.text-ellipsis", eventTitle), m(".text-ellipsis", attrs.timeText)]),
 			],
 		)
 	}
 
 	private static getBackground(isSelected: boolean, isFocused: boolean) {
-		if (styles.isDesktopLayout()) {
+		if (Styles.get().isDesktopLayout()) {
 			if (isSelected) {
 				return theme.state_bg_hover
 			} else {

@@ -4,7 +4,7 @@ import { IpcClientRect } from "../types/IpcClientRect"
 import { UploadTaskResponse } from "../types/UploadTaskResponse"
 import { DownloadTaskResponse } from "../types/DownloadTaskResponse"
 import { DataFile } from "../types/DataFile"
-
+import { DirectoryContents } from "../types/DirectoryContents"
 /**
  * filesystem-related operations. none of the methods writing files to disk guarantee a fixed file name or location, except for putFileIntoDownloadsFolder.
  */
@@ -12,7 +12,7 @@ export interface FileFacade {
 	/**
 	 * Opens the file with the built-in viewer or external program.
 	 */
-	open(location: string, mimeType: string): Promise<void>
+	open(fileUrl: string, mimeType: string): Promise<void>
 
 	/**
 	 * Opens OS file picker. Returns the list of URIs for the selected files. add a list of extensions (without dot) to filter the options.
@@ -29,19 +29,19 @@ export interface FileFacade {
 	 */
 	openMacImportFileChooser(): Promise<ReadonlyArray<string>>
 
-	deleteFile(file: string): Promise<void>
+	deleteFile(fileUrl: string): Promise<void>
 
-	getName(file: string): Promise<string>
+	getName(fileUrl: string): Promise<string>
 
-	getMimeType(file: string): Promise<string>
+	getMimeType(fileUrl: string): Promise<string>
 
 	/**
 	 * get the absolute size in bytes of the file at the given location
 	 */
-	getSize(file: string): Promise<number>
+	getSize(fileUrl: string): Promise<number>
 
 	/**
-	 * move and rename a decrypted file from the decryption location to the download location preferred by the user and return the absolute path to the moved file
+	 * move and rename a decrypted file from the decryption location to the download location preferred by the user and return the absolute URL to the moved file
 	 */
 	putFileIntoDownloadsFolder(localFileUri: string, fileNameToUse: string): Promise<string>
 
@@ -65,42 +65,54 @@ export interface FileFacade {
 	/**
 	 * Calculates specified file hash (with SHA-256). Returns first 6 bytes of it as Base64.
 	 */
-	hashFile(fileUri: string): Promise<string>
+	hashFile(fileUrl: string): Promise<string>
 
 	clearFileData(): Promise<void>
 
 	/**
 	 * given a list of chunk file locations, will re-join them in order to reconstruct a single file and returns the location of that file on disk.
 	 */
-	joinFiles(filename: string, files: ReadonlyArray<string>): Promise<string>
+	joinFiles(filename: string, filePartsUrls: ReadonlyArray<string>): Promise<string>
 
 	/**
-	 * split a given file on disk into as many chunks as necessary to limit their size to the max byte size. returns the list of chunk file locations.
+	 * open a file for reading
 	 */
-	splitFile(fileUri: string, maxChunkSizeBytes: number): Promise<ReadonlyArray<string>>
+	openFileForReading(fileUrl: string): Promise<string>
 
 	/**
-	 * Save the unencrypted data file to the disk into a fixed temporary location, not the user's preferred download dir.
+	 * close a file
+	 */
+	closeFile(streamUrl: string): Promise<void>
+
+	/**
+	 * read a chunk from an opened file
+	 */
+	readChunk(streamUrl: string, maxChunkSize: number): Promise<string | null>
+
+	/**
+	 * Save the unencrypted data file to the disk into a fixed temporary location, not the user's preferred download dir. Returns url with the file's location
 	 */
 	writeTempDataFile(file: DataFile): Promise<string>
 
 	/**
 	 * Save given file in given path relative to app data folder
 	 */
-	writeToAppDir(content: Uint8Array, path: string): Promise<void>
+	writeToAppDir(content: Uint8Array<ArrayBuffer>, name: string): Promise<void>
 
 	/**
 	 * Read file from given path relative to app data folder
 	 */
-	readFromAppDir(path: string): Promise<Uint8Array>
+	readFromAppDir(name: string): Promise<Uint8Array<ArrayBuffer>>
 
 	/**
 	 * Delete file from given path relative to app data folder
 	 */
-	deleteFromAppDir(path: string): Promise<void>
+	deleteFromAppDir(name: string): Promise<void>
 
 	/**
 	 * read the file at the given location into a DataFile. Returns null if reading fails for any reason.
 	 */
-	readDataFile(filePath: string): Promise<DataFile | null>
+	readDataFile(fileUrl: string): Promise<DataFile | null>
+
+	readDirectory(directoryUrl: string): Promise<DirectoryContents>
 }

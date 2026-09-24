@@ -24,7 +24,7 @@ import {
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { LoadingStateTracker } from "../../../common/offline/LoadingState.js"
 import { EventController } from "../../../common/api/main/EventController.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { ConversationEntry, ConversationEntryTypeRef, Mail, MailTypeRef } from "@tutao/entities/tutanota"
 import { ConversationType, MailSetKind } from "../../../../entities/tutanota/Utils"
 import { ListAutoSelectBehavior, MailListDisplayMode } from "../../../common/misc/DeviceConfig.js"
@@ -33,7 +33,7 @@ import { MailModel } from "../model/MailModel.js"
 
 import { isDraft, isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
 import { compareMails } from "../model/MailUtils"
-import { EntityEventsListener, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 export type MailViewerViewModelFactory = (options: CreateMailViewerOptions) => MailViewerViewModel
 
@@ -72,7 +72,7 @@ export class ConversationViewModel {
 
 	readonly init = makeSingleUse((delayBodyRendering: Promise<unknown>) => {
 		this.loadingPromise = this.loadingState.trackPromise(this.loadConversation())
-		this.eventController.addEntityListener(this.onEntityEvent)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		this._primaryViewModel.expandMail(delayBodyRendering)
 
 		if (this.options.loadLatestMail) {
@@ -80,7 +80,8 @@ export class ConversationViewModel {
 		}
 	})
 
-	private readonly onEntityEvent: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ConversationViewModel",
 		onEntityUpdatesReceived: async (updates, eventOwnerGroupId) => {
 			// conversation entry can be created when new email arrives
 			// conversation entry can be updated when email is moved around or deleted
@@ -107,7 +108,7 @@ export class ConversationViewModel {
 				}
 			}
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	private async processCreateConversationEntry(ceId: IdTuple) {
@@ -140,7 +141,7 @@ export class ConversationViewModel {
 				this.onUiUpdate()
 			}
 		} catch (e) {
-			if (e instanceof restError.NotFoundError) {
+			if (e instanceof NotFoundError) {
 				// Ignore, something was already deleted
 			} else {
 				throw e
@@ -164,14 +165,14 @@ export class ConversationViewModel {
 				// ideally checking the `mail` ref should be enough but we sometimes get an update with UNKNOWN and non-existing email but still with the ref
 				conversationEntry.conversationType !== ConversationType.UNKNOWN && conversationEntry.mail
 					? await this.entityClient.load(MailTypeRef, conversationEntry.mail).catch(
-							ofClass(restError.NotFoundError, () => {
+							ofClass(NotFoundError, () => {
 								console.log(`Could not find updated mail ${JSON.stringify(conversationEntry.mail)}`)
 								return null
 							}),
 						)
 					: null
 		} catch (e) {
-			if (e instanceof restError.NotFoundError) {
+			if (e instanceof NotFoundError) {
 				// Ignore, something was already deleted
 				return
 			} else {
@@ -189,7 +190,7 @@ export class ConversationViewModel {
 			// nothing to do really, why do we get this update again?
 		} else {
 			if (isSameTypeRef(oldItem.type_ref, MailTypeRef)) {
-				oldItem.viewModel.dispose()
+				oldItem.viewModel.deinit()
 			}
 
 			if (mail) {
@@ -234,7 +235,7 @@ export class ConversationViewModel {
 					}
 				}
 			} catch (e) {
-				if (e instanceof restError.NotAuthorizedError) {
+				if (e instanceof NotAuthorizedError) {
 					// Most likely the conversation entry list does not exist anymore. The server does not distinguish between the case when the
 					// list does not exist and when we have no permission on it (and for good reasons, it prevents enumeration).
 					// Most often it happens when we are not fully synced with the server yet and the primary mail does not even exist.
@@ -370,16 +371,16 @@ export class ConversationViewModel {
 		}
 	}
 
-	dispose() {
+	deinit() {
 		// hack: init has been called if loadingPromise is set
 		if (this.loadingPromise != null) {
-			this.eventController.removeEntityListener(this.onEntityEvent)
+			this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 
 			// we may still be in the middle of loading, though, such as if the user is changing views quickly
 			settledThen(this.loadingPromise, () => {
 				for (const item of this.conversationItems()) {
 					if (isSameTypeRef(item.type_ref, MailTypeRef)) {
-						item.viewModel.dispose()
+						item.viewModel.deinit()
 					}
 				}
 			})

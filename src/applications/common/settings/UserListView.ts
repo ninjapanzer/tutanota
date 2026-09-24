@@ -1,10 +1,10 @@
 import m, { Children } from "mithril"
-import * as restError from "../../../platform-kit/rest-client/error"
+import { NotFoundError } from "../../../platform-kit/rest-client/error"
 import { component_size } from "../../../ui/size.js"
 import { elementIdPart } from "../../../platform-kit/meta"
-import { contains, LazyLoaded, noOp } from "../../../platform-kit/utils"
+import { assertNotNull, contains, LazyLoaded, noOp } from "../../../platform-kit/utils"
 import { UserViewer } from "./UserViewer.js"
-import { assertMainOrNode, FeatureType } from "../../../platform-kit/app-env"
+import { EnvProvider, FeatureType } from "../../../platform-kit/app-env"
 import { Icon } from "../../../ui/base/Icon.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { compareGroupInfos } from "../../../platform-kit/network/GroupUtils.js"
@@ -29,7 +29,7 @@ import { GroupInfo, GroupInfoTypeRef, GroupMemberTypeRef } from "@tutao/entities
 import { GroupType } from "../../../entities/sys/Utils"
 import { EntityUpdateData, isUpdateFor, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Displays a list with users that are available to manage by the current user.
@@ -106,7 +106,7 @@ export class UserListView implements UpdatableSettingsViewer {
 					m(
 						".mr-negative-8",
 						m(IconButton, {
-							title: "addUsers_action",
+							label: "addUsers_action",
 							icon: Icons.Plus,
 							click: () => this.addButtonClicked(),
 						}),
@@ -142,10 +142,10 @@ export class UserListView implements UpdatableSettingsViewer {
 				IconButton,
 				attachDropdown({
 					mainButtonAttrs: {
-						title: "more_label",
+						label: "more_label",
 						icon: Icons.More,
 					},
-					childAttrs: () => [
+					childAttrs: async () => [
 						{
 							label: "importUsers_action",
 							click: () => {
@@ -190,10 +190,10 @@ export class UserListView implements UpdatableSettingsViewer {
 		AddUserDialog.show()
 	}
 
-	async entityEventsReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(GroupInfoTypeRef, update) && this.listId.getSync() === update.instanceListId) {
-				await this.listModel.entityEventReceived(update.instanceListId, update.instanceId, update.operation)
+				await this.listModel.onEntityUpdateReceived(assertNotNull(update.instanceListId), update.instanceId, update.operation)
 			} else if (isUpdateFor(locator.logins.getUserController().user, update)) {
 				await this.loadAdmins()
 				this.listModel.reapplyFilter()
@@ -217,7 +217,7 @@ export class UserListView implements UpdatableSettingsViewer {
 				try {
 					return await locator.entityClient.load<GroupInfo>(GroupInfoTypeRef, [listId, elementId])
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						// we return null if the GroupInfo does not exist
 						return null
 					} else {
@@ -300,7 +300,7 @@ export class UserRow implements VirtualRow<GroupInfo> {
 		return m(
 			SelectableRowContainer,
 			{
-				class: "pt-12 pb-12 pl-12 pr-12",
+				class: "pt-12 pb-12 pl-12 pr-12 items-end",
 				onSelectedChangeRef: (updater) => (this.selectionUpdater = updater),
 			},
 			m(".flex.col.flex-grow", [

@@ -8,16 +8,16 @@ import type { TranslationKeyType } from "../../../../ui/utils/TranslationKey.js"
 import { deepEqual, isNotNull } from "../../../../platform-kit/utils"
 import { AlarmInterval, CalendarType } from "../../../common/calendar/date/CalendarUtils.js"
 import { RemindersEditor } from "./RemindersEditor.js"
-import { checkURLString, isIcal } from "../../../common/calendar/gui/ImportExportUtils.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import type { CalendarModel } from "../model/CalendarModel.js"
 import { DEFAULT_ERROR } from "../../../../platform-kit/app-env"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
-import { ColorPickerView } from "../../../../ui/base/colorPicker/ColorPickerView"
+import { LegacyColorPickerView } from "../../../../ui/base/colorPicker/LegacyColorPickerView"
 import { generateRandomColor } from "./CalendarGuiUtils.js"
 import { GroupNameData } from "../../../common/sharing/model/GroupSettingsModel"
 import { GroupSettingNameInputFields } from "../../../common/sharing/view/GroupSettingNameInputFields"
 import { clone } from "../../../../platform-kit/meta"
+import { checkURLString, isIcal } from "../../../common/calendar/import/ImportExportUtils"
 
 export type CalendarProperties = {
 	nameData: GroupNameData
@@ -83,7 +83,7 @@ function createEditCalendarComponent(
 	return m.fragment({}, [
 		m(GroupSettingNameInputFields, { groupNameData: nameData }),
 		m(".small.mt-16.mb-4", lang.get("color_label")),
-		m(ColorPickerView, {
+		m(LegacyColorPickerView, {
 			value: currentColor,
 			onselect: (color: string) => {
 				colorStream(color.substring(1))
@@ -238,7 +238,7 @@ export function showEditBirthdayCalendarDialog(editBirthdayCalendarAttrs: EditBi
 						isReadOnly: true,
 					}),
 					m(".small.mt-16.mb-4", lang.get("color_label")),
-					m(ColorPickerView, {
+					m(LegacyColorPickerView, {
 						value: colorStream(),
 						onselect: (color: string) => {
 							colorStream(color)

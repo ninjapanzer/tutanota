@@ -4,7 +4,7 @@ import { DeviceConfig } from "../../../src/applications/common/misc/DeviceConfig
 import { object, verify, when } from "testdouble"
 import { CommonLocator, initCommonLocator } from "../../../src/applications/common/api/main/CommonLocator.js"
 import { UserController } from "../../../src/applications/common/api/main/UserController.js"
-import { isApp } from "../../../src/platform-kit/app-env"
+import { EnvProvider } from "../../../src/platform-kit/app-env"
 import { PlanType } from "../../../src/entities/sys/Utils"
 
 o.spec("UserSatisfactionDialog", () => {
@@ -26,12 +26,10 @@ o.spec("UserSatisfactionDialog", () => {
 		when(locatorMock.logins.getUserController().getPlanType()).thenResolve(PlanType.Free)
 	})
 
+	// @ts-ignore
 	const userControllerMock: UserController = object({
-		// @ts-ignore
 		async loadCustomerInfo() {},
-		// @ts-ignore
 		async loadCustomer() {},
-		// @ts-ignore
 		async getPlanType() {},
 	})
 
@@ -44,7 +42,7 @@ o.spec("UserSatisfactionDialog", () => {
 			when(deviceConfigMock.getInstallationDate()).thenReturn(date)
 
 			// Act
-			const res = await evaluateRatingEligibility(now, deviceConfigMock, isApp())
+			const res = await evaluateRatingEligibility(now, deviceConfigMock, EnvProvider.get().isApp())
 
 			// Assert
 			o(res).satisfies((disallowReasons) => ({
@@ -62,7 +60,7 @@ o.spec("UserSatisfactionDialog", () => {
 			when(locatorMock.logins.isInternalUserLoggedIn()).thenReturn(true)
 
 			// Act
-			const res = await evaluateRatingEligibility(now, deviceConfigMock, isApp())
+			const res = await evaluateRatingEligibility(now, deviceConfigMock, EnvProvider.get().isApp())
 
 			// Assert
 			o(res).satisfies((disallowReasons) => ({
@@ -83,7 +81,7 @@ o.spec("UserSatisfactionDialog", () => {
 			when(locatorMock.logins.isInternalUserLoggedIn()).thenReturn(true)
 
 			// Act
-			const res = await evaluateRatingEligibility(now, deviceConfigMock, isApp())
+			const res = await evaluateRatingEligibility(now, deviceConfigMock, EnvProvider.get().isApp())
 
 			// Assert
 			o(res).satisfies((disallowReasons) => ({
@@ -101,7 +99,7 @@ o.spec("UserSatisfactionDialog", () => {
 			when(locatorMock.logins.isInternalUserLoggedIn()).thenReturn(false)
 
 			// Act
-			const res = await evaluateRatingEligibility(now, deviceConfigMock, isApp())
+			const res = await evaluateRatingEligibility(now, deviceConfigMock, EnvProvider.get().isApp())
 
 			// Assert
 			o(res).satisfies((disallowReasons) => ({
@@ -122,7 +120,7 @@ o.spec("UserSatisfactionDialog", () => {
 			when(locatorMock.logins.isInternalUserLoggedIn()).thenReturn(true)
 
 			// Act
-			const res = await evaluateRatingEligibility(now, deviceConfigMock, isApp())
+			const res = await evaluateRatingEligibility(now, deviceConfigMock, EnvProvider.get().isApp())
 
 			// Assert
 			verify(locatorMock.logins.getUserController().loadCustomerInfo(), { times: 1 })

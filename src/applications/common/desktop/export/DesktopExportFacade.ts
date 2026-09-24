@@ -2,7 +2,7 @@ import { ExportFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { MailboxExportState } from "../../../../entities/tutanota/Utils"
 import { fileExists } from "../PathUtils.js"
 import path from "node:path"
-import { CancelledError, DesktopConfigKey, ProgrammingError } from "../../../../platform-kit/app-env"
+import { CancelledError, DesktopConfigKey, ProgrammingError } from "@tutao/app-env"
 import { DesktopConfig } from "../config/DesktopConfig.js"
 import { NativeImage } from "electron"
 import { ApplicationWindow } from "../ApplicationWindow.js"
@@ -15,12 +15,12 @@ import { MailBundle, MailExportMode } from "../../mailFunctionality/SharedMailUt
 import { ElectronExports } from "../ElectronExportTypes.js"
 import { generateExportFileName, mailToEmlFile } from "../../../mail-app/mail/export/emlUtils.js"
 import { MailboxExportPersistence } from "./MailboxExportPersistence.js"
-import { DateProvider, formatSortableDate } from "../../../../platform-kit/utils"
+import { DateProvider, formatSortableDate } from "@tutao/utils"
 import { FileOpenError } from "../../api/common/error/FileOpenError.js"
 import { ExportError, ExportErrorReason } from "../../api/common/error/ExportError"
 import { DesktopExportLock, LockResult } from "./DesktopExportLock"
 import { createDataFile } from "../../api/worker/utils/DataFile"
-import { elementIdPart } from "../../../../platform-kit/meta"
+import { elementIdPart } from "@tutao/meta"
 import { DataFile } from "../../../../entities/tutanota/MailBundle"
 
 const EXPORT_DIR = "export"
@@ -43,7 +43,7 @@ export class DesktopExportFacade implements ExportFacade {
 	}
 
 	async mailToMsg(bundle: MailBundle, fileName: string): Promise<DataFile> {
-		const subject = `[Tuta Mail] ${bundle.subject}`
+		const subject = bundle.subject
 		const email = new Email(bundle.isDraft, bundle.isRead)
 			.subject(subject)
 			.bodyHtml(bundle.body)
@@ -210,6 +210,9 @@ export class DesktopExportFacade implements ExportFacade {
 			throw new ProgrammingError("Export is not running")
 		}
 
+		if (exportState.failedMailIds === null || exportState.failedMailIds === undefined) {
+			exportState.failedMailIds = []
+		}
 		await this.mailboxExportPersistence.setStateForUser({
 			type: "running",
 			userId,

@@ -1,22 +1,30 @@
 import m, { ChildArray, Children, Component, Vnode } from "mithril"
 import { InfoLink, lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { theme } from "../../../../ui/theme.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { ExpanderButton, ExpanderPanel } from "../../../../ui/base/Expander.js"
 import { BannerButtonAttrs, BannerType, InfoBanner } from "../../../../ui/base/InfoBanner.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { RecipientButton } from "../../../../ui/base/RecipientButton.js"
 import { createAsyncDropdown, createDropdown, DropdownButtonAttrs } from "../../../../ui/base/Dropdown.js"
-import { isAndroidApp, isDesktop, isIOSApp, Keys, MailAuthenticationStatus, TabIndex, TimeFormat } from "../../../../platform-kit/app-env"
+import { EnvProvider, MailAuthenticationStatus, TabIndex, TimeFormat } from "../../../../platform-kit/app-env"
 import { Icon, progressIcon } from "../../../../ui/base/Icon.js"
 import { formatDateWithWeekday, formatDateWithWeekdayAndYear, formatStorageSize, formatTime } from "../../../../ui/utils/Formatter.js"
 import { Button, ButtonType } from "../../../../ui/base/Button.js"
 import Badge from "../../../../ui/base/Badge.js"
 import { ContentBlockingStatus, FailureBannerType, MailViewerViewModel } from "./MailViewerViewModel.js"
-import { assertNotNull, isEmpty, isNotNull, resolveMaybeLazy } from "../../../../platform-kit/utils"
+import { assertNotNull, isEmpty, isNotNull } from "../../../../platform-kit/utils"
+import { resolveMaybeLazy } from "../../../../ui/base/MaybeLazy"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { getConfidentialIcon, getFolderIconByType } from "./MailGuiUtils.js"
-import { addToggleLightModeButtonAttrs, editDraft, MailViewerMoreActions, singleMailViewerMoreActions, unsubscribe } from "./MailViewerUtils.js"
+import {
+	addToggleLightModeButtonAttrs,
+	editDraft,
+	getMailActionAttrs,
+	MailViewerMoreActions,
+	singleMailViewerMoreActions,
+	unsubscribe,
+} from "./MailViewerUtils.js"
 import { liveDataAttrs } from "../../../../ui/AriaUtils.js"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager.js"
 import { AttachmentBubble, getAttachmentType } from "../../../../ui/AttachmentBubble.js"
@@ -24,29 +32,24 @@ import { responsiveCardHMargin, responsiveCardHPadding } from "../../../../ui/ca
 import { companyTeamLabel } from "../../../../platform-kit/app-env/boot/ClientConstants.js"
 import { getMailAddressDisplayText, isTutaTeamMail } from "../../../common/mailFunctionality/SharedMailUtils.js"
 import { MailAddressAndName } from "../../../common/api/common/CommonMailUtils.js"
-import { LabelsPopup } from "./LabelsPopup.js"
 import { Label } from "../../../../ui/base/Label.js"
 import { px, size } from "../../../../ui/size.js"
 import { highlightTextInQueryAsChildren } from "../../../../ui/TextHighlightViewUtils"
 import { EventBanner, EventBannerAttrs } from "./EventBanner"
 import { getGroupColors } from "../../../common/misc/GroupColors"
 import { getTimeFormatForUser } from "../../../common/api/common/utils/UserUtils"
-import { LabelsPopupViewModel } from "./LabelsPopupViewModel"
 import { File } from "@tutao/entities/tutanota"
 import { InboxRuleType, NewsletterBannerRule } from "../../../../entities/tutanota/Utils"
 import { canSeeTutaLinks } from "../../../common/gui/base/TutaLinkUtils"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { DownloadPostProcessing } from "../../../common/file/FileController"
+import { elementIdToId } from "@tutao/meta"
 
 export type MailAddressDropdownCreator = (args: {
 	mailAddress: MailAddressAndName
 	defaultInboxRuleField: InboxRuleType | null
 	createContact?: boolean
 }) => Promise<Array<DropdownButtonAttrs>>
-
-export interface MailHeaderActions {
-	trash: (() => unknown) | null
-	delete: (() => unknown) | null
-	move: ((dom: HTMLElement) => unknown) | null
-}
 
 export interface MailViewerHeaderAttrs {
 	// Passing the whole viewModel because there are a lot of separate bits we might need.
@@ -55,7 +58,8 @@ export interface MailViewerHeaderAttrs {
 	createMailAddressContextButtons: MailAddressDropdownCreator
 	isPrimary: boolean
 	importFile: (file: File) => void
-	actions: MailHeaderActions
+	deleteAction: (() => unknown) | null
+	trash: (() => unknown) | null
 	moreActions: MailViewerMoreActions
 }
 
@@ -216,7 +220,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 			m(
 				".flex.flex-grow.align-self-start.items-start.overflow-hidden",
 				{
-					class: styles.isSingleColumnLayout() ? "mt-12" : "mt-16",
+					class: Styles.get().isSingleColumnLayout() ? "mt-12" : "mt-16",
 					role: "button",
 					"mail-expander": "true",
 					// "aria-expanded" is always true because this component is only used in expanded view
@@ -258,10 +262,10 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 			m(
 				".flex-end.items-start.ml-between-4",
 				{
-					class: styles.isSingleColumnLayout() ? "" : "mt-4",
+					class: Styles.get().isSingleColumnLayout() ? "" : "mt-4",
 					style: {
 						// align "more" button with the datetime text
-						marginRight: styles.isSingleColumnLayout() ? "-3px" : "6px",
+						marginRight: Styles.get().isSingleColumnLayout() ? "-3px" : "6px",
 					},
 					onclick: (e: MouseEvent) => e.stopPropagation(),
 				},
@@ -285,7 +289,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 
 	private makeSubjectActionsLineClasses() {
 		let classes = ".flex.click"
-		if (styles.isSingleColumnLayout()) {
+		if (Styles.get().isSingleColumnLayout()) {
 			classes += ".ml-12"
 		} else {
 			classes += ".pl-24"
@@ -387,7 +391,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 	private renderEventBanner(viewModel: MailViewerViewModel): Children {
 		const eventAttachment = viewModel.getCalendarEventAttachment()
 		const groupColors: Map<Id, string> = getGroupColors(
-			viewModel.logins.getUserController().user._id,
+			elementIdToId(viewModel.logins.getUserController().user._id),
 			viewModel.logins.getUserController().userSettingsGroupRoot,
 		)
 
@@ -439,7 +443,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 									lazyButtons: async () => {
 										const childElements = [
 											{
-												info: lang.get("envelopeSenderInfo_msg"),
+												info: lang.getTranslationText("envelopeSenderInfo_msg"),
 												center: false,
 												bold: false,
 											},
@@ -640,7 +644,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 							},
 							m(".flex.col." + responsiveCardHMargin(), [
 								m(".flex.flex-wrap.gap-12", this.renderAttachmentContainer(viewModel, attachments, importFile)),
-								isIOSApp()
+								EnvProvider.get().isIOSApp()
 									? null
 									: m(
 											".flex",
@@ -663,11 +667,12 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 			return m(AttachmentBubble, {
 				attachment,
 				remove: null,
-				download:
-					isAndroidApp() || isDesktop()
-						? () => viewModel.downloadAndOpenAttachment(attachment, false)
-						: () => viewModel.downloadAndOpenAttachment(attachment, true),
-				open: isAndroidApp() || isDesktop() ? () => viewModel.downloadAndOpenAttachment(attachment, true) : null,
+				download: viewModel.attachmentDownloader.canDownloadAttachment(attachment)
+					? () => viewModel.downloadAndOpenAttachment(attachment, DownloadPostProcessing.Write)
+					: null,
+				open: viewModel.attachmentDownloader.canOpenAttachment(attachment)
+					? () => viewModel.downloadAndOpenAttachment(attachment, DownloadPostProcessing.Open)
+					: null,
 				fileImport: viewModel.canImportFile(attachment) ? () => importFile(attachment) : null,
 				type: attachmentType,
 			})
@@ -753,10 +758,10 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 		return m(InfoBanner, {
 			message: () =>
 				viewModel.mail.differentEnvelopeSender
-					? lang.get("mailAuthMissingWithTechnicalSender_msg", {
+					? lang.getTranslation("mailAuthMissingWithTechnicalSender_msg", {
 							"{sender}": viewModel.mail.differentEnvelopeSender,
-						})
-					: lang.get("mailAuthMissing_label"),
+						}).text
+					: lang.getTranslationText("mailAuthMissing_label"),
 			icon: Icons.ExclamationFilled,
 			helpLink: canSeeTutaLinks(viewModel.logins) ? InfoLink.MailAuth : null,
 			buttons: buttons,
@@ -804,7 +809,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 			: []
 		// on narrow screens the buttons will end up on 2 lines if there are too many, this looks bad.
 		const maybeDropdownButtons: ReadonlyArray<BannerButtonAttrs> =
-			styles.isSingleColumnLayout() && alwaysOrNeverAllowButtons.length > 1
+			Styles.get().isSingleColumnLayout() && alwaysOrNeverAllowButtons.length > 1
 				? [
 						{
 							label: "more_label",
@@ -825,130 +830,16 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 
 	private moreButton(attrs: MailViewerHeaderAttrs): Children {
 		return m(IconButton, {
-			title: "more_label",
+			label: "more_label",
 			icon: Icons.More,
 			click: this.prepareMoreActions(attrs),
 		})
 	}
 
-	private prepareMoreActions({ viewModel, moreActions, actions }: MailViewerHeaderAttrs) {
+	private prepareMoreActions({ viewModel, moreActions, deleteAction, trash }: MailViewerHeaderAttrs) {
 		return createDropdown({
 			lazyButtons: () => {
-				let actionButtons: DropdownButtonAttrs[] = []
-				const { delete: deleteAction, trash: trashAction, move: moveAction } = actions
-
-				const deleteButton: DropdownButtonAttrs | null =
-					deleteAction != null
-						? {
-								label: "delete_action",
-								click: () => deleteAction(),
-								icon: Icons.TrashCrossFilled,
-							}
-						: null
-				const trashButton: DropdownButtonAttrs | null =
-					trashAction != null
-						? {
-								label: "trash_action",
-								click: () => trashAction(),
-								icon: Icons.TrashFilled,
-							}
-						: null
-				const deleteOrTrashButton = deleteButton ?? trashButton
-
-				const moveButton: DropdownButtonAttrs | null =
-					moveAction != null
-						? {
-								label: "move_action",
-								click: (_: MouseEvent, dom: HTMLElement) => moveAction(dom),
-								icon: Icons.FolderFilled,
-							}
-						: null
-
-				const labelButton: DropdownButtonAttrs | null = viewModel.mailModel.canAssignLabels()
-					? {
-							label: "assignLabel_action",
-							click: (_, dom) => {
-								const popup = new LabelsPopup(
-									dom,
-									dom.getBoundingClientRect(),
-									styles.isDesktopLayout() ? 300 : 200,
-									new LabelsPopupViewModel(
-										viewModel.mailModel.getLabelsForMails([viewModel.mail]),
-										viewModel.mailModel.getLabelStatesForMails([viewModel.mail]),
-									),
-									(addedLabels, removedLabels) => viewModel.mailModel.applyLabels([viewModel.mail._id], addedLabels, removedLabels),
-								)
-								// waiting for the dropdown to be closed
-								setTimeout(() => {
-									popup.show()
-								}, 16)
-							},
-							icon: Icons.LabelFilled,
-						}
-					: null
-
-				if (viewModel.isScheduled()) {
-					actionButtons.push({
-						label: "cancelSend_action",
-						click: async () => {
-							await viewModel.unscheduleMail()
-							editDraft(viewModel)
-						},
-						icon: Icons.X,
-					})
-				} else if (viewModel.isEditableDraft()) {
-					actionButtons.push({
-						label: "edit_action",
-						click: () => editDraft(viewModel),
-						icon: Icons.PenFilled,
-					})
-				} else {
-					if (viewModel.canReply()) {
-						actionButtons.push({
-							label: "reply_action",
-							click: () => viewModel.reply(false),
-							icon: Icons.ArrowBackFilled,
-						})
-					}
-					if (viewModel.canReplyAll()) {
-						actionButtons.push({
-							label: "replyAll_action",
-							click: () => viewModel.reply(true),
-							icon: Icons.DoubleArrowBackFilled,
-						})
-					}
-					if (viewModel.canForward()) {
-						actionButtons.push({
-							label: "forward_action",
-							click: () => viewModel.forward(),
-							icon: Icons.ArrowForwardFilled,
-						})
-					}
-				}
-
-				if (moveButton != null) {
-					actionButtons.push(moveButton)
-				}
-				if (labelButton != null) {
-					actionButtons.push(labelButton)
-				}
-				if (deleteOrTrashButton != null) {
-					actionButtons.push(deleteOrTrashButton)
-				}
-
-				if (viewModel.isUnread()) {
-					actionButtons.push({
-						label: "markRead_action",
-						click: () => viewModel.setUnread(false),
-						icon: Icons.EyeFilled,
-					})
-				} else {
-					actionButtons.push({
-						label: "markUnread_action",
-						click: () => viewModel.setUnread(true),
-						icon: Icons.EyeCrossedFilled,
-					})
-				}
+				let actionButtons = getMailActionAttrs(viewModel.getMailActions(deleteAction, trash))
 
 				if (viewModel.isDraftMail()) {
 					addToggleLightModeButtonAttrs(viewModel, actionButtons)

@@ -1,23 +1,11 @@
-import {
-	AppType,
-	assertMainOrNodeBoot,
-	bootFinished,
-	FeatureType,
-	isAdminClient,
-	isApp,
-	isBrowser,
-	isDesktop,
-	isIOSApp,
-	ProgrammingError,
-	SessionType,
-} from "../../platform-kit/app-env"
+import { AppType, DomainConfig, EnvProvider, FeatureType, ProgrammingError, SessionType } from "../../platform-kit/app-env"
 import m from "mithril"
 import Mithril, { Children, ClassComponent, Component, RouteDefs, RouteResolver, Vnode, VnodeDOM } from "mithril"
 import { lang, languageCodeToTag, languages } from "../../ui/utils/LanguageViewModel.js"
 import { root } from "../../ui/base/RootView.js"
 import { assertNotNull, isSessionStorageAvailable } from "../../platform-kit/utils"
 import { windowFacade } from "../common/misc/WindowFacade.js"
-import { styles } from "../../ui/styles.js"
+import { Styles } from "../../ui/styles.js"
 import { deviceConfig } from "../common/misc/DeviceConfig.js"
 import { Logger, replaceNativeLogger } from "../common/api/common/Logger.js"
 import { applicationPaths } from "./ApplicationPaths.js"
@@ -32,43 +20,52 @@ import { DrawerMenuAttrs } from "../common/gui/nav/DrawerMenu.js"
 import { MailView, MailViewAttrs, MailViewCache } from "./mail/view/MailView.js"
 import { ContactView, ContactViewAttrs } from "./contacts/view/ContactView.js"
 import { SettingsView } from "./settings/SettingsView.js"
-import { SearchView, SearchViewAttrs } from "./search/view/SearchView.js"
 import { TopLevelAttrs, TopLevelView } from "../../ui/base/TopLevelView.js"
 import { AppHeaderAttrs } from "../../ui/Header.js"
 import { CalendarViewModel } from "../calendar-app/calendar/view/CalendarViewModel.js"
 import { ExternalLoginView, ExternalLoginViewAttrs, ExternalLoginViewModel } from "./mail/view/ExternalLoginView.js"
 import { LoginController } from "../common/api/main/LoginController.js"
 import { MailViewModel } from "./mail/view/MailViewModel.js"
-import { SearchViewModel } from "./search/view/SearchViewModel.js"
 import { ContactViewModel } from "./contacts/view/ContactViewModel.js"
 import { ContactListViewModel } from "./contacts/view/ContactListViewModel.js"
 import { SettingsViewAttrs } from "../common/settings/Interfaces.js"
 import { disableErrorHandlingDuringLogout, handleUncaughtError } from "../common/misc/ErrorHandler.js"
-import { ContactModel } from "../common/contactsFunctionality/ContactModel.js"
 import { UndoModel } from "./UndoModel"
 import { CommonLocator } from "../common/api/main/CommonLocator"
-import { SignupView, SignupViewAttrs, SignupViewModel } from "../common/signup/SignupView"
 import { DriveView, DriveViewAttrs } from "../drive-app/drive/view/DriveView"
 import { DriveViewModel } from "../drive-app/drive/view/DriveViewModel"
 import { PartnerView, PartnerViewAttrs } from "../common/partner/PartnerView"
 import type { DriveFilePicker } from "../drive-app/drive/view/DriveFilePicker"
-import { CacheMode } from "../../platform-kit/network/EntityRestClient"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector"
-import { initUiSingletons } from "../common/app-common"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector"
+import { initUiSingletons, MakeViewResolverOptions } from "../common/app-common"
 import { AppNameEnum } from "@tutao/meta"
 import { baseModelInfo, baseTypeModels } from "@tutao/entities/base"
 import { sysModelInfo, sysTypeModels } from "@tutao/entities/sys"
-import { tutanotaModelInfo, tutanotaTypeModels } from "@tutao/entities/tutanota"
+import { Contact, tutanotaModelInfo, tutanotaTypeModels } from "@tutao/entities/tutanota"
 import { driveModelInfo, driveTypeModels } from "@tutao/entities/drive"
 import { storageModelInfo, storageTypeModels } from "@tutao/entities/storage"
 import { monitorModelInfo, monitorTypeModels } from "@tutao/entities/monitor"
 import { usageModelInfo, usageTypeModels } from "@tutao/entities/usage"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
-import { NamedClientModel } from "@tutao/instance-pipeline"
+import type { NamedClientModel } from "@tutao/instance-pipeline"
 import { initClientModels } from "../common/api/common/ClientModelInfoInitializer"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../platform-kit/instance-pipeline/RestClientOptions"
+import { RevocationView, RevocationViewAttrs } from "../common/revocation/RevocationView"
+import { RevocationViewModel } from "../common/revocation/RevocationViewModel"
+import { AttachmentDownloader } from "./mail/view/MailGuiUtils"
+import { MailSearchView, MailSearchViewAttrs } from "./search/view/MailSearchView"
+import { MailSearchViewModel } from "./search/view/MailSearchViewModel"
+import { ContactSearchView, ContactSearchViewAttrs } from "./search/view/ContactSearchView"
+import { ContactSearchViewModel } from "./search/view/ContactSearchViewModel"
+import { CalendarSearchView, CalendarSearchViewAttrs } from "../calendar-app/calendar/search/view/CalendarSearchView"
+import { CalendarSearchViewModel } from "../calendar-app/calendar/search/view/CalendarSearchViewModel"
+import { DriveSearchView, DriveSearchViewAttrs } from "../drive-app/search/view/DriveSearchView"
+import { DriveSearchViewModel } from "../drive-app/search/view/DriveSearchViewModel"
+import { FolderItem } from "../drive-app/drive/view/DriveUtils"
+import { MoveItems } from "../drive-app/drive/view/DriveMoveItemDialog"
 
-assertMainOrNodeBoot()
-bootFinished()
+EnvProvider.assertMainOrNodeBoot()
+EnvProvider.bootFinished()
 
 // Since it is not easy to migrate app.tutanota.com to app.tuta.com because 2FA data is stored in each domain,
 // we dynamically insert a noindex tag that can still be read by Google's crawler.
@@ -99,7 +96,7 @@ replaceNativeLogger(window, new Logger())
 
 let currentView: Component<unknown> | null = null
 window.tutao = {
-	client,
+	client: ClientDetector.get(),
 	m,
 	lang,
 	root,
@@ -107,15 +104,15 @@ window.tutao = {
 	locator: null,
 }
 
-client.init(navigator.userAgent, navigator.platform, AppType.Mail)
+ClientDetector.get().init(navigator.userAgent, navigator.platform, AppType.Mail)
 
-if (isBrowser() && !client.webassembly()) {
+if (EnvProvider.get().isBrowser() && !ClientDetector.get().webassembly()) {
 	const webAssemblyError = new Error()
 	webAssemblyError.name = "NoWASMSupport"
 	throw webAssemblyError
 }
 
-if (!client.isSupported()) {
+if (!ClientDetector.get().isSupported()) {
 	throw new Error("Unsupported")
 }
 
@@ -157,7 +154,7 @@ import("../../ui/translations/en.js")
 
 		// this needs to stay after client.init
 		windowFacade.init(mailLocator.logins, mailLocator.connectivityModel)
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			import("../common/native/UpdatePrompt.js").then(({ registerForUpdates }) => registerForUpdates(mailLocator.desktopSettingsFacade))
 		}
 
@@ -172,22 +169,31 @@ import("../../ui/translations/en.js")
 				console.error("Failed to fetch translation: " + userLanguage.code, e)
 			})
 
-			if (isDesktop()) {
+			if (EnvProvider.get().isDesktop()) {
 				mailLocator.desktopSettingsFacade.changeLanguage(language.code, language.languageTag)
 			}
 		}
 
 		mailLocator.logins.addPostLoginAction(() => mailLocator.postLoginActions())
 		mailLocator.logins.addPostLoginAction(async () => {
+			const { setupCalendarModels } = await import("../calendar-app/calendar/login/SetupCalendarModels.js")
+			return await setupCalendarModels(
+				mailLocator.calendarModel,
+				mailLocator.entityClient,
+				mailLocator.calendarEventUpdateCoordinator,
+				mailLocator.syncTracker,
+			)
+		})
+		mailLocator.logins.addPostLoginAction(async () => {
 			return {
 				async onPartialLoginSuccess({ sessionType }) {
 					if (sessionType === SessionType.Temporary) {
 						return
 					}
-					if (isApp()) {
+					if (EnvProvider.get().isApp()) {
 						mailLocator.fileApp.clearFileData().catch((e) => console.log("Failed to clean file data", e))
 						const syncManager = mailLocator.nativeContactsSyncManager()
-						if (syncManager.isEnabled() && isIOSApp()) {
+						if (syncManager.isEnabled() && EnvProvider.get().isIOSApp()) {
 							const canSync = await syncManager.canSync()
 							if (!canSync) {
 								await syncManager.disableSync()
@@ -203,7 +209,7 @@ import("../../ui/translations/en.js")
 						return
 					}
 					// We might have outdated Customer features, force reload the customer to make sure the customizations are up-to-date
-					if (!isBrowser() && !isAdminClient()) {
+					if (!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()) {
 						await mailLocator.logins.loadCustomizations(CacheMode.WriteOnly)
 						m.redraw()
 					}
@@ -213,7 +219,7 @@ import("../../ui/translations/en.js")
 						const reloadTutanotaProperties = await mailLocator.entityClient.loadRoot(
 							TutanotaPropertiesTypeRef,
 							mailLocator.logins.getUserController().user.userGroup.group,
-							{ cacheMode: CacheMode.WriteOnly },
+							{ ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly },
 						)
 
 						if (!reloadTutanotaProperties.defaultLabelCreated) {
@@ -278,23 +284,20 @@ import("../../ui/translations/en.js")
 			}
 		})
 
-		if (!isBrowser() && !isAdminClient()) {
+		if (!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()) {
 			mailLocator.logins.addPostLoginAction(async () => {
-				const { CachePostLoginAction } = await import("../common/offline/CachePostLoginAction.js")
-				return new CachePostLoginAction(
+				const { CalendarPostLoginAction } = await import("../common/offline/CalendarPostLoginAction.js")
+				return new CalendarPostLoginAction(
 					await mailLocator.calendarModel(),
 					mailLocator.entityClient,
 					mailLocator.progressTracker,
-					mailLocator.cacheStorage,
 					mailLocator.logins,
-					assertNotNull(await mailLocator.offlineStorageSettingsModel()),
 					mailLocator.syncTracker,
 				)
 			})
 			mailLocator.logins.addPostLoginAction(async () => {
 				const { MailIndexerPostLoginAction } = await import("./search/model/MailIndexerPostLoginAction.js")
-				const offlineStorageSettings = await mailLocator.offlineStorageSettingsModel()
-				return new MailIndexerPostLoginAction(assertNotNull(offlineStorageSettings), mailLocator.indexerFacade, mailLocator.syncTracker)
+				return new MailIndexerPostLoginAction(mailLocator.indexerFacade, mailLocator.syncTracker, mailLocator.logins)
 			})
 			mailLocator.logins.addPostLoginAction(async () => {
 				const { RegisterPushServicePostLoginAction } = await import("../common/native/RegisterPushServicePostLoginAction.js")
@@ -307,18 +310,38 @@ import("../../ui/translations/en.js")
 			return new SpamClassificationPostLoginAction(mailLocator.spamClassifier, mailLocator.customerFacade, mailLocator.syncTracker)
 		})
 
+		if (EnvProvider.get().isDesktop()) {
+			mailLocator.logins.addPostLoginAction(async () => {
+				const { ImapImportPostLoginAction } = await import("./mail/imapimport/ImapImportPostLoginAction")
+				return new ImapImportPostLoginAction(
+					mailLocator.getImapMailImportController(),
+					mailLocator.customerFacade,
+					mailLocator.entityClient,
+					mailLocator.syncTracker,
+				)
+			})
+		}
+
 		mailLocator.logins.addPostLoginAction(async () => {
 			const { OpenLocallySavedDraftAction } = await import("./mail/editor/OpenLocallySavedDraftAction.js")
 			const { newMailEditorFromLocalDraftData } = await import("./mail/editor/MailEditor.js")
 			const { createEditDraftDialog } = await import("./mail/view/MailViewerUtils.js")
-			return new OpenLocallySavedDraftAction(mailLocator.autosaveFacade, mailLocator.mailboxModel, mailLocator.entityClient, {
-				newMailEditorFromLocalDraftData,
-				createEditDraftDialog,
-				mailViewerViewModelFactory: () => mailLocator.mailViewerViewModelFactory(),
-			})
+			const { AttachmentDownloader } = await import("./mail/view/MailGuiUtils.js")
+			const fileApp = EnvProvider.get().isBrowser() ? null : mailLocator.fileApp
+			return new OpenLocallySavedDraftAction(
+				mailLocator.autosaveFacade,
+				mailLocator.mailboxModel,
+				new AttachmentDownloader(mailLocator.fileController, fileApp, mailLocator.transferProgressDispatcher),
+				mailLocator.entityClient,
+				{
+					newMailEditorFromLocalDraftData,
+					createEditDraftDialog,
+					mailViewerViewModelFactory: () => mailLocator.mailViewerViewModelFactory(),
+				},
+			)
 		})
 
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			mailLocator.logins.addPostLoginAction(async () => {
 				return {
 					onPartialLoginSuccess: async () => {},
@@ -333,7 +356,7 @@ import("../../ui/translations/en.js")
 			})
 		}
 
-		styles.init(mailLocator.themeController)
+		Styles.get().init(mailLocator.themeController)
 
 		const contactViewResolver = makeViewResolver<
 			ContactViewAttrs,
@@ -369,46 +392,7 @@ import("../../ui/translations/en.js")
 			mailLocator.logins,
 		)
 
-		/**
-		 * once the old signup dialog is removed, this proxy can be replaced by the resolver in the "new signup"
-		 * branch of its onmatch method.
-		 */
-		const makeSignupViewResolver = (): RouteResolver => {
-			let actualResolver: RouteResolver | null = null
-			return {
-				async onmatch(...args) {
-					if (actualResolver == null) {
-						// new signup
-						const { SignupView, SignupViewModel } = await import("../common/signup/SignupView")
-						actualResolver = makeViewResolver<SignupViewAttrs, SignupView, { viewModel: SignupViewModel }>(
-							{
-								prepareRoute: async () => {
-									const migrator = await mailLocator.credentialFormatMigrator()
-									await migrator.migrate()
-									return {
-										component: SignupView,
-										cache: {
-											viewModel: new SignupViewModel(),
-										},
-									}
-								},
-								prepareAttrs: (cache) => cache,
-								requireLogin: false,
-							},
-							mailLocator.logins,
-						)
-					}
-					return actualResolver.onmatch?.(...args)
-				},
-				render(...args) {
-					if (actualResolver == null) {
-						throw new ProgrammingError("render called before onmatch?")
-					}
-					return actualResolver.render?.(...args)
-				},
-			}
-		}
-
+		const { makeSignupViewResolver } = await import("../common/signup/SignupViewResolver.js")
 		const paths = applicationPaths({
 			login: makeViewResolver<LoginViewAttrs, LoginView, { makeViewModel: () => LoginViewModel }>(
 				{
@@ -447,6 +431,37 @@ import("../../ui/translations/en.js")
 							cache: {
 								makeViewModel: () =>
 									new TerminationViewModel(
+										mailLocator.logins,
+										mailLocator.secondFactorHandler,
+										mailLocator.serviceExecutor,
+										mailLocator.entityClient,
+									),
+								header: await mailLocator.appHeaderAttrs(),
+							},
+						}
+					},
+					prepareAttrs: ({ makeViewModel, header }) => ({ makeViewModel, header }),
+					requireLogin: false,
+				},
+				mailLocator.logins,
+			),
+			revocation: makeViewResolver<
+				RevocationViewAttrs,
+				RevocationView,
+				{
+					makeViewModel: () => RevocationViewModel
+					header: AppHeaderAttrs
+				}
+			>(
+				{
+					prepareRoute: async () => {
+						const { RevocationViewModel } = await import("../common/revocation/RevocationViewModel.js")
+						const { RevocationView } = await import("../common/revocation/RevocationView.js")
+						return {
+							component: RevocationView,
+							cache: {
+								makeViewModel: () =>
+									new RevocationViewModel(
 										mailLocator.logins,
 										mailLocator.secondFactorHandler,
 										mailLocator.serviceExecutor,
@@ -554,39 +569,143 @@ import("../../ui/translations/en.js")
 				},
 				mailLocator.logins,
 			),
-			search: makeViewResolver<
-				SearchViewAttrs,
-				SearchView,
+			mailSearch: makeViewResolver<
+				MailSearchViewAttrs,
+				MailSearchView,
 				{
+					undoModel: UndoModel
 					drawerAttrsFactory: () => DrawerMenuAttrs
 					header: AppHeaderAttrs
-					searchViewModelFactory: () => SearchViewModel
-					contactModel: ContactModel
-					undoModel: UndoModel
+					makeViewModel: () => MailSearchViewModel
 				}
 			>(
 				{
 					prepareRoute: async () => {
-						const { SearchView } = await import("./search/view/SearchView.js")
+						const { MailSearchView } = await import("./search/view/MailSearchView.js")
 						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
+						const undoModel = await mailLocator.undoModel()
+						const makeViewModel = await mailLocator.mailSearchViewModelFactory()
 						return {
-							component: SearchView,
+							component: MailSearchView,
 							cache: {
+								undoModel,
 								drawerAttrsFactory,
 								header: await mailLocator.appHeaderAttrs(),
-								searchViewModelFactory: await mailLocator.searchViewModelFactory(),
-								contactModel: mailLocator.contactModel,
-								undoModel: await mailLocator.undoModel(),
+								makeViewModel,
 							},
 						}
 					},
-					prepareAttrs: (cache) => ({
-						drawerAttrs: cache.drawerAttrsFactory(),
-						header: cache.header,
-						makeViewModel: cache.searchViewModelFactory,
-						contactModel: cache.contactModel,
-						undoModel: cache.undoModel,
-					}),
+					prepareAttrs: (cache) => {
+						return {
+							contactModel: mailLocator.contactModel,
+							undoModel: cache.undoModel,
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+							makeViewModel: cache.makeViewModel,
+						}
+					},
+				},
+				mailLocator.logins,
+			),
+			contactSearch: makeViewResolver<
+				ContactSearchViewAttrs,
+				ContactSearchView,
+				{ drawerAttrsFactory: () => DrawerMenuAttrs; header: AppHeaderAttrs; makeViewModel: () => ContactSearchViewModel }
+			>(
+				{
+					prepareRoute: async () => {
+						const { ContactSearchView } = await import("./search/view/ContactSearchView.js")
+						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
+						const makeViewModel = await mailLocator.contactSearchViewModelFactory()
+						return {
+							component: ContactSearchView,
+							cache: {
+								drawerAttrsFactory,
+								header: await mailLocator.appHeaderAttrs(),
+								makeViewModel: makeViewModel,
+							},
+						}
+					},
+					prepareAttrs: (cache) => {
+						return {
+							makeViewModel: cache.makeViewModel,
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+						}
+					},
+				},
+				mailLocator.logins,
+			),
+			calendarSearch: makeViewResolver<
+				CalendarSearchViewAttrs,
+				CalendarSearchView,
+				{ header: AppHeaderAttrs; drawerAttrsFactory: () => DrawerMenuAttrs; makeViewModel: () => CalendarSearchViewModel }
+			>(
+				{
+					prepareRoute: async () => {
+						const { CalendarSearchView } = await import("../calendar-app/calendar/search/view/CalendarSearchView.js")
+						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
+						const makeViewModel = await mailLocator.calendarSearchViewModelFactory()
+						return {
+							component: CalendarSearchView,
+							cache: {
+								header: await mailLocator.appHeaderAttrs(),
+								drawerAttrsFactory,
+								makeViewModel,
+							},
+						}
+					},
+					prepareAttrs: (cache) => {
+						return {
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+							makeViewModel: cache.makeViewModel,
+							editContact: async (contact: Contact) => (await mailLocator.contactEditor(contact)).show(),
+						}
+					},
+				},
+				mailLocator.logins,
+			),
+			driveSearch: makeViewResolver<
+				DriveSearchViewAttrs,
+				DriveSearchView,
+				{
+					drawerAttrsFactory: () => DrawerMenuAttrs
+					header: AppHeaderAttrs
+					makeViewModel: () => DriveSearchViewModel
+					showMoveItemDialog: (items: FolderItem[], moveItems: MoveItems) => unknown
+					filePicker: DriveFilePicker
+					bottomNav: () => Children
+				}
+			>(
+				{
+					prepareRoute: async () => {
+						const { DriveSearchView } = await import("../drive-app/search/view/DriveSearchView.js")
+						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
+						const makeViewModel = await mailLocator.driveSearchViewModelFactory()
+						const filePicker = await mailLocator.driveFilePicker()
+						return {
+							component: DriveSearchView,
+							cache: {
+								header: await mailLocator.appHeaderAttrs(),
+								drawerAttrsFactory,
+								makeViewModel,
+								showMoveItemDialog: (items, moveItems) => mailLocator.showMoveItemDialog(items, moveItems),
+								bottomNav: () => m(BottomNav),
+								filePicker,
+							},
+						}
+					},
+					prepareAttrs: (cache) => {
+						return {
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+							makeViewModel: cache.makeViewModel,
+							showMoveItemDialog: cache.showMoveItemDialog,
+							bottomNav: cache.bottomNav,
+							filePicker: cache.filePicker,
+						}
+					},
 				},
 				mailLocator.logins,
 			),
@@ -598,13 +717,11 @@ import("../../ui/translations/en.js")
 					header: AppHeaderAttrs
 					calendarViewModel: CalendarViewModel
 					bottomNav: () => Children
-					lazySearchBar: () => Children
 				}
 			>(
 				{
 					prepareRoute: async (cache) => {
 						const { CalendarView } = await import("../calendar-app/calendar/view/CalendarView.js")
-						const { lazySearchBar } = await import("./LazySearchBar.js")
 						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
 						return {
 							component: CalendarView,
@@ -613,19 +730,14 @@ import("../../ui/translations/en.js")
 								header: await mailLocator.appHeaderAttrs(),
 								calendarViewModel: await mailLocator.calendarViewModel(),
 								bottomNav: () => m(BottomNav),
-								lazySearchBar: () =>
-									m(lazySearchBar, {
-										placeholder: lang.get("searchCalendar_placeholder"),
-									}),
 							},
 						}
 					},
-					prepareAttrs: ({ header, calendarViewModel, drawerAttrsFactory, bottomNav, lazySearchBar }) => ({
+					prepareAttrs: ({ header, calendarViewModel, drawerAttrsFactory, bottomNav }) => ({
 						drawerAttrs: drawerAttrsFactory(),
 						header,
 						calendarViewModel,
 						bottomNav,
-						lazySearchBar,
 					}),
 				},
 				mailLocator.logins,
@@ -638,14 +750,12 @@ import("../../ui/translations/en.js")
 					header: AppHeaderAttrs
 					driveViewModel: DriveViewModel
 					bottomNav: () => Children
-					lazySearchBar: () => Children
 					filePicker: DriveFilePicker
 				}
 			>(
 				{
 					prepareRoute: async (cache) => {
 						const { DriveView } = await import("../drive-app/drive/view/DriveView.js")
-						const { lazySearchBar } = await import("./LazySearchBar.js")
 						const drawerAttrsFactory = await mailLocator.drawerAttrsFactory()
 						const filePicker = await mailLocator.driveFilePicker()
 						return {
@@ -655,20 +765,15 @@ import("../../ui/translations/en.js")
 								header: await mailLocator.appHeaderAttrs(),
 								driveViewModel: await mailLocator.driveViewModel(),
 								bottomNav: () => m(BottomNav),
-								lazySearchBar: () =>
-									m(lazySearchBar, {
-										placeholder: lang.get("searchCalendar_placeholder"),
-									}),
 								filePicker,
 							},
 						}
 					},
-					prepareAttrs: ({ header, driveViewModel, drawerAttrsFactory, bottomNav, lazySearchBar, filePicker }) => ({
+					prepareAttrs: ({ header, driveViewModel, drawerAttrsFactory, bottomNav, filePicker }) => ({
 						drawerAttrs: drawerAttrsFactory(),
 						header,
 						driveViewModel,
 						bottomNav,
-						lazySearchBar,
 						showMoveItemDialog: (items, moveItems) => mailLocator.showMoveItemDialog(items, moveItems),
 						filePicker,
 					}),
@@ -709,12 +814,19 @@ import("../../ui/translations/en.js")
 			 * to the login page without having to deal with a ton of conditional logic in the LoginViewModel and to avoid some of the default
 			 * behaviour of resolvers created with createViewResolver(), e.g. caching.
 			 */
-			signup: makeSignupViewResolver(),
+			signup: makeSignupViewResolver(
+				makeViewResolver,
+				mailLocator.credentialFormatMigrator,
+				mailLocator.logins,
+				mailLocator.usageTestModel,
+				mailLocator.usageTestController,
+			),
 			giftcard: {
 				async onmatch() {
 					const { showGiftCardDialog } = await import("../common/misc/LoginUtils.js")
 					showGiftCardDialog(location.hash)
 					m.route.set("/login", {
+						noAutoLogin: true,
 						keepSession: true,
 					})
 					return null
@@ -805,10 +917,10 @@ import("../../ui/translations/en.js")
 
 		// We need to initialize native once we start the mithril routing, specifically for the case of mailto handling in android
 		// If native starts telling the web side to navigate too early, mithril won't be ready and the requests will be lost
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			await mailLocator.native.init()
 		}
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			const { exposeNativeInterface } = await import("../common/api/common/ExposeNativeInterface.js")
 			mailLocator.logins.addPostLoginAction(async () => exposeNativeInterface(mailLocator.native).postLoginActions)
 		}
@@ -877,15 +989,7 @@ function setupExceptionHandling() {
  * @param logins logincontroller to ask about login state
  */
 function makeViewResolver<FullAttrs extends TopLevelAttrs = never, ComponentType extends TopLevelView<FullAttrs> = never, RouteCache = undefined>(
-	{
-		prepareRoute,
-		prepareAttrs,
-		requireLogin,
-	}: {
-		prepareRoute: (cache: RouteCache | null) => Promise<{ component: Class<ComponentType>; cache: RouteCache }>
-		prepareAttrs: (cache: RouteCache) => Omit<FullAttrs, keyof TopLevelAttrs>
-		requireLogin?: boolean
-	},
+	{ prepareRoute, prepareAttrs, requireLogin }: MakeViewResolverOptions<FullAttrs, ComponentType, RouteCache>,
 	logins: LoginController,
 ): RouteResolver {
 	requireLogin = requireLogin ?? true
@@ -998,10 +1102,10 @@ function makeOldViewResolver(
 function assignEnvPlatformId(urlQueryParams: Mithril.Params) {
 	const platformId = urlQueryParams["platformId"]
 
-	if (isApp() || isDesktop()) {
+	if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 		if (
-			(isApp() && (platformId === "android" || platformId === "ios")) ||
-			(isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
+			(EnvProvider.get().isApp() && (platformId === "android" || platformId === "ios")) ||
+			(EnvProvider.get().isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
 		) {
 			env.platformId = platformId
 		} else {
@@ -1052,7 +1156,7 @@ function getStartUrl(urlQueryParams: Mithril.Params): string {
 
 function registerForMailto() {
 	// don't do this if we're in an iframe, in an app or the navigator doesn't allow us to do this.
-	if (window.parent === window && !isDesktop() && typeof navigator.registerProtocolHandler === "function") {
+	if (window.parent === window && !EnvProvider.get().isDesktop() && typeof navigator.registerProtocolHandler === "function") {
 		let origin = location.origin
 		try {
 			// @ts-ignore third argument removed from spec, but use is still recommended

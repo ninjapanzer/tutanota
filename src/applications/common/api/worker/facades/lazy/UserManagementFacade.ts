@@ -1,4 +1,4 @@
-import { assertWorkerOrNode, Const } from "@tutao/app-env"
+import { Const, EnvProvider } from "@tutao/app-env"
 import { freshVersioned, getFirstOrThrow, neverNull } from "@tutao/utils"
 import type { GroupManagementFacade } from "../../../../../../platform-kit/base/facades/lazy/GroupManagementFacade.js"
 import { LoginFacade } from "../../../../../../platform-kit/base/facades/LoginFacade.js"
@@ -18,18 +18,19 @@ import {
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { ExposedOperationProgressTracker, OperationId } from "../../../main/OperationProgressTracker.js"
-import { PQFacade } from "../../../../../../platform-kit/base/crypto/PQFacade.js"
-import { KeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { PQFacade } from "../../../../../../platform-kit/base/base-crypto/PQFacade.js"
+import { KeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { RecoverCodeFacade, RecoverData } from "../../../../../../platform-kit/base/facades/lazy/RecoverCodeFacade.js"
-import { AdminKeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/AdminKeyLoaderFacade"
-import { IdentityKeyCreator } from "../../../../../../platform-kit/base/crypto/IdentityKeyCreator"
+import { AdminKeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/AdminKeyLoaderFacade"
+import { IdentityKeyCreator } from "../../../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
 import { CounterType } from "../../../../../../entities/monitor/Utils"
-import { createResetPasswordPostIn, createUserDataDelete, ResetPasswordService, User, UserService } from "@tutao/entities/sys"
+import { createResetPasswordPostIn, createUserDataDelete, ResetPasswordService_POST, User, UserService_DELETE } from "@tutao/entities/sys"
 import { GroupType } from "../../../../../../entities/sys/Utils"
-import { createUserAccountCreateData, createUserAccountUserData, UserAccountService, UserAccountUserData } from "@tutao/entities/tutanota"
-import { DEFAULT_KDF_TYPE } from "../../../../../../platform-kit/base/crypto/Constants"
+import { createUserAccountCreateData, createUserAccountUserData, UserAccountService_POST, UserAccountUserData } from "@tutao/entities/tutanota"
+import { DEFAULT_KDF_TYPE } from "../../../../../../platform-kit/base/base-crypto/Constants"
+import { elementIdToId } from "@tutao/meta"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class UserManagementFacade {
 	constructor(
@@ -54,14 +55,14 @@ export class UserManagementFacade {
 		const pwEncUserGroupKey = encryptKey(passwordKey, userGroupKey.object)
 		const passwordVerifier = createAuthVerifier(passwordKey)
 		const data = createResetPasswordPostIn({
-			user: user._id,
+			user: elementIdToId(user._id),
 			salt,
 			verifier: passwordVerifier,
 			pwEncUserGroupKey,
 			kdfVersion: kdfType,
 			userGroupKeyVersion: String(userGroupKey.version),
 		})
-		await this.serviceExecutor.post(ResetPasswordService, data)
+		await this.serviceExecutor.execute(ResetPasswordService_POST, data, null)
 	}
 
 	async changeAdminFlag(user: User, admin: boolean): Promise<void> {
@@ -70,7 +71,7 @@ export class UserManagementFacade {
 		if (admin) {
 			await this.groupManagement.addUserToGroup(user, adminGroupId)
 		} else {
-			await this.groupManagement.removeUserFromGroup(user._id, adminGroupId)
+			await this.groupManagement.removeUserFromGroup(elementIdToId(user._id), adminGroupId)
 		}
 	}
 
@@ -81,11 +82,11 @@ export class UserManagementFacade {
 
 	async deleteUser(user: User, restore: boolean): Promise<void> {
 		const data = createUserDataDelete({
-			user: user._id,
+			user: elementIdToId(user._id),
 			restore,
 			date: Const.CURRENT_DATE,
 		})
-		await this.serviceExecutor.delete(UserService, data)
+		await this.serviceExecutor.execute(UserService_DELETE, data, null)
 	}
 
 	async createUser(
@@ -129,7 +130,7 @@ export class UserManagementFacade {
 				this.recoverCodeFacade.generateRecoveryCode(userGroupKey),
 			),
 		})
-		const { userGroup } = await this.serviceExecutor.post(UserAccountService, data)
+		const { userGroup } = await this.serviceExecutor.execute(UserAccountService_POST, data, null)
 
 		await this.identityKeyCreator.createIdentityKeyPair(
 			userGroup,

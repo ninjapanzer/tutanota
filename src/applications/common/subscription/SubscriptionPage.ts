@@ -10,7 +10,7 @@ import { Dialog, DialogType } from "../../../ui/base/Dialog"
 import type { WizardPageAttrs, WizardPageN } from "../../../ui/base/WizardDialog.js"
 import { emitWizardEvent, WizardEventType } from "../../../ui/base/WizardDialog.js"
 import { DefaultAnimationTime } from "../../../ui/animation/Animations"
-import { Keys } from "@tutao/app-env"
+
 import { Checkbox } from "../../../ui/base/Checkbox.js"
 import { UpgradePriceType } from "./FeatureListProvider"
 import { PaymentInterval } from "./utils/PriceUtils.js"
@@ -18,16 +18,17 @@ import { lazy } from "@tutao/utils"
 import { PrimaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
 import { stringToSubscriptionType } from "../misc/LoginUtils.js"
 import { PlanSelector } from "./PlanSelector.js"
-import { styles } from "../../../ui/styles.js"
+import { Styles } from "../../../ui/styles.js"
 import { Icon, IconSize } from "../../../ui/base/Icon.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { theme } from "../../../ui/theme.js"
 import { SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
-import { anyHasGlobalFirstYearCampaign, getDiscountDetails, isPersonalPlanAvailable } from "./utils/PlanSelectorUtils"
+import { getDiscountDetails, isPersonalPlanAvailable } from "./utils/PlanSelectorUtils"
 import { TranslationKeyType } from "../../../ui/utils/TranslationKey"
 import { PlanSelectorHeadline } from "./components/PlanSelectorHeadline"
 import { px } from "../../../ui/size"
 import { AvailablePlanType, PlanType, SubscriptionType } from "../../../entities/sys/Utils"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 /** Subscription type passed from the website */
 export const PlanTypeParameter = Object.freeze({
@@ -38,6 +39,30 @@ export const PlanTypeParameter = Object.freeze({
 	ADVANCED: "advanced",
 	UNLIMITED: "unlimited",
 })
+
+export function getPreselectedPlanType(subscriptionParams: SubscriptionParameters | null): PlanType {
+	if (subscriptionParams == null) {
+		return PlanType.Legend
+	}
+
+	switch (subscriptionParams.subscription) {
+		case PlanTypeParameter.FREE:
+			return PlanType.Free
+		case PlanTypeParameter.REVOLUTIONARY:
+			return PlanType.Revolutionary
+		case PlanTypeParameter.LEGEND:
+			return PlanType.Legend
+		case PlanTypeParameter.ESSENTIAL:
+			return PlanType.Essential
+		case PlanTypeParameter.ADVANCED:
+			return PlanType.Advanced
+		case PlanTypeParameter.UNLIMITED:
+			return PlanType.Unlimited
+		default:
+			console.log("Unknown subscription passed: ", subscriptionParams)
+			return PlanType.Legend
+	}
+}
 
 export class SubscriptionPage implements WizardPageN<UpgradeSubscriptionData> {
 	private _dom: HTMLElement | null = null
@@ -54,7 +79,7 @@ export class SubscriptionPage implements WizardPageN<UpgradeSubscriptionData> {
 	}
 
 	view({ attrs: { data } }: Vnode<WizardPageAttrs<UpgradeSubscriptionData>>): Children {
-		const { planPrices, acceptedPlans, newAccountData, targetPlanType, accountingInfo } = data
+		const { planPrices, acceptedPlans, accountingInfo } = data
 		let availablePlans = acceptedPlans
 		const isApplePrice = shouldShowApplePrices(accountingInfo)
 		const discountDetails = getDiscountDetails(isApplePrice, planPrices)
@@ -86,13 +111,6 @@ export class SubscriptionPage implements WizardPageN<UpgradeSubscriptionData> {
 
 		// Under *ALL* circumstances, there *MUST* be this empty wrapper element around it.
 		return m("div", [
-			// Headline for a global campaign
-			!data.options.businessUse() &&
-				anyHasGlobalFirstYearCampaign(discountDetails) &&
-				m(PlanSelectorHeadline, {
-					translation: lang.getTranslation("pricing.cyber_monday_msg"),
-					icon: Icons.HeartFilled,
-				}),
 			// Headline for general messages
 			data.msg && m(PlanSelectorHeadline, { translation: data.msg }),
 			// Headline for promotional messages
@@ -118,6 +136,7 @@ export class SubscriptionPage implements WizardPageN<UpgradeSubscriptionData> {
 					showMultiUser: false,
 					discountDetails,
 					targetPlan: data.targetPlanType,
+					personalPlansAvailable: true,
 				}),
 			),
 		])
@@ -314,7 +333,7 @@ export function getPrivateBusinessSwitchButton(businessUse: Stream<boolean>, ava
 		label: isBusiness ? "privateUse_action" : "forBusiness_action",
 		type: ButtonType.Primary,
 		class: ["block"], // Use block class to override the `flex` class, thus allowing the button text to be wrapped using ellipses.
-		icon: styles.isMobileLayout()
+		icon: Styles.get().isMobileLayout()
 			? null
 			: m(Icon, {
 					icon: isBusiness ? Icons.PersonFilled : Icons.SkyscraperOutline,

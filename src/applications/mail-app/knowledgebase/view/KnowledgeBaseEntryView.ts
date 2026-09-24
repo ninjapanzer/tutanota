@@ -4,9 +4,10 @@ import { getHtmlSanitizer, HtmlSanitizer } from "../../../common/misc/HtmlSaniti
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import { getConfirmation } from "../../../../ui/base/GuiUtils.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { KnowledgeBaseEntry, TemplateGroupRootTypeRef } from "@tutao/entities/tutanota"
+import { idToElementId } from "@tutao/meta"
 
 type KnowledgeBaseEntryViewAttrs = {
 	entry: KnowledgeBaseEntry
@@ -67,21 +68,21 @@ export class KnowledgeBaseEntryView implements Component<KnowledgeBaseEntryViewA
 
 	private renderRemoveButton(entry: KnowledgeBaseEntry) {
 		return m(IconButton, {
-			title: "remove_action",
+			label: "remove_action",
 			icon: Icons.TrashFilled,
 			click: () => {
-				getConfirmation("deleteEntryConfirm_msg").confirmed(() => locator.entityClient.erase(entry).catch(ofClass(restError.NotFoundError, noOp)))
+				getConfirmation("deleteEntryConfirm_msg").confirmed(() => locator.entityClient.erase(entry).catch(ofClass(NotFoundError, noOp)))
 			},
 		})
 	}
 
 	private renderEditButton(entry: KnowledgeBaseEntry) {
 		return m(IconButton, {
-			title: "edit_action",
+			label: "edit_action",
 			icon: Icons.PenFilled,
 			click: () => {
 				import("../../settings/KnowledgeBaseEditor.js").then(({ showKnowledgeBaseEditor }) => {
-					locator.entityClient.load(TemplateGroupRootTypeRef, neverNull(entry._ownerGroup)).then((groupRoot) => {
+					locator.entityClient.load(TemplateGroupRootTypeRef, idToElementId(neverNull(entry._ownerGroup))).then((groupRoot) => {
 						showKnowledgeBaseEditor(entry, groupRoot)
 					})
 				})

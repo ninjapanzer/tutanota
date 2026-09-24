@@ -43,7 +43,6 @@ export {
 	partitionAsync,
 	arrayOf,
 	count,
-	zeroOut,
 	compare,
 	collectToMap,
 	splitArrayAt,
@@ -120,27 +119,11 @@ export { LazyLoaded } from "./LazyLoaded.js"
 export { mergeMaps, getFromMap, addMapEntry, deleteMapEntry, mapMap, takeFromMap } from "./MapUtils.js"
 export { pMap } from "./PromiseMap.js"
 export type { Mapper } from "./PromiseMap.js"
-export { mapInCallContext, promiseMap, promiseMapCompat, PromisableWrapper, delay, tap, ofClass, promiseFilter, settledThen } from "./PromiseUtils.js"
-export type { PromiseMapFn, $Promisable } from "./PromiseUtils.js"
+export { promiseMap, delay, tap, ofClass, promiseFilter, settledThen } from "./PromiseUtils.js"
 export { SortedArray } from "./SortedArray.js"
 export type { CompareFn } from "./SortedArray.js"
+export { pad, startsWith, capitalizeFirstLetter, endsWith, repeat, cleanMatch, NBSP, splitAt, toLowerCase, localeCompare, byteLength } from "./StringUtils.js"
 export {
-	pad,
-	startsWith,
-	capitalizeFirstLetter,
-	endsWith,
-	lazyStringValue,
-	repeat,
-	cleanMatch,
-	NBSP,
-	splitAt,
-	toLowerCase,
-	localeCompare,
-	byteLength,
-} from "./StringUtils.js"
-export {
-	defer,
-	deferWithHandler,
 	asyncFind,
 	asyncFindAndMap,
 	executeInGroups,
@@ -153,67 +136,27 @@ export {
 	makeSingleUse,
 	identity,
 	noOp,
-	throttle,
-	debounce,
-	debounceStart,
-	throttleStart,
 	randomIntFromInterval,
-	errorToString,
-	objectEntries,
-	deepEqual,
-	getChangedProps,
 	freezeMap,
 	addressDomain,
 	typedKeys,
 	typedEntries,
 	typedValues,
-	resolveMaybeLazy,
-	getAsLazy,
-	mapLazily,
 	filterInt,
 	insideRect,
 	mapNullable,
 	mapObject,
-	type Require,
 	BoundedExecutor,
 	freshVersioned,
 	isKeyVersion,
-	newPromise,
 	isSessionStorageAvailable,
 	assertValidURL,
 	createResizeObserver,
-	singleAsync,
-	onceAsync,
 	isAsciiChar,
 } from "./Utils.js"
-export type {
-	Callback,
-	DeferredObject,
-	lazy,
-	lazyAsync,
-	Thunk,
-	DeferredObjectWithHandler,
-	MaybeLazy,
-	TimeoutSetter,
-	ErrorInfo,
-	Versioned,
-	KeyVersion,
-	Nullable,
-} from "./Utils"
+export type { Callback, lazy, lazyAsync, Thunk, Versioned, Nullable } from "./Utils"
 
-export {
-	callWebAssemblyFunctionWithArguments,
-	allocateBuffer,
-	type Ptr,
-	type ConstPtr,
-	type FreeFN,
-	MutableUint8Array,
-	SecureFreeUint8Array,
-	mutableSecureFree,
-	secureFree,
-	mutable,
-	type WASMExports,
-} from "./WebAssembly.js"
+export { callWebAssemblyFunctionWithArguments, allocateBuffer, type Ptr, type ConstPtr, type FreeFN, type WASMExports } from "./WebAssembly.js"
 
 export { mod, clamp } from "./MathUtils.js"
 
@@ -227,3 +170,9 @@ export * from "./ErrorUtils.js"
 export * from "./SyncMetrics.js"
 export * from "./DateProvider.js"
 export * from "./FormatUtils.js"
+export { type DeepEquals } from "./Utils"
+
+export { secureFree } from "./WebAssemblyArgument"
+export { mutableSecureFree } from "./WebAssemblyArgument"
+export { mutable } from "./WebAssemblyArgument"
+export * from "./TsUtils"

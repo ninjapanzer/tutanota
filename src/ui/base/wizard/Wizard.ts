@@ -6,7 +6,7 @@ import { component_size, layout_size, px, size } from "../../size"
 import { TertiaryButton } from "../buttons/VariantButtons.js"
 import { lang } from "../../utils/LanguageViewModel"
 import { Icons } from "../icons/Icons"
-import { styles } from "../../styles"
+import { Styles } from "../../styles"
 import { IconButton } from "../IconButton"
 
 export interface WizardLayoutAttrs<TViewModel> {
@@ -35,6 +35,7 @@ export interface WizardAttrs<TViewModel> {
  */
 export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>> {
 	let internalController: WizardController | undefined
+	let isFirstView = true
 
 	let transitionSeq = 0
 	let transitionFrom = 0
@@ -48,8 +49,9 @@ export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>>
 
 	return {
 		oninit({ attrs }: Vnode<WizardAttrs<TViewModel>>) {
+			isFirstView = true
 			if (!attrs.controller) {
-				internalController = new WizardController(attrs.steps.map((s) => s.title ?? ""))
+				internalController = new WizardController(attrs.steps.map((step) => step.title ?? ""))
 			} else if (attrs.controller.stepCount === 0) {
 				attrs.controller.initSteps(attrs.steps.map((step) => step.title ?? ""))
 			}
@@ -57,8 +59,8 @@ export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>>
 		view({ attrs }: Vnode<WizardAttrs<TViewModel>>) {
 			const { steps, viewModel, onComplete } = attrs
 			const controller = attrs.controller || internalController!
-			const currentIndex = controller.currentStep
-			const currentStep = steps[currentIndex]
+			let currentIndex = controller.currentStep
+			let currentStep = steps[currentIndex]
 
 			const findNextEnabledIndex = (startIndex: number, direction: "next" | "prev"): number | null => {
 				let i = startIndex
@@ -122,6 +124,20 @@ export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>>
 				lockAllPreviousSteps: () => controller.lockAllPreviousSteps(currentIndex),
 			}
 
+			if (isFirstView) {
+				isFirstView = false
+				const initialStepIndex = findNextEnabledIndex(-1, "next") ?? currentIndex
+				if (currentIndex === 0 && initialStepIndex !== currentIndex) {
+					controller.initSteps(
+						steps.map((step) => step.title ?? ""),
+						initialStepIndex,
+					)
+					currentIndex = controller.currentStep
+					currentStep = steps[currentIndex]
+					ctx.index = currentIndex
+				}
+			}
+
 			const rawProgress = controller.progressItems
 
 			const isStepEnabled = (index: number): boolean => {
@@ -146,10 +162,10 @@ export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>>
 
 			const backButton =
 				isBackButtonEnabled(controller.currentStep) &&
-				(styles.isSingleColumnLayout()
+				(Styles.get().isSingleColumnLayout()
 					? m(IconButton, {
 							icon: Icons.ChevronLeft,
-							title: lang.getTranslation("back_action"),
+							label: lang.getTranslation("back_action"),
 							click: ctx.goPrev,
 						})
 					: m(TertiaryButton, {
@@ -177,25 +193,25 @@ export function createWizard<TViewModel>(): m.Component<WizardAttrs<TViewModel>>
 			}
 
 			return m(
-				`.full-width.${styles.isMobileLayout() ? "" : "height-100p"}`,
+				`.full-width.${Styles.get().isMobileLayout() ? "" : "height-100p"}`,
 				{
 					style: {
-						margin: styles.isMobileLayout() ? `${px(size.spacing_24)} 0` : "auto",
+						margin: Styles.get().isMobileLayout() ? `${px(size.spacing_24)} 0` : "auto",
 						"max-height": px(layout_size.wizard_max_height),
 						"max-width": px(layout_size.wizard_max_width),
 					},
 				},
 				m(
-					`.flex.height-100p.full-width.${styles.isMobileLayout() ? ".col.gap-8" : ".gap-32"}`,
+					`.flex.height-100p.full-width.${Styles.get().isMobileLayout() ? ".col.gap-8" : ".gap-32"}`,
 					{
 						style: {
 							"padding-inline": "5vw",
-							"padding-block": styles.isMobileLayout() ? undefined : "7vh",
+							"padding-block": Styles.get().isMobileLayout() ? undefined : "7vh",
 						},
 					},
 					[
 						m(".flex.flex-column.flex-space-between", [
-							!styles.isMobileLayout() &&
+							!Styles.get().isMobileLayout() &&
 								showProgress(controller.currentStep) &&
 								m(WizardProgress, {
 									progressState,

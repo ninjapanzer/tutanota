@@ -1,19 +1,22 @@
 import m, { Children, Component, RouteLinkAttrs, Vnode } from "mithril"
 import { component_size, px } from "../size"
 import type { lazy } from "../../platform-kit/utils"
-import { lazyStringValue, neverNull } from "../../platform-kit/utils"
+import { neverNull } from "../../platform-kit/utils"
+import { lazyStringValue } from "./MaybeLazy"
 import type { lazyIcon } from "./Icon"
 import { Icon } from "./Icon"
 import { theme } from "../theme"
-import { styles } from "../styles"
+import { Styles } from "../styles"
 import type { MaybeTranslation } from "../utils/LanguageViewModel"
 import { lang } from "../utils/LanguageViewModel"
-import { assertMainOrNode, isDesktop, Keys } from "../../platform-kit/app-env"
+import { EnvProvider } from "../../platform-kit/app-env"
 import { isKeyPressed } from "../utils/KeyManager"
-import { DragStartHandler, DropData, DropHandler, DropType } from "./GuiUtils"
+import { DragEnterHandler, DragStartHandler, DropData, DropHandler, DropType } from "./GuiUtils"
 import { fileListToArray } from "../utils/FileUtils.js"
+import { Keys } from "../utils/KeyboardKeys"
+import { throttleRoute } from "../utils/RouteChange"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type NavButtonAttrs = {
 	label: MaybeTranslation
 	icon?: lazyIcon
@@ -22,6 +25,7 @@ export type NavButtonAttrs = {
 	click?: (event: Event, dom: HTMLElement) => unknown
 	colors?: NavButtonColor
 	dragStartHandler?: DragStartHandler
+	dragEnterHandler?: DragEnterHandler
 	dropHandler?: DropHandler
 	hideLabel?: boolean
 	vertical?: boolean
@@ -40,9 +44,9 @@ export type NavButtonAttrs = {
 }
 
 export class NavButton implements Component<NavButtonAttrs> {
-	private _domButton!: HTMLElement
 	private _draggedOver: boolean
 	private _dropCounter: number // we also get drag enter/leave events from subelements, so we need to count to know when the drag leaves this button
+	private readonly routeTo = throttleRoute()
 
 	constructor() {
 		this._draggedOver = false
@@ -94,7 +98,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 	_getIconClass(a: NavButtonAttrs): string {
 		const isSelected = isNavButtonSelected(a)
 
-		if (a.colors === NavButtonColor.Header && !styles.isDesktopLayout()) {
+		if (a.colors === NavButtonColor.Header && !Styles.get().isDesktopLayout()) {
 			return "flex-end items-center icon-32" + (isSelected ? " selected" : "")
 		} else if (a.small === true) {
 			return "flex-center items-center icon" + (isSelected ? " selected" : "")
@@ -144,6 +148,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 				this._dropCounter++
 				this._draggedOver = true
 				ev.preventDefault()
+				a.dragEnterHandler?.(ev)
 			}
 
 			attr.ondragleave = (ev: DragEvent) => {
@@ -184,7 +189,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 						data: ev.dataTransfer.getData(DropType.DriveItems),
 					}
 					neverNull(a.dropHandler)(dropData)
-				} else if (isDesktop() && ev.dataTransfer?.files && ev.dataTransfer.files.length > 0) {
+				} else if (EnvProvider.get().isDesktop() && ev.dataTransfer?.files && ev.dataTransfer.files.length > 0) {
 					neverNull(a.dropHandler)({
 						dropType: DropType.ExternalFile,
 						files: fileListToArray(ev.dataTransfer.files),
@@ -200,7 +205,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 
 	click(event: Event, a: NavButtonAttrs, dom: HTMLElement) {
 		if (!this._isExternalUrl(a.href)) {
-			m.route.set(this._getUrl(a.href))
+			this.routeTo(this._getUrl(a.href))
 
 			if (a.click != null) {
 				a.click(event, dom)

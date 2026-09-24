@@ -3,14 +3,15 @@ import type { TranslationKey } from "../../../ui/utils/LanguageViewModel"
 import { lang } from "../../../ui/utils/LanguageViewModel"
 import { HtmlEditor, HtmlEditorMode } from "../../../ui/editor/HtmlEditor"
 import { LegacyTextField } from "../../../ui/base/LegacyTextField.js"
-import type { Country, InvoiceData } from "@tutao/app-env"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
 import { locator } from "../api/main/CommonLocator"
 import { renderCountryDropdown } from "../gui/CountryDropdown"
-import { LocationService, LocationServiceGetReturn } from "@tutao/entities/sys"
-import { Countries, CountryType } from "../gui/CountryList"
+import { LocationService_GET, LocationServiceGetReturn } from "@tutao/entities/sys"
+import { Countries, Country, CountryType } from "../gui/CountryList"
 import { getHtmlSanitizer } from "../misc/HtmlSanitizer"
+import { NULL_ENTITY } from "@tutao/meta"
+import { InvoiceData } from "./utils/PaymentUtils"
 
 export enum InvoiceDataInputLocation {
 	InWizard = 0,
@@ -66,7 +67,7 @@ export class InvoiceDataInput implements Component {
 	}
 
 	oncreate() {
-		locator.serviceExecutor.get(LocationService, null).then((location: LocationServiceGetReturn) => {
+		locator.serviceExecutor.execute(LocationService_GET, NULL_ENTITY, null).then((location: LocationServiceGetReturn) => {
 			if (!this.selectedCountry()) {
 				const country = Countries.find((c) => c.a === location.country)
 

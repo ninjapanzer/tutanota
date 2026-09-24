@@ -1,19 +1,21 @@
-import { Aes256Key, AesKey, cryptoUtils, CryptoWrapper, decryptKey, VersionedKey } from "@tutao/crypto"
-import { assertNotNull, KeyVersion } from "@tutao/utils"
+import { Aes256Key, AesKey, cryptoUtils, CryptoWrapper, decryptKey, HkdfKeyDerivationDomains, SymmetricEncryptionScheme, VersionedKey } from "@tutao/crypto"
+import { assertNotNull, isNotNull, KeyVersion } from "@tutao/utils"
 import { ProgrammingError } from "@tutao/app-env"
-import { isSameId } from "../../meta"
 import { CryptoError } from "@tutao/crypto/error"
-import { KeyCache } from "../../../app-kit/local-store/KeyCache"
 import { LoggedInUserProvider } from "@tutao/instance-pipeline"
 import { createWebsocketLeaderStatus, GroupMembership, User, UserGroupKeyDistribution, WebsocketLeaderStatus } from "@tutao/entities/sys"
 import { GroupType } from "../../../entities/sys/Utils"
 import { LoginIncompleteError } from "@tutao/rest-client/error"
+import { KeyCache } from "../base-crypto/persistence/KeyCache"
+import { isSameSingleId } from "@tutao/meta"
+import { isNull } from "../../utils/Utils"
 
 /** Holder for the user and session-related data on the worker side. */
 export class UserFacade extends LoggedInUserProvider {
 	private user: User | null = null
 	private accessToken: string | null = null
 	private leaderStatus!: WebsocketLeaderStatus
+	private defaultSymmetricEncryptionScheme: SymmetricEncryptionScheme = SymmetricEncryptionScheme.AesCbc
 
 	constructor(
 		private readonly keyCache: KeyCache,
@@ -23,14 +25,22 @@ export class UserFacade extends LoggedInUserProvider {
 		this.reset()
 	}
 
-	// Login process is somehow multi-step, and we don't use a separate network stack for it. So we have to break up setters.
+	getDefaultSymmetricEncryptionScheme(): SymmetricEncryptionScheme {
+		return this.defaultSymmetricEncryptionScheme
+	}
+
+	useAeadEncryption(): void {
+		this.defaultSymmetricEncryptionScheme = SymmetricEncryptionScheme.Aead
+	}
+
+	// Login process is somehow multistep, and we don't use a separate network stack for it. So we have to break up setters.
 	// 1. We need to download user. For that we need to set access token already (to authenticate the request for the server as it is passed in headers).
 	// 2. We need to get group keys. For that we need to unlock userGroupKey with userPassphraseKey
 	// so this leads to this steps in UserFacade:
 	// 1. Access token is set
 	// 2. User is set
 	// 3. UserGroupKey is unlocked
-	setAccessToken(accessToken: string | null) {
+	setAccessToken(accessToken: string | null): void {
 		this.accessToken = accessToken
 	}
 
@@ -38,14 +48,14 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.accessToken
 	}
 
-	setUser(user: User) {
+	setUser(user: User): void {
 		if (this.accessToken == null) {
 			throw new ProgrammingError("invalid state: no access token")
 		}
 		this.user = user
 	}
 
-	unlockUserGroupKey(userPassphraseKey: AesKey) {
+	unlockUserGroupKey(userPassphraseKey: AesKey): void {
 		if (this.user == null) {
 			throw new ProgrammingError("Invalid state: no user")
 		}
@@ -58,7 +68,7 @@ export class UserFacade extends LoggedInUserProvider {
 		this.setUserDistKey(currentUserGroupKey.version, userPassphraseKey)
 	}
 
-	setUserDistKey(currentUserGroupKeyVersion: KeyVersion, userPassphraseKey: AesKey) {
+	setUserDistKey(currentUserGroupKeyVersion: KeyVersion, userPassphraseKey: AesKey): void {
 		if (this.user == null) {
 			throw new ProgrammingError("Invalid state: no user")
 		}
@@ -72,13 +82,13 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	/**
-	 * Derives a distribution key from the password key to share the new user group key of the user to their other clients (apps, web etc)
+	 * Derives a distribution key from the password key to share the new user group key of the user to their other clients (apps, web etc.)
 	 * This is a fallback function that gets called when the output key of `deriveUserDistKey` fails to decrypt the new user group key
 	 * @deprecated
-	 * @param userGroupId user group id of the logged in user
+	 * @param userGroupId user group id of the logged-in user
 	 * @param userPasswordKey current password key of the user
 	 */
-	deriveLegacyUserDistKey(userGroupId: Id, userPasswordKey: AesKey): AesKey {
+	deriveLegacyUserDistKey(userGroupId: Id, userPasswordKey: AesKey): Aes256Key {
 		// we prepare a key to encrypt potential user group key rotations with
 		// when passwords are changed clients are logged-out of other sessions
 		// this key is only needed by the logged-in clients, so it should be reliable enough to assume that userPassphraseKey is in sync
@@ -89,13 +99,13 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.cryptoWrapper.deriveKeyWithHkdf({
 			salt: userGroupId,
 			key: userPasswordKey,
-			context: "userGroupKeyDistributionKey",
+			context: HkdfKeyDerivationDomains.UserGroupKeyDistributionKey,
 		})
 	}
 
 	/**
-	 * Derives a distribution to share the new user group key of the user to their other clients (apps, web etc)
-	 * @param userGroupId user group id of the logged in user
+	 * Derives a distribution to share the new user group key of the user to their other clients (apps, web etc.)
+	 * @param userGroupId user group id of the logged-in user
 	 * @param newUserGroupKeyVersion the new user group key version
 	 * @param userPasswordKey current password key of the user
 	 */
@@ -104,11 +114,11 @@ export class UserFacade extends LoggedInUserProvider {
 			salt: `userGroup: ${userGroupId}, newUserGroupKeyVersion: ${newUserGroupKeyVersion}`,
 			key: userPasswordKey,
 			// Formerly,this was not bound to the user group key version.
-			context: "versionedUserGroupKeyDistributionKey",
+			context: HkdfKeyDerivationDomains.VersionedUserGroupKeyDistributionKey,
 		})
 	}
 
-	async updateUser(user: User) {
+	async updateUser(user: User): Promise<void> {
 		if (this.user == null) {
 			throw new ProgrammingError("Update user is called without logging in. This function is not for you.")
 		}
@@ -124,7 +134,7 @@ export class UserFacade extends LoggedInUserProvider {
 	 * @return The map which contains authentication data for the logged-in user.
 	 */
 	createAuthHeaders(): Dict {
-		return this.accessToken
+		return isNotNull(this.accessToken)
 			? {
 					accessToken: this.accessToken,
 				}
@@ -146,9 +156,8 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	getMembership(groupId: Id): GroupMembership {
-		let membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => isSameId(g.group, groupId))
-
-		if (!membership) {
+		const membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => isSameSingleId(g.group, groupId)) ?? null
+		if (isNull(membership)) {
 			throw new Error(`No membership with groupId ${groupId} found!`)
 		}
 
@@ -156,20 +165,19 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	hasGroup(groupId: Id): boolean {
-		if (!this.user) {
-			return false
-		} else {
-			return groupId === this.user.userGroup.group || this.user.memberships.some((m) => m.group === groupId)
+		if (isNotNull(this.user)) {
+			return isSameSingleId(groupId, this.user.userGroup.group) || this.user.memberships.some((m) => isSameSingleId(m.group, groupId))
 		}
+		return false
 	}
 
 	getGroupId(groupType: GroupType): Id {
 		if (groupType === GroupType.User) {
 			return this.getUserGroupId()
 		} else {
-			let membership = this.getLoggedInUser().memberships.find((m) => m.groupType === groupType)
+			let membership = this.getLoggedInUser().memberships.find((m) => m.groupType === groupType) ?? null
 
-			if (!membership) {
+			if (isNull(membership)) {
 				throw new Error("could not find groupType " + groupType + " for user " + this.getLoggedInUser()._id)
 			}
 
@@ -193,10 +201,10 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	getLoggedInUser(): User {
-		return assertNotNull(this.user)
+		return assertNotNull(this.user, "getLoggedInUser called for user not logged in")
 	}
 
-	setLeaderStatus(status: WebsocketLeaderStatus) {
+	setLeaderStatus(status: WebsocketLeaderStatus): void {
 		this.leaderStatus = status
 		console.log("New leader status set:", status.leaderStatus)
 	}
@@ -205,7 +213,7 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.leaderStatus.leaderStatus
 	}
 
-	reset() {
+	reset(): void {
 		this.user = null
 		this.accessToken = null
 		this.keyCache.reset()
@@ -217,7 +225,7 @@ export class UserFacade extends LoggedInUserProvider {
 		})
 	}
 
-	updateUserGroupKey(userGroupKeyDistribution: UserGroupKeyDistribution) {
+	updateUserGroupKey(userGroupKeyDistribution: UserGroupKeyDistribution): void {
 		const userDistKey = this.keyCache.getUserDistKey()
 		if (userDistKey == null) {
 			console.log("could not update userGroupKey because distribution key is not available")
@@ -259,7 +267,7 @@ export class UserFacade extends LoggedInUserProvider {
 	 * NOTE: should only be used with a freshly generated key. For keys received from the server, use `updateUserGroupKey`
 	 * @param userGroupKey
 	 */
-	public setNewUserGroupKey(userGroupKey: VersionedKey) {
+	public setNewUserGroupKey(userGroupKey: VersionedKey): void {
 		console.log(`updating userGroupKey. new version: ${userGroupKey.version}`)
 		this.keyCache.setCurrentUserGroupKey(userGroupKey)
 	}

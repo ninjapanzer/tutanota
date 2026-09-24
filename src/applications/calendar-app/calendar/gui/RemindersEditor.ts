@@ -51,7 +51,7 @@ export class RemindersEditor implements Component<RemindersEditorAttrs> {
 			isReadOnly: true,
 			injectionsRight: () =>
 				m(IconButton, {
-					title: "delete_action",
+					label: "delete_action",
 					icon: Icons.X,
 					click: () => removeAlarm(a),
 				}),
@@ -66,10 +66,10 @@ export class RemindersEditor implements Component<RemindersEditorAttrs> {
 					IconButton,
 					attachDropdown({
 						mainButtonAttrs: {
-							title: "add_action",
+							label: "add_action",
 							icon: Icons.Plus,
 						},
-						childAttrs: () => [
+						childAttrs: async () => [
 							...createAlarmIntervalItems(lang.languageTag).map((i) => ({
 								label: lang.makeTranslation(i.name, i.name),
 								click: () => addNewAlarm(i.value),

@@ -1,51 +1,36 @@
-import m, { Component } from "mithril"
+import m from "mithril"
 import { LoginController } from "../api/main/LoginController"
-import { assertNotNull, isEmpty, LazyLoaded, neverNull, newPromise, noOp, ofClass } from "@tutao/utils"
+import { assertNotNull, DateProvider, isEmpty, LazyLoaded, neverNull, newPromise, noOp, ofClass } from "@tutao/utils"
 import { windowFacade } from "../misc/WindowFacade.js"
 import { checkApprovalStatus } from "../misc/LoginUtils.js"
 import { locator } from "../api/main/CommonLocator"
-import { GENERATED_MIN_ID } from "@tutao/meta"
-import { lang } from "../../../ui/utils/LanguageViewModel.js"
-import { isNotificationCurrentlyActive, loadOutOfOfficeNotification } from "../misc/OutOfOfficeNotificationUtils.js"
-import * as notificationOverlay from "../../../ui/base/NotificationOverlay"
-import { ButtonType } from "../../../ui/base/Button.js"
-import { Dialog } from "../../../ui/base/Dialog"
-import {
-	Const,
-	CredentialEncryptionMode,
-	FeatureType,
-	isAdminClient,
-	isApp,
-	isDesktop,
-	LOGIN_TITLE,
-	SecondFactorType,
-	SessionType,
-	UpgradePromptType,
-} from "@tutao/app-env"
+import { Const, CredentialEncryptionMode, EnvProvider, FeatureType, LOGIN_TITLE, SecondFactorType, SessionType, UpgradePromptType } from "@tutao/app-env"
 import { showMoreStorageNeededOrderDialog } from "../misc/SubscriptionDialogs.js"
 import { notifications } from "../../../ui/Notifications"
-import * as restError from "@tutao/rest-client/error"
+import { LockedError, NotAuthorizedError } from "@tutao/rest-client/error"
 import { CredentialsProvider, usingKeychainAuthenticationWithOptions } from "../misc/credentials/CredentialsProvider.js"
 import { getThemeCustomizations } from "../../../ui/utils/WhitelabelUtils.js"
 import { SecondFactorHandler } from "../misc/2fa/SecondFactorHandler.js"
 import { StorageBehavior } from "../misc/UsageTestModel.js"
 import type { WebsocketConnectivityModel } from "../misc/WebsocketConnectivityModel.js"
-import { DateProvider } from "../../../platform-kit/utils/DateProvider.js"
 import { EntityClient } from "../../../platform-kit/network/EntityClient.js"
 import { shouldShowStorageWarning, shouldShowUpgradeReminder } from "./PostLoginUtils.js"
 import { UserManagementFacade } from "../api/worker/facades/lazy/UserManagementFacade.js"
 import { CustomerFacade } from "../api/worker/facades/lazy/CustomerFacade.js"
 import { deviceConfig } from "../misc/DeviceConfig.js"
 import { ThemeController } from "../../../ui/ThemeController.js"
-import { showSnackBar } from "../../../ui/base/SnackBar"
-import { SyncDonePriority, SyncTracker } from "../api/main/SyncTracker"
+import { SyncTracker } from "../api/main/SyncTracker"
 import { showRequestPasswordDialog } from "../misc/passwords/PasswordRequestDialog"
 import { LoginFacade } from "../../../platform-kit/base/facades/LoginFacade"
 import { LoggedInEvent, PostLoginAction } from "../../../app-kit/native-bridge/common/PostLoginAction.js"
-import { createReceiveInfoServiceData, OutOfOfficeNotification, ReceiveInfoService } from "@tutao/entities/tutanota"
+import { createReceiveInfoServiceData, OutOfOfficeNotification, ReceiveInfoService_POST } from "@tutao/entities/tutanota"
 import { getHourCycle } from "../../../entities/tutanota/Utils"
 import { createCustomerProperties, SecondFactorTypeRef } from "@tutao/entities/sys"
 import { CloseEventBusOption } from "../../../platform-kit/network/Constants"
+import { lang } from "../../../ui/utils/LanguageViewModel"
+import { Dialog } from "../../../ui/base/Dialog"
+import { ButtonType } from "../../../ui/base/Button"
+import { GENERATED_MIN_ID } from "@tutao/meta"
 
 /**
  * This is a collection of all things that need to be initialized/global state to be set after a user has logged in successfully.
@@ -85,13 +70,13 @@ export class PostLoginActions implements PostLoginAction {
 			this.connectivityModel.close(CloseEventBusOption.Pause)
 		})
 
-		// only show "Tuta Mail" after login if there is no custom title set
+		// only show "Tuta" after login if there is no custom title set
 		if (!this.logins.getUserController().isInternalUser()) {
 			if (document.title === LOGIN_TITLE) {
-				document.title = "Tuta Mail"
+				document.title = "Tuta"
 			}
 		} else {
-			let postLoginTitle = document.title === LOGIN_TITLE ? "Tuta Mail" : document.title
+			let postLoginTitle = document.title === LOGIN_TITLE ? "Tuta" : document.title
 			document.title = neverNull(this.logins.getUserController().userGroupInfo.mailAddress) + " - " + postLoginTitle
 		}
 		notifications.requestPermission()
@@ -112,7 +97,7 @@ export class PostLoginActions implements PostLoginAction {
 		})
 
 		// We already have user data to load themes
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			await this.storeNewCustomThemes()
 		}
 	}
@@ -140,25 +125,16 @@ export class PostLoginActions implements PostLoginAction {
 
 		this.secondFactorHandler.setupAcceptOtherClientLoginListener()
 
-		if (!isAdminClient()) {
+		if (!EnvProvider.get().isAdminClient()) {
 			// If it failed during the partial login due to missing cache entries we will give it another spin here. If it didn't fail then it's just a noop
 			await locator.mailboxModel.init()
-			const calendarModel = await locator.calendarModel()
-			await calendarModel.init()
-			const calendarEventUpdateCoordinator = await locator.calendarEventUpdateCoordinator()
-			await calendarEventUpdateCoordinator.init()
-			await this.remindActiveOutOfOfficeNotification()
 		}
 
-		if (isApp() || isDesktop()) {
-			this.handleExternalSync()
-		}
-
-		if (this.logins.isGlobalAdminUserLoggedIn() && !isAdminClient()) {
+		if (this.logins.isGlobalAdminUserLoggedIn() && !EnvProvider.get().isAdminClient()) {
 			const receiveInfoData = createReceiveInfoServiceData({
 				language: lang.code,
 			})
-			const receiveInfoServicePostOut = await locator.serviceExecutor.post(ReceiveInfoService, receiveInfoData)
+			const receiveInfoServicePostOut = await locator.serviceExecutor.execute(ReceiveInfoService_POST, receiveInfoData, null)
 			if (receiveInfoServicePostOut && receiveInfoServicePostOut.outdatedVersion) {
 				return Dialog.updateReminder(true, () => {
 					this.updateClient()
@@ -189,31 +165,6 @@ export class PostLoginActions implements PostLoginAction {
 	private deactivateOutOfOfficeNotification(notification: OutOfOfficeNotification): Promise<void> {
 		notification.enabled = false
 		return this.entityClient.update(notification)
-	}
-
-	private remindActiveOutOfOfficeNotification(): Promise<void> {
-		return loadOutOfOfficeNotification().then((notification) => {
-			if (notification && isNotificationCurrentlyActive(notification, new Date())) {
-				const notificationMessage: Component = {
-					view: () => {
-						return m("", lang.get("outOfOfficeReminder_label"))
-					},
-				}
-				notificationOverlay.show(
-					notificationMessage,
-					{
-						label: "close_alt",
-					},
-					[
-						{
-							label: "deactivate_action",
-							click: () => this.deactivateOutOfOfficeNotification(notification),
-							type: ButtonType.Primary,
-						},
-					],
-				)
-			}
-		})
 	}
 
 	/**
@@ -283,7 +234,7 @@ export class PostLoginActions implements PostLoginAction {
 
 			const newCustomerProperties = createCustomerProperties(await this.logins.getUserController().loadCustomerProperties())
 			newCustomerProperties.lastUpgradeReminder = new Date(this.dateProvider.now())
-			this.entityClient.update(newCustomerProperties).catch(ofClass(restError.LockedError, noOp))
+			this.entityClient.update(newCustomerProperties).catch(ofClass(LockedError, noOp))
 		}
 	}
 
@@ -375,7 +326,7 @@ export class PostLoginActions implements PostLoginAction {
 								},
 							})
 						} catch (e) {
-							if (e instanceof restError.NotAuthorizedError) {
+							if (e instanceof NotAuthorizedError) {
 								return lang.getTranslation("invalidPassword_msg").text
 							} else {
 								reject(e)
@@ -401,30 +352,8 @@ export class PostLoginActions implements PostLoginAction {
 	// Show the onboarding wizard if this is the first time the app has been opened since install
 	private async showSetupWizardIfNeeded(): Promise<void> {
 		const isSetupComplete = deviceConfig.getIsSetupComplete()
-		if (isApp() && !isSetupComplete) {
+		if (EnvProvider.get().isApp() && !isSetupComplete) {
 			await this.showSetupWizard()
-		}
-	}
-
-	private async handleExternalSync() {
-		const calendarModel = await locator.calendarModel()
-		if (isApp() || isDesktop()) {
-			this.syncTracker.addSyncDoneListener({
-				onSyncDone: async () => {
-					calendarModel.syncExternalCalendars().catch(async (e) => {
-						showSnackBar({
-							message: lang.makeTranslation("exception_msg", e.message),
-							button: {
-								label: "ok_action",
-								click: noOp,
-							},
-							waitingTime: 1000,
-						})
-					})
-					calendarModel.scheduleExternalCalendarSync()
-				},
-				priority: SyncDonePriority.HIGH,
-			})
 		}
 	}
 }

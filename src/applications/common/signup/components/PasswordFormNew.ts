@@ -1,7 +1,7 @@
 import m, { Children, Component, Vnode } from "mithril"
 import { PasswordFieldAttrs, PasswordFieldNew } from "./PasswordFieldNew"
 import { font_size, px } from "../../../../ui/size"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
@@ -15,12 +15,12 @@ import { theme } from "../../../../ui/theme"
 import { PasswordGenerator } from "../../misc/passwords/PasswordGenerator"
 import { locator } from "../../api/main/CommonLocator"
 import { copyToClipboard } from "../../../../ui/utils/ClipboardUtils"
-import { delay } from "@tutao/utils"
+import { debounceStart, delay } from "@tutao/utils"
 import { showSnackBar } from "../../../../ui/base/SnackBar"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface PasswordFormAttrs {
 	model: PasswordModel
@@ -225,6 +225,13 @@ export class PasswordFormNew implements Component<PasswordFormAttrs> {
 	private dictionary: string[] = []
 	private pwGenerator: PasswordGenerator | undefined
 	private hasGeneratedPassword = false
+	private debouncedShowSnackbar = debounceStart(3000, () =>
+		showSnackBar({
+			message: "copied_msg",
+			showingTime: 3000,
+			leadingIcon: Icons.ClipboardFilled,
+		}),
+	)
 
 	async oncreate() {
 		const baseUrl = location.protocol + "//" + location.hostname + (location.port ? ":" + location.port : "")
@@ -233,7 +240,7 @@ export class PasswordFormNew implements Component<PasswordFormAttrs> {
 	}
 	view({ attrs }: Vnode<PasswordFormAttrs>): Children {
 		return m(
-			`.flex.flex-column.${styles.isMobileLayout() ? ".gap-8" : ".gap-24"}`,
+			`.flex.flex-column.${Styles.get().isMobileLayout() ? ".gap-8" : ".gap-24"}`,
 			{
 				onremove: () => attrs.model.clear(),
 			},
@@ -314,11 +321,7 @@ export class PasswordFormNew implements Component<PasswordFormAttrs> {
 						{
 							onclick: () => {
 								copyToClipboard(attrs.model.getNewPassword())
-								void showSnackBar({
-									message: "copied_msg",
-									showingTime: 3000,
-									leadingIcon: Icons.ClipboardFilled,
-								})
+								this.debouncedShowSnackbar()
 							},
 						},
 						lang.getTranslationText("copy_action"),

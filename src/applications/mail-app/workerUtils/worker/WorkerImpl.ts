@@ -1,9 +1,9 @@
 import { MessageDispatcher } from "../../../../app-kit/native-bridge/shared/MessageDispatcher.js"
 import { BookingFacade } from "../../../common/api/worker/facades/lazy/BookingFacade.js"
-import { RestClient, restError } from "../../../../platform-kit/rest-client"
-import { assertWorkerOrNode, isMainOrNode, ProgrammingError } from "../../../../platform-kit/app-env"
+import { RestClient } from "../../../../platform-kit/rest-client"
+import { EnvProvider, ProgrammingError } from "../../../../platform-kit/app-env"
 import { initLocator, locator, resetLocator } from "./WorkerLocator.js"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import type { GiftCardFacade } from "../../../common/api/worker/facades/lazy/GiftCardFacade.js"
 import type { LoginFacade } from "../../../../platform-kit/base/facades/LoginFacade.js"
 import type { CustomerFacade } from "../../../common/api/worker/facades/lazy/CustomerFacade.js"
@@ -31,17 +31,17 @@ import { RecoverCodeFacade } from "../../../../platform-kit/base/facades/lazy/Re
 import { CacheManagementFacade } from "../../../common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { ExposedEventBus, MainInterface, WorkerRandomizer } from "../../../common/api/worker/workerInterfaces.js"
 import { CryptoError } from "../../../../platform-kit/crypto/error"
-import { AsymmetricCryptoFacade } from "../../../../platform-kit/base/crypto/AsymmetricCryptoFacade.js"
+import { AsymmetricCryptoFacade } from "../../../../platform-kit/base/base-crypto/AsymmetricCryptoFacade.js"
 import { KeyVerificationFacade } from "../../../../platform-kit/base/facades/lazy/KeyVerificationFacade"
-import PublicEncryptionKeyProvider from "../../../../platform-kit/base/crypto/PublicEncryptionKeyProvider.js"
+import PublicEncryptionKeyProvider from "../../../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider.js"
 import { MailExportFacade } from "../../../common/api/worker/facades/lazy/MailExportFacade"
 import { BulkMailLoader } from "../index/BulkMailLoader.js"
 import { ApplicationTypesFacade } from "../../../../platform-kit/instance-pipeline/ApplicationTypesFacade"
 import { Indexer } from "../index/Indexer"
 import { SearchFacade } from "../index/SearchFacade"
 import { ContactSearchFacade } from "../index/ContactSearchFacade"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
-import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
+import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { AutosaveFacade } from "../../../common/api/worker/facades/lazy/AutosaveFacade"
 import { SpamClassifier } from "../spamClassification/SpamClassifier"
 import { DriveFacade } from "../../../common/api/worker/facades/lazy/DriveFacade"
@@ -52,8 +52,11 @@ import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorag
 import { EntityRestInterface } from "../../../../platform-kit/network/EntityRestCacheInterface"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
 import { NamedClientModel } from "@tutao/instance-pipeline"
+import { NotAuthenticatedError } from "@tutao/rest-client/error"
+import { RestBinaryBody, RestBodyType, RestTextBody } from "@tutao/rest-client/types"
+import { ImapImporter } from "../imapimport/ImapImporter"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /** Interface of the facades exposed by the worker, basically interface for the worker itself */
 export interface WorkerInterface {
@@ -99,6 +102,7 @@ export interface WorkerInterface {
 	readonly spamClassifier: SpamClassifier
 	readonly autosaveFacade: AutosaveFacade
 	readonly driveFacade: DriveFacade
+	readonly imapImporter: ImapImporter
 }
 
 type WorkerRequest = Request<WorkerRequestType>
@@ -127,7 +131,7 @@ export class WorkerImpl implements NativeInterface {
 
 		// only register oncaught error handler if we are in the *real* worker scope
 		// Otherwise uncaught error handler might end up in an infinite loop for test cases.
-		if (workerScope && !isMainOrNode()) {
+		if (workerScope && !EnvProvider.get().isMainOrNode()) {
 			workerScope.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
 				this.sendError(event.reason)
 			})
@@ -158,7 +162,7 @@ export class WorkerImpl implements NativeInterface {
 	get exposedInterface(): DelayedImpls<WorkerInterface> {
 		return {
 			async loginFacade() {
-				return locator.login
+				return locator.base.login
 			},
 
 			async customerFacade() {
@@ -170,10 +174,10 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async groupManagementFacade() {
-				return locator.groupManagement()
+				return locator.base.groupManagement()
 			},
 			async identityKeyCreator() {
-				return locator.identityKeyCreator()
+				return locator.base.identityKeyCreator()
 			},
 
 			async configFacade() {
@@ -193,7 +197,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async shareFacade() {
-				return locator.share()
+				return locator.base.share()
 			},
 
 			async cacheManagementFacade() {
@@ -201,7 +205,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async counterFacade() {
-				return locator.counters()
+				return locator.base.counters()
 			},
 
 			async indexerFacade() {
@@ -225,11 +229,11 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async keyVerificationFacade() {
-				return locator.keyVerification()
+				return locator.base.keyVerification()
 			},
 
 			async blobAccessTokenFacade() {
-				return locator.blobAccessToken
+				return locator.base.blobAccessToken
 			},
 
 			async blobFacade() {
@@ -241,35 +245,35 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async recoverCodeFacade() {
-				return locator.recoverCode()
+				return locator.base.recoverCode()
 			},
 
 			async restInterface() {
-				return locator.cache
+				return locator.base.cache
 			},
 
 			async serviceExecutor() {
-				return locator.serviceExecutor
+				return locator.base.serviceExecutor
 			},
 
 			async cryptoWrapper() {
-				return locator.cryptoWrapper
+				return locator.base.cryptoWrapper
 			},
 
 			async publicEncryptionKeyProvider() {
-				return locator.publicEncryptionKeyProvider
+				return locator.base.publicEncryptionKeyProvider
 			},
 
 			async publicIdentityKeyProvider() {
-				return locator.publicIdentityKeyProvider
+				return locator.base.publicIdentityKeyProvider
 			},
 
 			async asymmetricCryptoFacade() {
-				return locator.asymmetricCrypto
+				return locator.base.asymmetricCrypto
 			},
 
 			async cryptoFacade() {
-				return locator.crypto
+				return locator.base.crypto
 			},
 
 			async cacheStorage() {
@@ -293,7 +297,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async entropyFacade() {
-				return locator.entropyFacade
+				return locator.base.entropyFacade
 			},
 
 			async workerFacade() {
@@ -310,7 +314,7 @@ export class WorkerImpl implements NativeInterface {
 				return locator.mailExportFacade()
 			},
 			async applicationTypesFacade() {
-				return locator.applicationTypesFacade
+				return locator.base.applicationTypesFacade
 			},
 			async autosaveFacade() {
 				return locator.autosaveFacade()
@@ -320,6 +324,9 @@ export class WorkerImpl implements NativeInterface {
 			},
 			async driveFacade() {
 				return locator.driveFacade()
+			},
+			async imapImporter() {
+				return locator.imapImporter()
 			},
 		}
 	}
@@ -337,7 +344,7 @@ export class WorkerImpl implements NativeInterface {
 				const errorTypes = {
 					ProgrammingError,
 					CryptoError,
-					NotAuthenticatedError: restError.NotAuthenticatedError,
+					NotAuthenticatedError,
 				}
 				// @ts-ignore
 				let ErrorType = errorTypes[message.args[0].errorType]
@@ -351,8 +358,19 @@ export class WorkerImpl implements NativeInterface {
 				const args = message.args as Parameters<RestClient["request"]>
 				let [path, method, options] = args
 				options = options ?? {}
-				options.headers = { ...locator.user.createAuthHeaders(), ...options.headers }
-				return locator.restClient.request(path, method, options)
+				// We need to preserve the type of RestBody in order for the RestClient to send it correctly
+				if (options.body) {
+					switch (options.body.bodyType) {
+						case RestBodyType.Text:
+							options.body = new RestTextBody((options.body as RestTextBody).payload)
+							break
+						case RestBodyType.Binary:
+							options.body = new RestBinaryBody((options.body as RestBinaryBody).payload)
+							break
+					}
+				}
+				options.headers = { ...locator.base.user.createAuthHeaders(), ...options.headers }
+				return locator.base.restClient.request(path, method, options)
 			},
 
 			facade: exposeLocalDelayed<DelayedImpls<WorkerInterface>, WorkerRequestType>(exposedWorker),

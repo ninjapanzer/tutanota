@@ -5,11 +5,11 @@ import { Group } from "@tutao/entities/sys"
 import { hasCapabilityOnGroup } from "../../../entities/sys/Utils"
 import { component_size } from "../../../ui/size"
 import { EntityClient } from "../../../platform-kit/network/EntityClient"
-import { assertMainOrNode, ShareCapability } from "../../../platform-kit/app-env"
+import { EnvProvider, ShareCapability } from "../../../platform-kit/app-env"
 import type { LoginController } from "../../common/api/main/LoginController"
 import { ListColumnWrapper } from "../../../ui/ListColumnWrapper"
 import { KnowledgeBaseEntryView } from "../knowledgebase/view/KnowledgeBaseEntryView"
-import { memoized, NBSP, noOp } from "../../../platform-kit/utils"
+import { assertNotNull, memoized, NBSP, noOp } from "../../../platform-kit/utils"
 import { SelectableRowContainer, SelectableRowSelectedSetter } from "../../../ui/SelectableRowContainer.js"
 import { ListElementListModel } from "../../common/misc/ListElementListModel.js"
 import { listSelectionKeyboardShortcuts, onlySingleSelection, VirtualRow } from "../../../ui/base/ListUtils.js"
@@ -26,9 +26,9 @@ import { keyManager } from "../../../ui/utils/KeyManager.js"
 import { ListAutoSelectBehavior } from "../../common/misc/DeviceConfig.js"
 import { UpdatableSettingsDetailsViewer, UpdatableSettingsViewer } from "../../common/settings/Interfaces.js"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { isSameId, listIdPart } from "../../../platform-kit/meta"
+import { isSameSingleId, listIdPart } from "../../../platform-kit/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  *  List that is rendered within the knowledgeBase Settings
@@ -128,7 +128,7 @@ export class KnowledgeBaseListView implements UpdatableSettingsViewer {
 						? m(
 								".mr-negative-8",
 								m(IconButton, {
-									title: "addEntry_label",
+									label: "addEntry_label",
 									icon: Icons.Plus,
 									click: () => {
 										showKnowledgeBaseEditor(null, this.templateGroupRoot)
@@ -160,10 +160,10 @@ export class KnowledgeBaseListView implements UpdatableSettingsViewer {
 		)
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<any> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<any> {
 		for (const update of updates) {
-			if (isUpdateForTypeRef(KnowledgeBaseEntryTypeRef, update) && isSameId(this.getListId(), update.instanceListId)) {
-				await this.listModel.entityEventReceived(update.instanceListId, update.instanceId, update.operation)
+			if (isUpdateForTypeRef(KnowledgeBaseEntryTypeRef, update) && isSameSingleId(this.getListId(), update.instanceListId)) {
+				await this.listModel.onEntityUpdateReceived(assertNotNull(update.instanceListId), update.instanceId, update.operation)
 			}
 		}
 
@@ -246,7 +246,7 @@ export class KnowledgeBaseSettingsDetailsViewer implements UpdatableSettingsDeta
 		)
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<any> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<any> {
 		return Promise.resolve()
 	}
 }

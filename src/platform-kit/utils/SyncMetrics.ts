@@ -1,4 +1,4 @@
-import { Nullable } from "./Utils"
+import { isNull, Nullable } from "./Utils"
 
 /**
  * Metrics sum up of time periods
@@ -7,7 +7,7 @@ class Sumup {
 	timeSum: number = 0
 	amount: number = 0
 
-	add(time: number) {
+	add(time: number): void {
 		this.timeSum += time
 		this.amount++
 	}
@@ -63,8 +63,8 @@ export class SyncMetrics {
 	}
 
 	getSumup(category: Category): Sumup {
-		let measurement: Sumup | undefined = this.metrics.get(category)
-		if (!measurement) {
+		let measurement: Sumup | null = this.metrics.get(category) ?? null
+		if (isNull(measurement)) {
 			measurement = new Sumup()
 			this.metrics.set(category, measurement)
 		}
@@ -83,10 +83,10 @@ function roundAndFormat(sum: number): string {
 
 export let syncMetrics: Nullable<SyncMetrics> = null
 
-export function newSyncMetrics() {
+export function newSyncMetrics(): void {
 	syncMetrics = new SyncMetrics()
 }
 
-export function purgeSyncMetrics() {
+export function purgeSyncMetrics(): void {
 	syncMetrics = null
 }

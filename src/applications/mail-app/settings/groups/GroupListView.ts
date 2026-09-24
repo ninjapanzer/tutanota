@@ -1,13 +1,13 @@
 import { GroupInfo, GroupInfoTypeRef, GroupMemberTypeRef } from "@tutao/entities/sys"
 import m, { Children } from "mithril"
-import { LazyLoaded, memoized, noOp } from "../../../../platform-kit/utils"
+import { assertNotNull, LazyLoaded, memoized, noOp } from "../../../../platform-kit/utils"
 import { GroupDetailsView } from "../../../common/settings/groups/GroupDetailsView.js"
 import * as AddGroupDialog from "./AddGroupDialog.js"
 import { Icon } from "../../../../ui/base/Icon.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import { ListColumnWrapper } from "../../../../ui/ListColumnWrapper.js"
-import { assertMainOrNode, UpgradePromptType } from "../../../../platform-kit/app-env"
+import { EnvProvider, UpgradePromptType } from "../../../../platform-kit/app-env"
 import { GroupDetailsModel } from "./GroupDetailsModel.js"
 import { SelectableRowContainer, SelectableRowSelectedSetter, setVisibility } from "../../../../ui/SelectableRowContainer.js"
 import Stream from "mithril/stream"
@@ -15,7 +15,7 @@ import { List, ListAttrs, MultiselectMode, RenderConfig } from "../../../../ui/b
 import { component_size } from "../../../../ui/size.js"
 import { ListElementListModel } from "../../../common/misc/ListElementListModel.js"
 import { compareGroupInfos } from "../../../../platform-kit/network/GroupUtils.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { listSelectionKeyboardShortcuts, onlySingleSelection, VirtualRow } from "../../../../ui/base/ListUtils.js"
 import { keyManager } from "../../../../ui/utils/KeyManager.js"
 import { BaseSearchBar, BaseSearchBarAttrs } from "../../../../ui/base/BaseSearchBar.js"
@@ -27,7 +27,7 @@ import { ListAutoSelectBehavior } from "../../../common/misc/DeviceConfig.js"
 import { UpdatableSettingsViewer } from "../../../common/settings/Interfaces.js"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 const className = "group-list"
 
 export class GroupListView implements UpdatableSettingsViewer {
@@ -94,7 +94,7 @@ export class GroupListView implements UpdatableSettingsViewer {
 					m(
 						".mr-negative-8",
 						m(IconButton, {
-							title: "createSharedMailbox_label",
+							label: "createSharedMailbox_label",
 							icon: Icons.Plus,
 							click: () => this.addButtonClicked(),
 						}),
@@ -139,10 +139,10 @@ export class GroupListView implements UpdatableSettingsViewer {
 		}
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(GroupInfoTypeRef, update) && this.listId.getSync() === update.instanceListId) {
-				await this.listModel.entityEventReceived(update.instanceListId, update.instanceId, update.operation)
+				await this.listModel.onEntityUpdateReceived(assertNotNull(update.instanceListId), update.instanceId, update.operation)
 			} else if (isUpdateForTypeRef(GroupMemberTypeRef, update)) {
 				this.listModel.reapplyFilter()
 			}
@@ -166,7 +166,7 @@ export class GroupListView implements UpdatableSettingsViewer {
 				try {
 					return await locator.entityClient.load<GroupInfo>(GroupInfoTypeRef, [listId, elementId])
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						// we return null if the GroupInfo does not exist
 						return null
 					} else {
@@ -250,7 +250,7 @@ export class GroupRow implements VirtualRow<GroupInfo> {
 		return m(
 			SelectableRowContainer,
 			{
-				class: "pt-12 pb-12 pl-12 pr-12",
+				class: "pt-12 pb-12 pl-12 pr-12 items-end",
 				onSelectedChangeRef: (updater) => (this.selectionUpdater = updater),
 			},
 			m(".flex.col.flex-grow", [

@@ -35,13 +35,12 @@ import {
 	User,
 	UserTypeRef,
 } from "@tutao/entities/sys"
-import { GENERATED_MAX_ID } from "../../../src/platform-kit/meta"
+import { GENERATED_MAX_ID, idToElementId } from "../../../src/platform-kit/meta"
 import { ContactAddressType, Recipient, RecipientType } from "../../../src/entities/tutanota/Utils"
 import { AccountType, GroupType } from "../../../src/entities/sys/Utils"
 
 export const ownerMailAddress = "calendarowner@tutanota.de" as const
-export const ownerId = "ownerId" as const
-export const calendarGroupId = "0" as const
+export const userId = "ownerId" as const
 
 export const ownerAddress = createEncryptedMailAddress({
 	address: ownerMailAddress,
@@ -126,12 +125,13 @@ export const thirdRecipient: Recipient = {
 	}),
 	verificationState: PresentableKeyVerificationState.NONE,
 }
-
+// Added this as a separate export to make it easier to identify when a test is using these stub calendars.
+export const ownCalendarId = "ownCalendar"
 export const calendars: ReadonlyMap<Id, CalendarInfo> = new Map([
 	[
-		"ownCalendar",
+		ownCalendarId,
 		{
-			id: "ownCalendar",
+			id: ownCalendarId,
 			name: "Private Calendar",
 			color: "",
 			groupRoot: createTestEntity(CalendarGroupRootTypeRef, {}),
@@ -140,7 +140,7 @@ export const calendars: ReadonlyMap<Id, CalendarInfo> = new Map([
 			longEvents: new LazyLoaded(() => Promise.resolve([])),
 			groupInfo: createTestEntity(GroupInfoTypeRef, {}),
 			group: createTestEntity(GroupTypeRef, {
-				_id: "ownCalendar",
+				_id: idToElementId(ownCalendarId),
 				user: "ownerId",
 				type: GroupType.Calendar,
 			}),
@@ -160,7 +160,7 @@ export const calendars: ReadonlyMap<Id, CalendarInfo> = new Map([
 			longEvents: new LazyLoaded(() => Promise.resolve([])),
 			groupInfo: createTestEntity(GroupInfoTypeRef, {}),
 			group: createTestEntity(GroupTypeRef, {
-				_id: "ownSharedCalendar",
+				_id: idToElementId("ownSharedCalendar"),
 				user: "ownerId",
 				type: GroupType.Calendar,
 			}),
@@ -180,7 +180,7 @@ export const calendars: ReadonlyMap<Id, CalendarInfo> = new Map([
 			longEvents: new LazyLoaded(() => Promise.resolve([])),
 			groupInfo: createTestEntity(GroupInfoTypeRef, {}),
 			group: createTestEntity(GroupTypeRef, {
-				_id: "ownExternalCalendar",
+				_id: idToElementId("ownExternalCalendar"),
 				user: "ownerId",
 				type: GroupType.Calendar,
 			}),
@@ -200,7 +200,7 @@ export const calendars: ReadonlyMap<Id, CalendarInfo> = new Map([
 			longEvents: new LazyLoaded(() => Promise.resolve([])),
 			groupInfo: createTestEntity(GroupInfoTypeRef, {}),
 			group: createTestEntity(GroupTypeRef, {
-				_id: "sharedCalendar",
+				_id: idToElementId("sharedCalendar"),
 				user: "otherId",
 				type: GroupType.Calendar,
 			}),
@@ -236,7 +236,7 @@ export function makeUserController(
 
 	return downcast({
 		user: createTestEntity(UserTypeRef, {
-			_id: ownerId,
+			_id: idToElementId(userId),
 			memberships: [
 				createTestEntity(GroupMembershipTypeRef, {
 					groupType: GroupType.Mail,
@@ -304,9 +304,9 @@ export function makeCalendarInfo(id: string, isOwner: boolean, calendarType: Cal
 		}),
 		groupInfo: downcast({}),
 		group: createTestEntity(GroupTypeRef, {
-			_id: id,
+			_id: idToElementId(id),
 			type: GroupType.Calendar,
-			user: isOwner ? ownerId : "anotherUserId",
+			user: isOwner ? userId : "anotherUserId",
 		}),
 		hasMultipleMembers: isOwner && calendarType === CalendarType.Shared,
 		userIsOwner: isOwner && calendarType === CalendarType.Private,

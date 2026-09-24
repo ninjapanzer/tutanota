@@ -15,14 +15,13 @@ import {
 	promiseMap,
 	splitInChunks,
 } from "../../../../platform-kit/utils"
-import { CUSTOM_MIN_ID, elementIdPart, getElementId, listIdPart, OperationType } from "../../../../platform-kit/meta"
-import { FeatureType, isBrowser, ProgrammingError, TutanotaError } from "../../../../platform-kit/app-env"
+import { CUSTOM_MIN_ID, elementIdPart, elementIdToId, getElementId, idToElementId, isSameId, listIdPart, OperationType } from "../../../../platform-kit/meta"
+import { EnvProvider, FeatureType, ProgrammingError, TutanotaError } from "../../../../platform-kit/app-env"
 
 import m from "mithril"
 import { Notifications, NotificationType } from "../../../../ui/Notifications.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { isExpectedErrorForSynchronization } from "../../../../platform-kit/rest-client/error"
+import { isExpectedErrorForSynchronization, NotAuthorizedError, NotFoundError, PreconditionFailedError } from "../../../../platform-kit/rest-client/error"
 import { UserError } from "../../../common/api/main/UserError.js"
 import { EventController } from "../../../common/api/main/EventController.js"
 import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel.js"
@@ -32,18 +31,19 @@ import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade.j
 import { assertSystemFolderOfType } from "./MailUtils.js"
 import { ProcessInboxHandler } from "./ProcessInboxHandler"
 import { BulkMailLoader, MailWithMailDetails } from "../../workerUtils/index/BulkMailLoader"
-import { EntityRestClientLoadOptions } from "../../../../platform-kit/network/EntityRestClient"
 import { Mail, MailboxGroupRoot, MailboxProperties, MailSet, MailSetEntryTypeRef, MailSetTypeRef, MailTypeRef, MovedMails } from "@tutao/entities/tutanota"
 import { MailReportType, MailSetKind, MAX_NBR_OF_MAILS_SYNC_OPERATION, ReportMovedMailsType, SystemFolderType } from "../../../../entities/tutanota/Utils"
 import { isLabel, SimpleMoveMailTarget } from "../MailUtils"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { WebsocketCounterData } from "@tutao/entities/sys"
+import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, EntityRestClientLoadOptions } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 interface MailboxSets {
 	folders: FolderSystem
 	/** a map from element id to the mail set */
 	labels: ReadonlyMap<Id, MailSet>
 	scheduledFolder: MailSet | null
+	labelFolderSystem: FolderSystem
 }
 
 export const enum LabelState {
@@ -67,6 +67,11 @@ export class MailModel {
 	 */
 	private mailSets: Map<Id, MailboxSets> = new Map()
 
+	#indexingSupported: boolean = true
+	get indexingSupported(): boolean {
+		return this.#indexingSupported
+	}
+
 	constructor(
 		private readonly notifications: Notifications,
 		private readonly mailboxModel: MailboxModel,
@@ -77,13 +82,15 @@ export class MailModel {
 		private readonly connectivityModel: WebsocketConnectivityModel | null,
 		private readonly processInboxHandler: () => ProcessInboxHandler,
 		private readonly bulkMailLoader: BulkMailLoader,
+		private readonly registerIndexingNotAvailableHandler: (handler: () => unknown) => unknown,
 	) {}
 
 	// only init listeners once
 	private readonly initListeners = lazyMemoized(() => {
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates, _) => this.entityEventsReceived(updates),
-			priority: OnEntityUpdateReceivedPriority.HIGH,
+		this.eventController.addEntityUpdatesListener({
+			id: "MailModel",
+			onEntityUpdatesReceived: (updates, _) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.HIGH,
 		})
 
 		this.eventController.getCountersStream().map((update) => {
@@ -99,6 +106,9 @@ export class MailModel {
 	async init(): Promise<void> {
 		this.initListeners()
 		this.mailSets = await this.loadMailSets()
+		this.registerIndexingNotAvailableHandler(() => {
+			this.#indexingSupported = false
+		})
 	}
 
 	private async loadMailSets(): Promise<Map<Id, MailboxSets>> {
@@ -120,7 +130,7 @@ export class MailModel {
 					// cached entities owned by groups that the user lost access to. As MailboxModel isn't immediately
 					// updated (until finally receiving the entity event), it will still have an outdated list of
 					// mailbox details (temporarily).
-					if (e instanceof restError.NotAuthorizedError || e instanceof restError.NotFoundError) {
+					if (e instanceof NotAuthorizedError || e instanceof NotFoundError) {
 						console.warn(
 							"Got",
 							e.name,
@@ -141,7 +151,9 @@ export class MailModel {
 
 				const scheduledFolder = mailSets.find((set) => set.folderType === MailSetKind.SCHEDULED) ?? null
 				const folderSystem = new FolderSystem(mailSets)
-				tempFolders.set(foldersRef._id, { folders: folderSystem, labels: labelsMap, scheduledFolder })
+				const labelFolderSystem = new FolderSystem(labels, MailSetKind.LABEL)
+
+				tempFolders.set(foldersRef._id, { folders: folderSystem, labels: labelsMap, scheduledFolder, labelFolderSystem: labelFolderSystem })
 			}
 		}
 
@@ -175,13 +187,13 @@ export class MailModel {
 	}
 
 	// visibleForTesting
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(MailSetTypeRef, update)) {
 				await this.init()
 				m.redraw()
 			} else if (isUpdateForTypeRef(MailTypeRef, update) && update.operation === OperationType.CREATE) {
-				const mailId: IdTuple = [update.instanceListId, update.instanceId]
+				const mailId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
 				const mail = await this.loadMail(mailId)
 				if (mail == null) {
 					return
@@ -202,11 +214,10 @@ export class MailModel {
 				const folderSystem = this.getFolderSystemByGroupId(assertNotNull(mail._ownerGroup))
 
 				let targetFolder = sourceMailFolder
-				const isInternalUser = this.logins.getUserController().isInternalUser()
-				if (isInternalUser && mailboxDetail && folderSystem) {
+				if (this.isInternalUser() && mailboxDetail && folderSystem) {
 					targetFolder = await this.processInboxHandler().handleIncomingMail(mail, sourceMailFolder, mailboxDetail, folderSystem, isLeaderClient)
 				}
-				if (isBrowser()) {
+				if (EnvProvider.get().isBrowser()) {
 					this._showNotification(targetFolder, mail)
 				}
 			}
@@ -258,6 +269,15 @@ export class MailModel {
 		return folderSystem
 	}
 
+	async getMailboxLabelFoldersForId(foldersId: Id): Promise<FolderSystem> {
+		const folderStructures = await this.loadMailSets()
+		const folderSystem = folderStructures.get(foldersId)?.labelFolderSystem
+		if (folderSystem == null) {
+			throw new ProgrammingError(`no folder system for folder id ${foldersId}`)
+		}
+		return folderSystem
+	}
+
 	getMailFolderForMail(mail: Mail): MailSet | null {
 		const folderSystem = this.getFolderSystemByGroupId(assertNotNull(mail._ownerGroup))
 		if (folderSystem == null) return null
@@ -267,6 +287,10 @@ export class MailModel {
 
 	getFolderSystemByGroupId(groupId: Id): FolderSystem | null {
 		return this.getMailSetsForGroup(groupId)?.folders ?? null
+	}
+
+	getLabelFolderSystemByGroupId(groupId: Id): FolderSystem | null {
+		return this.getMailSetsForGroup(groupId)?.labelFolderSystem ?? null
 	}
 
 	getLabelsByGroupId(groupId: Id): ReadonlyMap<Id, MailSet> {
@@ -318,7 +342,7 @@ export class MailModel {
 
 	private getMailSetsForGroup(groupId: Id): MailboxSets | null {
 		const mailboxDetails = this.mailboxModel.mailboxDetails() || []
-		const detail = mailboxDetails.find((md) => groupId === md.mailGroup._id)
+		const detail = mailboxDetails.find((md) => isSameId(idToElementId(groupId), md.mailGroup._id))
 		const sets = detail?.mailbox?.mailSets._id
 		if (sets == null) {
 			return null
@@ -387,15 +411,19 @@ export class MailModel {
 		}
 
 		for (const mail of mails) {
-			await this.mailFacade.reportMail(mail, reportType).catch(ofClass(restError.NotFoundError, (e) => console.log("mail to be reported not found", e)))
+			await this.mailFacade.reportMail(mail, reportType).catch(ofClass(NotFoundError, (e) => console.log("mail to be reported not found", e)))
 		}
 	}
 
 	canManageLabels(): boolean {
-		return this.logins.getUserController().isInternalUser()
+		return this.isInternalUser()
 	}
 
 	canAssignLabels(): boolean {
+		return this.isInternalUser()
+	}
+
+	isInternalUser(): boolean {
 		return this.logins.getUserController().isInternalUser()
 	}
 
@@ -407,7 +435,7 @@ export class MailModel {
 	 * @return true if the user is allowed to use conversation views (listing and viewing mails)
 	 */
 	canUseConversationView(): boolean {
-		return this.logins.getUserController().isInternalUser()
+		return this.isInternalUser()
 	}
 
 	async markMails(mails: readonly IdTuple[], unread: boolean): Promise<void> {
@@ -447,7 +475,7 @@ export class MailModel {
 				if (mailboxDetails == null) {
 					return null
 				} else {
-					const mailGroupCounter = this.mailboxCounters()[mailboxDetails.mailGroup._id]
+					const mailGroupCounter = this.mailboxCounters()[elementIdToId(mailboxDetails.mailGroup._id)]
 					if (mailGroupCounter) {
 						const counterId = getElementId(folder)
 						return mailGroupCounter[counterId]
@@ -504,11 +532,11 @@ export class MailModel {
 		const deleted = new Set<Id>()
 		for (const descendant of descendants) {
 			if (
-				(await this.isEmptyFolder(descendant.folder)) &&
-				folderSystem.getCustomFoldersOfParent(descendant.folder._id).every((f) => deleted.has(getElementId(f)))
+				(await this.isEmptyFolder(descendant.mailSet)) &&
+				folderSystem.getCustomFoldersOfParent(descendant.mailSet._id).every((f) => deleted.has(getElementId(f)))
 			) {
-				deleted.add(getElementId(descendant.folder))
-				await this.finallyDeleteCustomMailFolder(descendant.folder)
+				deleted.add(getElementId(descendant.mailSet))
+				await this.finallyDeleteCustomMailFolder(descendant.mailSet)
 			} else {
 				someNonEmpty = true
 			}
@@ -537,9 +565,9 @@ export class MailModel {
 
 		return await this.mailFacade
 			.deleteFolder(folder._id)
-			.catch(ofClass(restError.NotFoundError, () => console.log("mail folder already deleted")))
+			.catch(ofClass(NotFoundError, () => console.log("mail folder already deleted")))
 			.catch(
-				ofClass(restError.PreconditionFailedError, () => {
+				ofClass(PreconditionFailedError, () => {
 					throw new UserError("operationStillActive_msg")
 				}),
 			)
@@ -548,7 +576,7 @@ export class MailModel {
 	async fixupCounterForFolder(folder: MailSet, unreadMails: number) {
 		const mailboxDetails = await this.getMailboxDetailsForMailFolder(folder)
 		if (mailboxDetails) {
-			await this.mailFacade.fixupCounterForFolder(mailboxDetails.mailGroup._id, folder, unreadMails)
+			await this.mailFacade.fixupCounterForFolder(elementIdToId(mailboxDetails.mailGroup._id), folder, unreadMails)
 		}
 	}
 
@@ -570,12 +598,12 @@ export class MailModel {
 	/**
 	 * Create a label (aka MailSet aka {@link MailSet} of kind {@link MailSetKind.LABEL}) for the group {@param mailGroupId}.
 	 */
-	async createLabel(mailGroupId: Id, labelData: { name: string; color: string }) {
+	async createLabel(mailGroupId: Id, labelData: { name: string; color: string; parentLabelId?: IdTuple }) {
 		await this.mailFacade.createLabel(mailGroupId, labelData)
 	}
 
-	async updateLabel(label: MailSet, newData: { name: string; color: string }) {
-		await this.mailFacade.updateLabel(label, newData.name, newData.color)
+	async updateLabel(label: MailSet, newData: { name: string; color: string; parentFolderId?: IdTuple }) {
+		await this.mailFacade.updateLabel(label, newData.name, newData.color, newData.parentFolderId)
 	}
 
 	async deleteLabel(label: MailSet) {
@@ -620,7 +648,10 @@ export class MailModel {
 		return await this.mailFacade.unscheduleMail(mail._id)
 	}
 
-	async loadMailDetails(mails: readonly Mail[], options: EntityRestClientLoadOptions = {}): Promise<MailWithMailDetails[]> {
+	async loadMailDetails(
+		mails: readonly Mail[],
+		options: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	): Promise<MailWithMailDetails[]> {
 		return this.bulkMailLoader.loadMailDetails(mails, options)
 	}
 

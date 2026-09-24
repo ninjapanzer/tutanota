@@ -1,17 +1,26 @@
 import { PlanConfig } from "../components/BusinessPlanContainer"
 import { PaymentInterval, PriceAndConfigProvider } from "./PriceUtils"
-import Stream from "mithril/stream"
 import { SelectedSubscriptionOptions } from "../FeatureListProvider"
 import { component_size, px, size } from "../../../../ui/size"
-import { styles } from "../../../../ui/styles"
-import { lang, Translation } from "../../../../ui/utils/LanguageViewModel"
+import { Styles } from "../../../../ui/styles"
+import { lang, Translation, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { isDarkTheme, Theme, theme } from "../../../../ui/theme"
 import { getRawApplePrice, hasAppleIntroOffer } from "./SubscriptionUtils"
-import { AvailablePlans, AvailablePlanType, NewPersonalPaidPlans, NewPersonalPlans, PlanType } from "../../../../entities/sys/Utils"
+import {
+	AvailablePlans,
+	AvailablePlanType,
+	NewBusinessPlans,
+	NewPersonalPaidPlans,
+	NewPersonalPlans,
+	PlanType,
+	SubscriptionType,
+} from "../../../../entities/sys/Utils"
+import { goEuropeanBlue, sovereignYellowDark, sovereignYellowLight } from "../../../../ui/builtinThemes"
+import Stream from "mithril/stream"
 
 export type DiscountDetail = {
 	ribbonTranslation: Translation
-	discountType: "BonusMonths" | "IndividualFirstYear" | "Permanent" | "GlobalFirstYear"
+	discountType: "BonusMonths" | "BonusMonthsAndGlobalFirstYear" | "IndividualFirstYear" | "Permanent" | "GlobalFirstYear"
 }
 
 export type DiscountDetails = Partial<Record<PlanType, DiscountDetail>>
@@ -35,7 +44,7 @@ export function shouldFixButtonPosition() {
 	const planSelectorEl = document.querySelector("#plan-selector")
 	if (planSelectorEl) {
 		const planSelectorBottom = planSelectorEl.getBoundingClientRect().bottom
-		return styles.isMobileLayout() && planSelectorBottom + size.spacing_32 + component_size.button_floating_size > window.innerHeight
+		return Styles.get().isMobileLayout() && planSelectorBottom + size.spacing_32 + component_size.button_floating_size > window.innerHeight
 	}
 	return false
 }
@@ -68,22 +77,21 @@ export function filterPlanConfigsAndGetSelectedPlan(
 		.filter((planConfig) => !planConfig.isDisabled && planConfig.type !== currentPlan)
 		.map((config) => config.type)
 	if (!availablePlansForCurrentView.includes(selectedPlan)) {
-		const filteredPlans = planConfigs.filter((planConfig) => planConfig.type !== currentPlan && !planConfig.isDisabled)
-		selectedPlan = filteredPlans.length > 0 ? filteredPlans[0].type : PlanType.Free
+		const enabledAndNotCurrentPlans = planConfigs.filter((planConfig) => planConfig.type !== currentPlan && !planConfig.isDisabled)
+		selectedPlan = enabledAndNotCurrentPlans.length > 0 ? enabledAndNotCurrentPlans[0].type : PlanType.Free
 
 		const isPrivate = availablePlansForCurrentView.includes(PlanType.Free)
-		const defaultPlanForCurrentView = isPrivate ? PlanType.Revolutionary : PlanType.Advanced
+		const defaultPlanForCurrentView = isPrivate ? PlanType.Legend : PlanType.Advanced
 		if (availablePlansForCurrentView.includes(defaultPlanForCurrentView)) {
 			selectedPlan = defaultPlanForCurrentView
 		}
 	}
-
 	return { planConfigs, selectedPlan }
 }
 
 export function getBorderWidth(isSelected: boolean, position: PlanBoxPosition) {
 	if (isSelected) {
-		if (!styles.isMobileLayout()) return px(2)
+		if (!Styles.get().isMobileLayout()) return px(2)
 
 		if (position === "left") {
 			return `${px(2)} ${px(2)} ${px(2)} 0`
@@ -94,9 +102,9 @@ export function getBorderWidth(isSelected: boolean, position: PlanBoxPosition) {
 		}
 	}
 
-	if (styles.isMobileLayout() && position === "bottom") {
+	if (Styles.get().isMobileLayout() && position === "bottom") {
 		return `${px(1)} 0 ${px(2)} 0`
-	} else if (styles.isMobileLayout() && position !== "bottom") {
+	} else if (Styles.get().isMobileLayout() && position !== "bottom") {
 		return position === "left" ? `${px(2)} ${px(1)} ${px(1)} 0` : `${px(2)} 0 ${px(1)} ${px(1)}`
 	} else if (position === "bottom") {
 		return `${px(1)} ${px(2)} ${px(2)} ${px(2)}`
@@ -113,12 +121,14 @@ export function getBorderColor(isSelected: boolean, hasCampaign: boolean, localT
 	}
 }
 
-export function getBorderRadius(hasBanner: boolean, position: PlanBoxPosition) {
+export function getBorderRadius(hasBanner: boolean, position: PlanBoxPosition, freePlanVisible?: boolean) {
 	const topOuterRadius = hasBanner ? "0" : px(size.radius_8)
-	if (styles.isMobileLayout()) {
+	if (Styles.get().isMobileLayout()) {
 		return `0 0 0 0`
 	} else if (position === "bottom") {
 		return `0 0 ${px(size.radius_8)} ${px(size.radius_8)}`
+	} else if (freePlanVisible === false) {
+		return position === "left" ? `${topOuterRadius} 0 0 ${topOuterRadius}` : `0 ${topOuterRadius} ${topOuterRadius} 0`
 	} else {
 		return position === "left" ? `${topOuterRadius} 0 0 0` : `0 ${topOuterRadius} 0 0`
 	}
@@ -128,9 +138,32 @@ export function getHasCampaign(discountDetail: DiscountDetail | undefined, isYea
 	return !!(discountDetail && (discountDetail.discountType === "Permanent" || isYearly))
 }
 
-export function anyHasGlobalFirstYearCampaign(discountDetails?: DiscountDetails): boolean {
-	if (!discountDetails) return false
-	return Object.values(discountDetails).some((v) => v.discountType === "GlobalFirstYear")
+function isRelevantNewPlanName(planName: string, subscriptionType: SubscriptionType): boolean {
+	const planType = planName as AvailablePlanType
+
+	if (!AvailablePlans.includes(planType)) {
+		return false
+	}
+
+	switch (subscriptionType) {
+		case SubscriptionType.FreeOnly:
+		case SubscriptionType.Personal:
+		case SubscriptionType.PaidPersonal:
+			return NewPersonalPlans.includes(planType)
+		case SubscriptionType.Business:
+			return NewBusinessPlans.includes(planType)
+	}
+}
+
+export function hasRelevantGlobalFirstYearCampaign(
+	discountDetails: DiscountDetails | null,
+	subscriptionType: SubscriptionType = SubscriptionType.Personal,
+): boolean {
+	if (discountDetails == null) return false
+	return Object.entries(discountDetails)
+		.filter(([planName, _]) => isRelevantNewPlanName(planName, subscriptionType))
+		.map((v) => v[1])
+		.some((v) => v.discountType === "GlobalFirstYear" || v.discountType === "BonusMonthsAndGlobalFirstYear")
 }
 
 export function getDiscountDetails(isApplePrice: boolean, priceAndConfigProvider: PriceAndConfigProvider): DiscountDetails {
@@ -197,9 +230,16 @@ export function getDiscountDetails(isApplePrice: boolean, priceAndConfigProvider
 		const firstYearDiscountPercentage = Math.floor((firstYearDiscount / yearlyRefPrice) * 100)
 
 		if (bonusMonth > 0 && NewPersonalPaidPlans.includes(targetPlan)) {
-			discountDetails[targetPlan] = {
-				ribbonTranslation: lang.getTranslation("pricing.bonusMonth_label", { "{months}": bonusMonth }),
-				discountType: "BonusMonths",
+			if (firstYearDiscount > 0) {
+				discountDetails[targetPlan] = {
+					ribbonTranslation: lang.getTranslation("pricing.bonusMonthWithCampaign_label", { "{months}": bonusMonth }),
+					discountType: "BonusMonthsAndGlobalFirstYear",
+				}
+			} else {
+				discountDetails[targetPlan] = {
+					ribbonTranslation: lang.getTranslation("pricing.bonusMonth_label", { "{months}": bonusMonth }),
+					discountType: "BonusMonths",
+				}
 			}
 		} else if (permanentDiscountPercentage > 0) {
 			discountDetails[targetPlan] = {
@@ -208,12 +248,12 @@ export function getDiscountDetails(isApplePrice: boolean, priceAndConfigProvider
 			}
 		} else if (hasGlobalCampaign) {
 			discountDetails[targetPlan] = {
-				ribbonTranslation: lang.getTranslation("pricing.saveAmountFirstYear_label", { "{amount}": `${firstYearDiscountPercentage}%` }),
+				ribbonTranslation: lang.getTranslation("pricing.saveAmountNow_label", { "{amount}": `${firstYearDiscountPercentage}%` }),
 				discountType: "GlobalFirstYear",
 			}
 		} else if (firstYearDiscount > 0) {
 			discountDetails[targetPlan] = {
-				ribbonTranslation: lang.getTranslation("pricing.saveAmountFirstYear_label", { "{amount}": `${firstYearDiscountPercentage}%` }),
+				ribbonTranslation: lang.getTranslation("pricing.saveAmountNow_label", { "{amount}": `${firstYearDiscountPercentage}%` }),
 				discountType: "IndividualFirstYear",
 			}
 		}
@@ -226,6 +266,31 @@ export function getDiscountDetails(isApplePrice: boolean, priceAndConfigProvider
 export const enum CAMPAIGN_NAME {
 	BIRTHDAY_12_CAMPAIGN = "birthday_12_campaign",
 	BLACKFRIDAY_CAMPAIGN = "blackfriday_campaign",
+	DIGITAL_SOVEREIGNTY_2026_CAMPAIGN = "sovereignty2026",
+}
+
+export function getPlanSelectorTitle(campaignName: string | null, isReferred: boolean): TranslationKey {
+	switch (campaignName) {
+		case CAMPAIGN_NAME.DIGITAL_SOVEREIGNTY_2026_CAMPAIGN:
+			if (isReferred) {
+				return "planselector_page_sovereignty2026_referred_title"
+			}
+			return "planselector_page_sovereignty2026_title"
+		default:
+			return "planselector_page_title"
+	}
+}
+
+export function getPlanSelectorSubtitle(campaignName: string | null, isReferred: boolean): TranslationKey {
+	switch (campaignName) {
+		case CAMPAIGN_NAME.DIGITAL_SOVEREIGNTY_2026_CAMPAIGN:
+			if (isReferred) {
+				return "planselector_page_sovereignty2026_referred_subtitle"
+			}
+			return "planselector_page_sovereignty2026_subtitle"
+		default:
+			return "planselector_page_subtitle"
+	}
 }
 
 export const defaultCampaignTheme = () => ({
@@ -246,9 +311,25 @@ export const birthdayTheme = () => ({
 	surface_container_high: theme.tertiary_container,
 })
 
+export const sovereignty2026Theme = () => ({
+	...structuredClone(theme),
+	primary: goEuropeanBlue,
+	primary_container: goEuropeanBlue,
+	secondary: goEuropeanBlue,
+	tertiary: goEuropeanBlue,
+	on_tertiary: "#FFFFFF",
+	on_surface: "#111111",
+	surface_container_high: sovereignYellowDark,
+	surface: sovereignYellowLight,
+	on_surface_variant: "#111111",
+	outline_variant: goEuropeanBlue,
+})
+
 export function getCampaignTheme(campaignName: string | null) {
 	if (campaignName === CAMPAIGN_NAME.BIRTHDAY_12_CAMPAIGN) {
 		return birthdayTheme()
+	} else if (campaignName === CAMPAIGN_NAME.DIGITAL_SOVEREIGNTY_2026_CAMPAIGN) {
+		return sovereignty2026Theme()
 	}
 
 	return defaultCampaignTheme()

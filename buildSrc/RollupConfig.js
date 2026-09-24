@@ -14,6 +14,8 @@ export const dependencyMap = {
 	luxon: path.normalize("./libs/luxon.js"),
 	linkifyjs: path.normalize("./libs/linkify.js"),
 	"linkify-html": path.normalize("./libs/linkify-html.js"),
+	"./tensorflow-custom": path.normalize("./libs/tensorflow.js"),
+	"./openid-client-custom": path.normalize("./libs/openid-client.js"),
 	cborg: path.normalize("./libs/cborg.js"),
 	// below this, the modules are only running in the desktop main thread.
 	"electron-updater": path.normalize("./libs/electron-updater.mjs"),
@@ -21,7 +23,8 @@ export const dependencyMap = {
 	jsqr: path.normalize("./libs/jsQR.js"),
 	"@signalapp/sqlcipher": path.normalize("./libs/node-sqlcipher.mjs"),
 	"@fingerprintjs/botd": path.normalize("./libs/botd.mjs"),
-	"./tensorflow-custom": path.normalize("./libs/tensorflow.js"),
+	"./imapflow-custom": path.normalize("./libs/imapflow.js"),
+	"./postalmime-custom": path.normalize("./libs/postal-mime.js"),
 }
 
 export let tsImportAliases = {
@@ -58,13 +61,28 @@ export const allowedImports = {
 	main: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "date", "qr"],
 	sanitizer: ["polyfill-helpers", "common-min", "common", "boot", "gui-base"],
 	date: ["polyfill-helpers", "common-min", "common"],
-	"date-gui": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "sharing", "date", "contacts", "ui-extra"],
+	"date-gui": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "sharing", "date", "contacts", "ui-extra", "calendar-importer"],
+	"calendar-importer": ["polyfill-helpers", "common-min", "common", "boot", "date", "date-gui"],
 	"mail-view": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "ui-extra"],
-	"mail-editor": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "sanitizer", "sharing", "date-gui"],
-	search: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "calendar-view", "contacts", "date", "date-gui", "sharing"],
+	"mail-editor": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "sanitizer", "sharing", "date", "date-gui"],
+	search: [
+		"polyfill-helpers",
+		"common-min",
+		"common",
+		"boot",
+		"gui-base",
+		"main",
+		"mail-view",
+		"calendar-view",
+		"contacts",
+		"date",
+		"date-gui",
+		"sharing",
+		"drive",
+	],
 	// ContactMergeView needs HtmlEditor even though ContactEditor doesn't?
 	contacts: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "date", "date-gui", "mail-editor"],
-	"calendar-view": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "date", "date-gui", "sharing", "contacts"],
+	"calendar-view": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "date", "date-gui", "sharing", "contacts", "calendar-importer"],
 	login: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main"],
 	signup: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "settings", "login"],
 	"spam-classifier": ["polyfill-helpers", "common", "common-min"],
@@ -105,6 +123,7 @@ export const allowedImports = {
 		"settings",
 		"native-main",
 		"ui-extra",
+		"openid-client",
 	],
 	"calendar-settings": [
 		"polyfill-helpers",
@@ -176,6 +195,7 @@ export const allowedImports = {
 	"worker-search": ["common-min", "common", "worker", "worker-lazy"],
 	linkify: [],
 	qr: ["polyfill-helpers"],
+	"openid-client": [],
 	pdf: ["common-min", "qr"],
 	"material-color-utilities": [],
 	drive: ["common-min", "common", "boot", "gui-base", "main"],
@@ -295,7 +315,6 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/applications/common/api/main") ||
 		isIn("src/applications/mail-app/mail/model") ||
 		isIn("src/applications/mail-app/contacts/model") ||
-		isIn("src/applications/mail-app/search/model") ||
 		isIn("src/applications/calendar-app/calendar/search/model") ||
 		isIn("src/applications/common/misc") ||
 		isIn("src/applications/common/file") ||
@@ -318,12 +337,18 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/applications/mail-app/workerUtils/worker") ||
 		isIn("src/applications/calendar-app/worker") ||
 		isIn("src/applications/mail-app/workerUtils/offline") ||
-		isIn("src/applications/drive-app/workerUtils")
+		isIn("src/applications/drive-app/workerUtils") ||
+		isIn("src/applications/mail-app/workerUtils/imapimport")
 	) {
 		return "worker"
 	} else if (moduleId.includes("pow-worker") || moduleId.includes("ProofOfWorkCaptchaUtils")) {
 		return "pow-worker"
-	} else if (isIn(`src/applications/mail-app/search`) || isIn(`src/applications/calendar-app/calendar/search`) || isIn("src/applications/common/search")) {
+	} else if (
+		isIn(`src/applications/mail-app/search`) ||
+		isIn(`src/applications/calendar-app/calendar/search`) ||
+		isIn("src/applications/drive-app/search") ||
+		isIn("src/applications/common/search")
+	) {
 		return "search"
 	} else if (isIn("src/applications/calendar-app/calendar/view")) {
 		return "calendar-view"
@@ -336,11 +361,12 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "ui-extra"
 	} else if (isIn("src/applications/common/signup")) {
 		return "signup"
-	} else if (isIn("src/applications/common/login")) {
+	} else if (isIn("src/applications/common/login") || isIn("src/applications/calendar/login")) {
 		return "login"
 	} else if (
 		isIn("src/applications/common/api/common") ||
 		isIn("src/desktop/config/ConfigKeys") ||
+		isIn("src/applications/common/desktop/") ||
 		moduleId.includes("cborg") ||
 		// CryptoError is needed on the main thread in order to check errors
 		// We have to define both the entry point and the files referenced from it which is annoying
@@ -362,6 +388,7 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/applications/common/subscription") ||
 		isIn("src/applications/common/ratings") ||
 		isIn("src/applications/common/termination") ||
+		isIn("src/applications/common/revocation") ||
 		isIn("src/applications/common/partner")
 	) {
 		// subscription and settings depend on each other right now.
@@ -395,6 +422,8 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "worker" // avoid that crypto stuff is only put into native
 	} else if (isIn("libs/jszip")) {
 		return "jszip"
+	} else if (isIn("libs/openid-client")) {
+		return "openid-client"
 	} else if (isIn("node_modules/@material/material-color-utilities")) {
 		return "material-color-utilities"
 	} else if (isIn("libs/jsQR") || isIn("libs/qrcode")) {
@@ -408,13 +437,14 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/platform-kit/rest-client/error.ts") ||
 		isIn("src/platform-kit/instance-pipeline/utils") ||
 		isIn("src/ui/utils") ||
-		isIn("src/platform-kit/base/crypto/Constants.ts") ||
+		isIn("src/platform-kit/base/base-crypto/Constants.ts") ||
 		isIn("src/platform-kit/crypto/CryptoTypes.ts") ||
 		isIn("src/platform-kit/network/GroupUtils.ts") ||
 		isIn("src/platform-kit/network/EntityClient.ts") ||
 		isIn("src/platform-kit/network/ProgressMonitorInterface.ts") ||
 		isIn("src/app-kit/native-bridge/common/threading/WebTransport.ts") ||
-		isIn("src/platform-kit/instance-pipeline/EntityFunctions.ts")
+		isIn("src/platform-kit/instance-pipeline/EntityFunctions.ts") ||
+		isIn("src/platform-kit/instance-pipeline/RestClientOptions.ts")
 	) {
 		return "common"
 	} else if (isIn("src/platform-kit/rest-client") || isIn("src/platform-kit/crypto") || isIn("src/platform-kit/instance-pipeline")) {
@@ -449,8 +479,12 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "common"
 	} else if (isIn("src/ui/base")) {
 		return "gui-base"
-	} else if (isIn("src/ui")) {
+	} else if (isIn("src/ui") && !isIn("src/ui/translations")) {
 		return "main"
+	} else if (isIn("src/applications/common/calendar/import")) {
+		return "calendar-importer"
+	} else if (isIn("src/applications/common/calendar/")) {
+		return "common"
 	} else {
 		// Put all translations into "translation-code"
 		// Almost like in Rollup example: https://rollupjs.org/guide/en/#outputmanualchunks
@@ -533,7 +567,7 @@ export function bundleDependencyCheckPlugin() {
 				}
 				for (const moduleId of Object.keys(chunk.modules)) {
 					// Its a translation file and they are in their own chunks. We can skip further checks.
-					if (moduleId.includes(path.normalize("src/applications/mail-app/translations"))) {
+					if (moduleId.includes(path.normalize("src/ui/translations"))) {
 						continue
 					}
 					const ownChunk = getChunkName(moduleId, { getModuleInfo })

@@ -32,15 +32,18 @@ export function min<T extends Iterable<number>>(set: T): number | null {
 	return minBy(set, identity)
 }
 
+export type MinByResult<T> = { item: T; value: number }
+export type MaxByResult<T> = { item: T; value: number }
+
 export function minBy<E, T extends Iterable<E>>(collection: T, selector: (item: E) => number): E | null {
-	let min: { item: E; value: number } | null = null
+	let min: MinByResult<E> | null = null
 	for (const item of collection) {
 		const value = selector(item)
 		if (min == null || value < min.value) {
 			min = { item, value }
 		}
 	}
-	return min ? min.item : null
+	return min?.item ?? null
 }
 
 export function max<T extends Iterable<number>>(set: T): number | null {
@@ -48,17 +51,17 @@ export function max<T extends Iterable<number>>(set: T): number | null {
 }
 
 export function maxBy<E, T extends Iterable<E>>(collection: T, selector: (item: E) => number): E | null {
-	let max: { item: E; value: number } | null = null
+	let max: MaxByResult<E> | null = null
 	for (const item of collection) {
 		const value = selector(item)
 		if (max == null || value > max.value) {
 			max = { item, value }
 		}
 	}
-	return max ? max.item : null
+	return max?.item ?? null
 }
 
-export function setAddAll<T>(set: Set<T>, toAdd: Iterable<T>) {
+export function setAddAll<T>(set: Set<T>, toAdd: Iterable<T>): void {
 	for (const item of toAdd) {
 		set.add(item)
 	}
@@ -88,20 +91,19 @@ export function mapWithout<K, V>(map: ReadonlyMap<K, V>, key: K): Map<K, V> {
 	return newMap
 }
 
+export type TrisectionResult<T> = {
+	kept: Array<T>
+	added: Array<T>
+	deleted: Array<T>
+}
+
 /**
  * diff two maps by keys
  * @param before the map that's considered the old contents
  * @param after the map that's representing the current contents.
  * @returns arrays containing the kept, added, and deleted values.
  */
-export function trisectingDiff<T>(
-	before: ReadonlyMap<unknown, T>,
-	after: ReadonlyMap<unknown, T>,
-): {
-	kept: Array<T>
-	added: Array<T>
-	deleted: Array<T>
-} {
+export function trisectingDiff<T>(before: ReadonlyMap<unknown, T>, after: ReadonlyMap<unknown, T>): TrisectionResult<T> {
 	const kept: Array<T> = []
 	const added: Array<T> = []
 	const deleted: Array<T> = []
@@ -148,4 +150,15 @@ export function collectionSum(collection: Iterable<number>): number {
 		sum += item
 	}
 	return sum
+}
+
+/**
+ * Return a new collection with only unique members of {@param collection} when mapping each via {@param discriminator}
+ */
+export function collectionUniqueBy<T>(collection: Iterable<T>, discriminator: (item: T) => string): ArrayIterator<T> {
+	const map = new Map()
+	for (const item of collection) {
+		map.set(discriminator(item), item)
+	}
+	return map.values()
 }

@@ -1,4 +1,4 @@
-import { assertMainOrNode, MailAuthenticationStatus } from "../../../../platform-kit/app-env"
+import { EnvProvider, MailAuthenticationStatus } from "../../../../platform-kit/app-env"
 import { SpamClassifier } from "../../workerUtils/spamClassification/SpamClassifier"
 import { assertNotNull } from "../../../../platform-kit/utils"
 import { FolderSystem } from "../../../common/api/common/mail/FolderSystem"
@@ -12,14 +12,14 @@ import { LoginController } from "../../../common/api/main/LoginController"
 import { Mail, MailDetails, MailSet } from "@tutao/entities/tutanota"
 import { MailPhishingStatus, MailSetKind } from "../../../../entities/tutanota/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /// tutadb ClassifierType
 /// If this classifier decided something in serverSide already, we can trust the decision
 /// and not run predictional locally
 export const SERVER_CLASSIFIERS_TO_TRUST = Object.freeze(
 	new Set<number>([
-		2, 14, 22, 5, 6, 4, 8, 23,
+		6, 28, 2, 27, 23, 26, 22, 14, 5, 4, 8,
 		/// NOTE: Generate from: tutadb#ClassifierTypeTest#tutanota3_SERVER_CLASSIFIERS_TO_TRUST
 	]),
 )

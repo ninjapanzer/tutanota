@@ -1,15 +1,27 @@
 import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/MailboxModel.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
-import { $Promisable, assertNotNull, count, debounce, isEmpty, lazyMemoized, mapWith, mapWithout, ofClass } from "../../../../platform-kit/utils"
+import {
+	assertNotNull,
+	count,
+	debounce,
+	isEmpty,
+	isNotEmpty,
+	isNotNull,
+	lazyAsync,
+	lazyMemoized,
+	mapWith,
+	mapWithout,
+	ofClass,
+	pMap,
+} from "../../../../platform-kit/utils"
 import { ListLoadingState, ListState } from "../../../../ui/base/List.js"
 import { ConversationPrefProvider, ConversationViewModel, ConversationViewModelFactory } from "./ConversationViewModel.js"
 import { CreateMailViewerOptions } from "./MailViewer.js"
 import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { isOfflineError } from "../../../../platform-kit/rest-client/error"
+import { isOfflineError, NotAuthorizedError, NotFoundError, PreconditionFailedError } from "../../../../platform-kit/rest-client/error"
 import { UserError } from "../../../common/api/main/UserError.js"
 import Stream from "mithril/stream"
-import { Router } from "../../../../ui/ScopedRouter.js"
+import { Router } from "../../../../ui/ScopedThrottledRouter.js"
 import { EventController } from "../../../common/api/main/EventController.js"
 import { MailModel, MoveMode } from "../model/MailModel.js"
 import { assertSystemFolderOfType } from "../model/MailUtils.js"
@@ -19,22 +31,44 @@ import { MailListModel } from "../model/MailListModel"
 import { MailSetListModel } from "../model/MailSetListModel"
 import { ConversationListModel } from "../model/ConversationListModel"
 import { MailListDisplayMode } from "../../../common/misc/DeviceConfig"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { ProcessInboxHandler } from "../model/ProcessInboxHandler"
 import { mailLocator } from "../../mailLocator"
-import { moveMails } from "./MailGuiUtils"
+import { getLabelsWithParentLabelNamesPrepended, moveMails } from "./MailGuiUtils"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { UndoModel } from "../../UndoModel"
-import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
 import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorage"
 import { WsConnectionState } from "../../../../platform-kit/network/Constants"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
-import { ImportMailStateTypeRef, Mail, MailBox, MailSet, MailSetEntryTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
-import { MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
-import { elementIdPart, getElementId, isSameId, OperationType } from "../../../../platform-kit/meta"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import {
+	ImapAccountSyncStateTypeRef,
+	ImapFolderSyncStateTypeRef,
+	ImportFileMailStateTypeRef,
+	Mail,
+	MailBox,
+	MailSet,
+	MailSetEntryTypeRef,
+	MailSetTypeRef,
+	MailTypeRef,
+} from "@tutao/entities/tutanota"
+import { ImapAccountSyncStatus, MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
+import { elementIdPart, getElementId, isSameId, isSameSingleId, OperationType } from "../../../../platform-kit/meta"
+import {
+	CacheSyncStatus,
+	EntityUpdateData,
+	EntityUpdatesListener,
+	isUpdateForTypeRef,
+	ListenerPriority,
+} from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { getMailSetKind, isPermanentDeleteAllowedForFolder } from "../MailUtils"
 import { ProgrammingError } from "../../../../platform-kit/app-env"
+import { $Promisable } from "../../workerUtils/index/IndexerPromiseUtils"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { SearchRouter } from "../../../common/search/view/SearchRouter"
+import { MailSearchModel } from "../../search/model/MailSearchModel"
+
+import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
+import { LoginController } from "../../../common/api/main/LoginController"
 
 export interface MailOpenedListener {
 	onEmailOpened(mail: Mail): unknown
@@ -83,11 +117,24 @@ export class MailViewModel {
 	/* We only attempt counter fixup once after switching mailSets and loading the list fully. */
 	private shouldAttemptCounterFixup: boolean = true
 
-	private listModelReloadPromise: Promise<void> = Promise.resolve()
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "MailViewModel",
+		onEntityUpdatesReceived: (updates, _) => this.onEntityUpdatesReceived(updates),
+		priority: ListenerPriority.HIGH,
+	}
+
+	private readonly syncListener: SyncListener = {
+		id: "MailViewModel",
+		priority: ListenerPriority.NORMAL,
+		targetStatus: CacheSyncStatus.OnlineSyncOngoing,
+		onSyncStatusChange: async () => {
+			await this.listModel?.reload()
+		},
+	}
 
 	constructor(
 		private readonly mailboxModel: MailboxModel,
-		private readonly mailModel: MailModel,
+		readonly mailModel: MailModel,
 		private readonly entityClient: EntityClient,
 		private readonly eventController: EventController,
 		private readonly connectivityModel: WebsocketConnectivityModel,
@@ -99,6 +146,9 @@ export class MailViewModel {
 		private readonly router: Router,
 		private readonly updateUi: () => unknown,
 		private readonly syncTracker: SyncTracker,
+		private readonly searchRouter: SearchRouter,
+		private readonly searchModel: lazyAsync<MailSearchModel>,
+		private readonly logins: LoginController,
 	) {}
 
 	getSelectedMailSetKind(): MailSetKind | null {
@@ -131,15 +181,15 @@ export class MailViewModel {
 	}
 
 	async showStickyMail(fullMailId: IdTuple, onMissingExplicitMailTarget: () => unknown): Promise<void> {
-		const [listId, elementId] = fullMailId
 		// If we are already displaying the requested email, do nothing
-		if (this.conversationViewModel && isSameId(this.conversationViewModel.primaryMail._id, elementId)) {
+		if (this.conversationViewModel && isSameId(this.conversationViewModel.primaryMail._id, fullMailId)) {
 			return
 		}
 		if (isSameId(this.stickyMailId, fullMailId)) {
 			return
 		}
 
+		const [listId, elementId] = fullMailId
 		console.log(TAG, "Loading sticky mail", listId, elementId)
 		this.stickyMailId = fullMailId
 
@@ -177,7 +227,7 @@ export class MailViewModel {
 			this._folder &&
 			isSameId(folder._id, this._folder._id) &&
 			this.conversationViewModel &&
-			isSameId(elementIdPart(this.conversationViewModel.primaryMail._id), mailId)
+			isSameSingleId(elementIdPart(this.conversationViewModel.primaryMail._id), mailId)
 		) {
 			return
 		}
@@ -189,7 +239,7 @@ export class MailViewModel {
 			this._folder &&
 			this.loadingTargetId &&
 			isSameId(folder._id, this._folder._id) &&
-			isSameId(this.loadingTargetId, mailId)
+			isSameSingleId(this.loadingTargetId, mailId)
 		) {
 			return
 		}
@@ -267,11 +317,14 @@ export class MailViewModel {
 
 		let mail: Mail | null
 		try {
-			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], { cacheMode: CacheMode.WriteOnly })
+			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], {
+				...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+				cacheMode: CacheMode.WriteOnly,
+			})
 		} catch (e) {
 			if (isOfflineError(e)) {
 				return
-			} else if (e instanceof restError.NotFoundError || e instanceof restError.NotAuthorizedError) {
+			} else if (e instanceof NotFoundError || e instanceof NotAuthorizedError) {
 				mail = null
 			} else {
 				throw e
@@ -313,7 +366,7 @@ export class MailViewModel {
 			mailId,
 			() =>
 				// if we changed the list, stop
-				this.getFolder() !== folder ||
+				this.getMailSet() !== folder ||
 				// if listModel is gone for some reason, stop
 				!this.listModel ||
 				// if the target mail has changed, stop
@@ -381,7 +434,7 @@ export class MailViewModel {
 	 * Permanent delete is only allowed when the mail is deletable, in the current folder, and the current folder is Trash/Spam.
 	 */
 	isPermanentDeleteAllowed(): boolean {
-		const currentFolder = this.getFolder()
+		const currentFolder = this.getMailSet()
 		if (currentFolder == null) {
 			return false
 		}
@@ -402,7 +455,7 @@ export class MailViewModel {
 	}
 
 	isExportingMailsAllowed(): boolean {
-		return this.mailModel.isExportingMailsAllowed() && !client.isMobileDevice()
+		return this.mailModel.isExportingMailsAllowed() && !ClientDetector.get().isMobileDevice()
 	}
 
 	private async getFolderForUserInbox(): Promise<MailSet> {
@@ -414,6 +467,9 @@ export class MailViewModel {
 	/** init is called every time the view is opened */
 	init() {
 		this.onceInit()
+
+		this.syncTracker.addSyncListener(this.syncListener)
+
 		const conversationDisabled = this.conversationPrefProvider.getConversationViewShowOnlySelectedMail()
 		const mailListModePref = !conversationDisabled && this.conversationPrefProvider.getMailListDisplayMode() === MailListDisplayMode.CONVERSATIONS
 		if (this.conversationViewModel && this.conversationPref !== conversationDisabled) {
@@ -435,23 +491,10 @@ export class MailViewModel {
 			// if the preference for conversation in the list has changed, we need to re-create the list model
 			this.updateListModel()
 		}
-		this.syncTracker.addSyncDoneListener({
-			onSyncDone: async () => {
-				if (this.listModel) {
-					this.listModelReloadPromise = this.listModel?.reload()
-				} else {
-					this.updateListModel()
-				}
-			},
-			priority: SyncDonePriority.HIGH,
-		})
 	}
 
 	private readonly onceInit = lazyMemoized(() => {
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates, _, isInitialSyncDone) => this.entityEventsReceived(updates, isInitialSyncDone),
-			priority: OnEntityUpdateReceivedPriority.HIGH,
-		})
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	})
 
 	get listModel(): MailSetListModel | null {
@@ -465,12 +508,12 @@ export class MailViewModel {
 	/**
 	 * Beware: this can return a label.
 	 */
-	getFolder(): MailSet | null {
+	getMailSet(): MailSet | null {
 		return this._folder
 	}
 
-	getLabelsForMail(mail: Mail): ReadonlyArray<MailSet> {
-		return this.listModel?.getLabelsForMail(mail) ?? []
+	getLabelsForMail(mail: Mail): ReadonlyArray<{ name: string; color: string | null }> {
+		return getLabelsWithParentLabelNamesPrepended(this.mailModel, mail)
 	}
 
 	async applyLabelToMails(mails: readonly IdTuple[], label: MailSet): Promise<void> {
@@ -539,9 +582,9 @@ export class MailViewModel {
 		this.shouldAttemptCounterFixup = true
 	}
 
-	private fixCounterIfNeeded: (folder: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => void = debounce(
+	private fixCounterIfNeeded: (mailSet: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => void = debounce(
 		2000,
-		async (folder: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => {
+		async (mailSet: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => {
 			// We cannot be sure that we will fix counters correctly if sync is not yet done
 			if (!this.syncTracker.isSyncDone) {
 				return
@@ -550,11 +593,11 @@ export class MailViewModel {
 			// If mailSets are changed, the list won't have the data we need.
 			// Do not rely on counters if we are not connected.
 			// We can't know the correct unreadMailCount if some unread mails are filtered out.
-			const ourFolder = this.getFolder()
+			const ourFolder = this.getMailSet()
 			const listHasAllUnreadMails = this.filterType.size === 0 || (this.filterType.size === 1 && this.filterType.has(MailFilterType.Unread))
 			if (
 				ourFolder == null ||
-				!isSameId(getElementId(ourFolder), getElementId(folder)) ||
+				!isSameSingleId(getElementId(ourFolder), getElementId(mailSet)) ||
 				this.connectivityModel.wsConnection()() !== WsConnectionState.connected ||
 				!listHasAllUnreadMails
 			) {
@@ -564,28 +607,28 @@ export class MailViewModel {
 			// If the list was modified in the meantime, we cannot be sure that we will fix counters correctly (e.g., because of the inbox rules)
 			if (this.listModel?.mails !== loadedMailsWhenCalled) {
 				console.log("list changed, trying again later")
-				return this.fixCounterIfNeeded(folder, this.listModel?.mails ?? [])
+				return this.fixCounterIfNeeded(mailSet, this.listModel?.mails ?? [])
 			}
 
 			const unreadMailsCount = count(this.listModel.mails, (e) => e.unread)
 
-			const counterValue = await this.mailModel.getCounterValue(folder)
+			const folderOrLabel = mailSet.folderType === MailSetKind.LABEL ? "label" : "folder"
+			const counterValue = await this.mailModel.getCounterValue(mailSet)
 			if (counterValue != null && counterValue !== unreadMailsCount) {
-				console.log(`fixing up counter for folder ${folder._id}`)
-				await this.mailModel.fixupCounterForFolder(folder, unreadMailsCount)
+				console.log(`fixing up counter for ${folderOrLabel} ${mailSet._id}`)
+				await this.mailModel.fixupCounterForFolder(mailSet, unreadMailsCount)
 			} else {
-				console.log(`same counter, no fixup on folder ${folder._id}`)
+				console.log(`same counter, no fixup on ${folderOrLabel} ${mailSet._id}`)
 			}
 		},
 	)
 
 	private onListStateChange(listModel: MailSetListModel, newState: ListState<Mail>) {
-		// Fixup isn't needed for labels since only mailSets have counters.
 		// A counter fixup with a partially loaded list will set the counter to an incorrect value.
-		const folder = this.getFolder()
-		if (this.shouldAttemptCounterFixup && folder != null && folder.folderType !== MailSetKind.LABEL && newState.loadingStatus === ListLoadingState.Done) {
+		const mailSet = this.getMailSet()
+		if (this.shouldAttemptCounterFixup && mailSet != null && newState.loadingStatus === ListLoadingState.Done) {
 			// We use listModel.mails to get a correct count as it has all mails, even when conversation grouping is enabled
-			this.fixCounterIfNeeded(folder, listModel.mails)
+			this.fixCounterIfNeeded(mailSet, listModel.mails)
 			this.shouldAttemptCounterFixup = false
 		}
 
@@ -598,7 +641,7 @@ export class MailViewModel {
 				// Always write the targetItem in case it was not written before but already being displayed (sticky mail)
 				this.mailFolderElementIdToSelectedMailId = mapWith(
 					this.mailFolderElementIdToSelectedMailId,
-					getElementId(assertNotNull(this.getFolder())),
+					getElementId(assertNotNull(this.getMailSet())),
 					getElementId(targetItem),
 				)
 				if (!this.conversationViewModel || !isSameId(this.conversationViewModel?.primaryMail._id, targetItem._id)) {
@@ -618,9 +661,9 @@ export class MailViewModel {
 	}
 
 	private clearConversationViewModel() {
-		this.conversationViewModel?.dispose()
+		this.conversationViewModel?.deinit()
 		this.conversationViewModel = null
-		this.mailFolderElementIdToSelectedMailId = mapWithout(this.mailFolderElementIdToSelectedMailId, getElementId(assertNotNull(this.getFolder())))
+		this.mailFolderElementIdToSelectedMailId = mapWithout(this.mailFolderElementIdToSelectedMailId, getElementId(assertNotNull(this.getMailSet())))
 	}
 
 	private updateUrl() {
@@ -653,7 +696,7 @@ export class MailViewModel {
 	}
 
 	private createConversationViewModel(viewModelParams: CreateMailViewerOptions) {
-		this.conversationViewModel?.dispose()
+		this.conversationViewModel?.deinit()
 		this.conversationViewModel = this.conversationViewModelFactory(viewModelParams)
 	}
 
@@ -662,7 +705,7 @@ export class MailViewModel {
 			return
 		}
 
-		const currentFolder = this.getFolder()
+		const currentFolder = this.getMailSet()
 		if (currentFolder == null) {
 			return
 		}
@@ -706,7 +749,7 @@ export class MailViewModel {
 		return movedMailIds.flat()
 	}
 
-	private async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, isInitialSyncDone: boolean) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		// capturing the state so that if we switch mailSets, we won't run into race conditions
 		const folder = this._folder
 		const listModel = this.listModel
@@ -716,44 +759,72 @@ export class MailViewModel {
 		}
 
 		for (const update of updates) {
-			if (update.operation === OperationType.CREATE && isUpdateForTypeRef(ImportMailStateTypeRef, update)) {
-				await this.deleteMailSetEntryRangeForImportTargetFolder(update)
-			} else if (update.operation === OperationType.UPDATE) {
-				if (isUpdateForTypeRef(MailTypeRef, update) && isSameId(this.stickyMailId, [update.instanceListId, update.instanceId])) {
-					const mailId: IdTuple = [update.instanceListId, update.instanceId]
+			if (update.operation === OperationType.UPDATE) {
+				if (isUpdateForTypeRef(MailTypeRef, update) && isSameId(this.stickyMailId, [assertNotNull(update.instanceListId), update.instanceId])) {
+					const mailId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
 					const mail = await this.entityClient.load(MailTypeRef, mailId)
 					const folderForMail = this.mailModel.getMailFolderForMail(mail)
 					if (folderForMail && !this.didStickyMailChange(mailId, "after loading mail from cache on entity update")) {
 						this.setListId(folderForMail)
 					}
-				} else if (isUpdateForTypeRef(ImportMailStateTypeRef, update)) {
-					await this.deleteMailSetEntryRangeForImportTargetFolder(update)
+				} else if (isUpdateForTypeRef(ImportFileMailStateTypeRef, update)) {
+					const targetFolder = await this.getFileImportTargetFolder(update)
+					if (targetFolder) {
+						await this.deleteMailSetEntryRangeFolder(targetFolder, true)
+					}
+				} else if (isUpdateForTypeRef(ImapAccountSyncStateTypeRef, update)) {
+					// We need to drop all ranges for mailSets corresponding to ImapFolderSyncStates + imapSyncLabel
+					const imapAccountSyncState = await this.entityClient.load(ImapAccountSyncStateTypeRef, [
+						assertNotNull(update.instanceListId),
+						update.instanceId,
+					])
+					// we only reload the folder / label the user is currently viewing in case we are done
+					const shouldReload = imapAccountSyncState.status !== ImapAccountSyncStatus.RUNNING
+
+					const imapFolderSyncStates = await this.entityClient.loadAll(ImapFolderSyncStateTypeRef, imapAccountSyncState.imapFolderSyncStateList)
+					if (imapAccountSyncState.imapSyncLabel) {
+						const syncLabel = await this.entityClient.load(MailSetTypeRef, imapAccountSyncState.imapSyncLabel)
+						await this.deleteMailSetEntryRangeFolder(syncLabel, shouldReload)
+					}
+					const mailSetIdsToDeleteRange = imapFolderSyncStates.map((imapFolderSyncState) => imapFolderSyncState.mailSet).filter(isNotNull)
+					if (isNotEmpty(mailSetIdsToDeleteRange)) {
+						const mailSetsToDeleteRange = await pMap(
+							mailSetIdsToDeleteRange,
+							async (mailSetId) => await this.mailModel.getMailSetById(elementIdPart(mailSetId)),
+						)
+						for (const mailSet of mailSetsToDeleteRange) {
+							if (mailSet) {
+								await this.deleteMailSetEntryRangeFolder(mailSet, shouldReload)
+							}
+						}
+					}
 				}
 			}
 
-			if (isInitialSyncDone) {
-				// we need to await the reload promise here, to populate the map (conversationMap/mailMap) inside the list model
-				this.listModelReloadPromise.then(async () => await listModel.handleEntityUpdate(update))
-			}
+			await listModel.handleEntityUpdate(update)
 		}
 	}
 
-	private async deleteMailSetEntryRangeForImportTargetFolder(update: EntityUpdateData) {
-		// We delete the range of MailSetEntries for the targetFolder entries list of the import.
-		// This makes sure, that we keep already downloaded MailSetEntries in cache, but still show all mails inside the targetFolder correctly.
-		// The MailIndexer is downloading the MailSetEntries and Mails corresponding to this import in background
+	private async deleteMailSetEntryRangeFolder(targetFolder: MailSet, shouldReload: boolean = false) {
+		// This deletes the range of MailSetEntries for a targetFolder entries list,
+		// currently used when importing mails from a file or IMAP.
+		// This makes sure that we keep already downloaded MailSetEntries in the cache but still show
+		// all mails inside the targetFolder correctly.
+		// The MailIndexer is downloading the MailSetEntries and Mails corresponding to an import in the background
 		// and ensures that all imported mails are searchable immediately.
-		const importMailState = await this.entityClient.load(ImportMailStateTypeRef, [update.instanceListId!, update.instanceId])
-		const targetFolder = await this.mailModel.getMailSetById(elementIdPart(importMailState.targetFolder))
-		if (targetFolder) {
-			const targetFolderEntriesListId = targetFolder.entries
-			await this.cacheStorage.deleteRange(MailSetEntryTypeRef, targetFolderEntriesListId)
 
-			const selectedMailSet = this.getFolder()
-			if (selectedMailSet && isSameId(selectedMailSet._id, targetFolder._id)) {
-				this.listModel?.reload()
-			}
+		const targetFolderEntriesListId = targetFolder.entries
+		await this.cacheStorage.deleteRange(MailSetEntryTypeRef, targetFolderEntriesListId)
+
+		const selectedMailSet = this.getMailSet()
+		if (shouldReload && selectedMailSet && isSameId(selectedMailSet._id, targetFolder._id)) {
+			this.listModel?.reload()
 		}
+	}
+
+	private async getFileImportTargetFolder(update: EntityUpdateData) {
+		const importMailState = await this.entityClient.load(ImportFileMailStateTypeRef, [update.instanceListId!, update.instanceId])
+		return await this.mailModel.getMailSetById(elementIdPart(importMailState.targetFolder))
 	}
 
 	async switchToFolder(folderType: SystemFolderType): Promise<void> {
@@ -775,14 +846,14 @@ export class MailViewModel {
 	}
 
 	async getMailboxDetails(): Promise<MailboxDetail> {
-		const folder = this.getFolder()
+		const folder = this.getMailSet()
 		return await this.mailboxDetailForListWithFallback(folder)
 	}
 
 	async showingDraftsFolder(): Promise<boolean> {
 		if (!this._folder) return false
 		const mailboxDetail = await this.mailModel.getMailboxDetailsForMailFolder(this._folder)
-		const selectedFolder = this.getFolder()
+		const selectedFolder = this.getMailSet()
 		if (selectedFolder && mailboxDetail) {
 			const folders = await this.mailModel.getMailboxFoldersForId(mailboxDetail.mailbox.mailSets._id)
 			return isOfTypeOrSubfolderOf(folders, selectedFolder, MailSetKind.DRAFT)
@@ -792,7 +863,7 @@ export class MailViewModel {
 	}
 
 	async showingTrashOrSpamFolder(): Promise<boolean> {
-		const folder = this.getFolder()
+		const folder = this.getMailSet()
 		if (folder) {
 			const mailboxDetail = await this.mailModel.getMailboxDetailsForMailFolder(folder)
 			if (folder && mailboxDetail) {
@@ -817,7 +888,7 @@ export class MailViewModel {
 		// the request is handled a little differently if it is the system folder vs. a subfolder
 		if (folder.folderType === MailSetKind.TRASH || folder.folderType === MailSetKind.SPAM) {
 			return this.mailModel.clearFolder(folder).catch(
-				ofClass(restError.PreconditionFailedError, () => {
+				ofClass(PreconditionFailedError, () => {
 					throw new UserError("operationStillActive_msg")
 				}),
 			)
@@ -825,7 +896,7 @@ export class MailViewModel {
 			const folders = await this.mailModel.getMailboxFoldersForId(mailboxDetail.mailbox.mailSets._id)
 			if (isSubfolderOfType(folders, folder, MailSetKind.TRASH) || isSubfolderOfType(folders, folder, MailSetKind.SPAM)) {
 				return this.mailModel.finallyDeleteCustomMailFolder(folder).catch(
-					ofClass(restError.PreconditionFailedError, () => {
+					ofClass(PreconditionFailedError, () => {
 						throw new UserError("operationStillActive_msg")
 					}),
 				)
@@ -887,11 +958,11 @@ export class MailViewModel {
 		this.listModel?.onSingleExclusiveSelection(mail)
 	}
 
-	async createLabel(mailbox: MailBox, labelData: { name: string; color: string }) {
+	async createLabel(mailbox: MailBox, labelData: { name: string; color: string; parentLabelId?: IdTuple }) {
 		await this.mailModel.createLabel(assertNotNull(mailbox._ownerGroup), labelData)
 	}
 
-	async editLabel(label: MailSet, newData: { name: string; color: string }) {
+	async editLabel(label: MailSet, newData: { name: string; color: string; parentFolderId?: IdTuple }) {
 		await this.mailModel.updateLabel(label, newData)
 	}
 
@@ -909,6 +980,25 @@ export class MailViewModel {
 
 	getMoveMode(folder: MailSet): MoveMode {
 		return this.groupMailsByConversation(folder) ? MoveMode.Conversation : MoveMode.Mails
+	}
+
+	selectSearchResult(searchQuery: SearchQuery, mail: Mail | null) {
+		this.searchRouter.routeTo(searchQuery.query, searchQuery.restriction, mail ? getElementId(mail) : null)
+	}
+
+	async getSearchResult({ query, maxResults }: QuickSearchQuery): Promise<LiveSearchResult<Mail>> {
+		const { createMailRestriction, getFreeSearchStartDate } = await import("../../search/model/MailSearchUtils.js")
+		const restriction = createMailRestriction({
+			start: null,
+			end: this.logins.getUserController().isFreeAccount() ? getFreeSearchStartDate().getTime() : null,
+			field: null,
+			folderIds: [],
+		})
+		return (await this.searchModel()).searchMails({ query, maxResults, restriction })
+	}
+
+	deinit() {
+		this.syncTracker.removeSyncListener(this.syncListener)
 	}
 }
 

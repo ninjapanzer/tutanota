@@ -6,7 +6,7 @@ import { Contact } from "@tutao/entities/tutanota"
 import { PartialRecipient } from "../../../../entities/tutanota/Utils"
 import type { GroupColors } from "./CalendarView"
 import type { CalendarEventBubbleClickHandler, CalendarEventBubbleKeyDownHandler, CalendarPreviewModels, EventWrapper } from "./CalendarViewModel"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { DateTime } from "luxon"
 import { CalendarAgendaItemView } from "./CalendarAgendaItemView.js"
 import ColumnEmptyMessageBox from "../../../../ui/base/ColumnEmptyMessageBox.js"
@@ -15,23 +15,24 @@ import { layout_size, px, size } from "../../../../ui/size.js"
 import { DaySelector } from "../gui/day-selector/DaySelector.js"
 import { CalendarEventPreviewViewModel } from "../gui/eventpopup/CalendarEventPreviewViewModel.js"
 import { EventDetailsView } from "./EventDetailsView.js"
-import { getElementId, getListId } from "../../../../platform-kit/meta"
+import { getElementId, getListId } from "@tutao/meta"
 import { isAllDayEvent, setNextHalfHour } from "../../../common/api/common/utils/CommonCalendarUtils.js"
 import { Time } from "../../../common/calendar/date/Time.js"
 import { DaysToEvents } from "../../../common/calendar/date/CalendarEventsRepository.js"
 
-import { formatEventTimes, getEventColor, shouldDisplayEvent } from "../gui/CalendarGuiUtils.js"
+import { getEventColor, shouldDisplayEvent } from "../gui/CalendarGuiUtils.js"
 import { PageView } from "../../../../ui/base/PageView.js"
 import { getIfLargeScroll } from "../../../../ui/base/GuiUtils.js"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager.js"
-import { Keys } from "../../../../platform-kit/app-env"
 import { MainCreateButton } from "../../../../ui/MainCreateButton.js"
 import { CalendarContactPreviewViewModel } from "../gui/eventpopup/CalendarContactPreviewViewModel.js"
 import { ContactCardViewer } from "../../../mail-app/contacts/view/ContactCardViewer.js"
 import { TimeIndicator } from "../../../common/calendar/gui/TimeIndicator"
 import { TimeBadgeVarient } from "../../../common/calendar/gui/TimeBadge"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { formatEventTimesAtDate } from "../gui/DateTimeTextFormatterUtils"
 
 export type CalendarAgendaViewAttrs = {
 	selectedDate: Date
@@ -66,7 +67,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 	private listDom: HTMLElement | null = null
 
 	view({ attrs }: Vnode<CalendarAgendaViewAttrs>): Children {
-		const isDesktopLayout = styles.isDesktopLayout()
+		const isDesktopLayout = Styles.get().isDesktopLayout()
 		const selectedDate = attrs.selectedDate
 
 		let containerStyle
@@ -143,7 +144,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 							showDaySelection: true,
 							highlightToday: true,
 							highlightSelectedWeek: false,
-							useNarrowWeekName: styles.isSingleColumnLayout(),
+							useNarrowWeekName: Styles.get().isSingleColumnLayout(),
 							hasEventOn: (date) =>
 								attrs.eventsForDays
 									.get(date.getTime())
@@ -194,7 +195,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 				icon: Icons.CalendarFilled,
 				message: "noEntries_msg",
 				color: theme.on_surface_variant,
-				bottomContent: !client.isCalendarApp()
+				bottomContent: !ClientDetector.get().isCalendarApp()
 					? m(MainCreateButton, {
 							label: "newEvent_action",
 							click: (e: MouseEvent) => {
@@ -313,7 +314,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 		this.lastScrollPosition = attrs.scrollPosition
 	}
 
-	private renderEventsForDay(events: readonly EventWrapper[], zone: string, day: Date, attrs: CalendarAgendaViewAttrs) {
+	private renderEventsForDay(events: readonly EventWrapper[], calendarTimeZone: string, day: Date, attrs: CalendarAgendaViewAttrs) {
 		const { groupColors: colors, onEventClicked, onEventKeyDown: keyDown, eventPreviewModel: modelPromise } = attrs
 		const agendaItemHeight = 62
 		const agendaGap = 3
@@ -363,6 +364,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 			}
 
 			const eventColor = getEventColor(eventWrapper.event, colors)
+
 			eventsNodes.push(
 				m(CalendarAgendaItemView, {
 					key: getListId(eventWrapper.event) + getElementId(eventWrapper.event) + eventWrapper.event.startTime.toISOString(),
@@ -378,7 +380,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 							const previousIndex = eventIndex - 1
 							if (previousItem) {
 								previousItem.focus()
-								if (previousIndex >= 0 && !styles.isSingleColumnLayout()) {
+								if (previousIndex >= 0 && !Styles.get().isSingleColumnLayout()) {
 									keyDown(events[previousIndex].event, new KeyboardEvent("keydown", { key: Keys.RETURN.code }))
 									return
 								}
@@ -392,7 +394,7 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 							const nextIndex = eventIndex + 1
 							if (nextItem) {
 								nextItem.focus()
-								if (nextIndex < events.length && !styles.isSingleColumnLayout()) {
+								if (nextIndex < events.length && !Styles.get().isSingleColumnLayout()) {
 									keyDown(events[nextIndex].event, new KeyboardEvent("keydown", { key: Keys.RETURN.code }))
 									return
 								}
@@ -402,10 +404,10 @@ export class CalendarAgendaView implements Component<CalendarAgendaViewAttrs> {
 						}
 						keyDown(eventWrapper.event, domEvent)
 					},
-					zone,
+					calendarTimeZone: calendarTimeZone,
 					day: day,
 					height: agendaItemHeight,
-					timeText: formatEventTimes(day, eventWrapper.event, zone),
+					timeText: formatEventTimesAtDate(day, eventWrapper.event, calendarTimeZone),
 				}),
 			)
 		}

@@ -1,12 +1,10 @@
 import o from "@tutao/otest"
 import { matchers, object, verify, when } from "testdouble"
-import { DeserializedPublicKeyForSigning, PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/crypto/PublicKeySignatureFacade"
+import { DeserializedPublicKeyForSigning, PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/base-crypto/PublicKeySignatureFacade"
 import {
-	CryptoWrapper,
 	Ed25519PrivateKey,
 	Ed25519PublicKey,
 	generateX25519KeyPair,
-	KeyPairType,
 	kyberPublicKeyToBytes,
 	PQKeyPairs,
 	PQPublicKeys,
@@ -17,14 +15,15 @@ import {
 	RsaX25519PublicKey,
 } from "../../../../../src/platform-kit/crypto"
 
-import { Ed25519Facade } from "../../../../../src/platform-kit/base/crypto/Ed25519Facade"
+import { Ed25519Facade } from "../../../../../src/platform-kit/base/base-crypto/Ed25519Facade"
 import { KeyVersion, Versioned } from "../../../../../src/platform-kit/utils"
-import { PQFacade } from "../../../../../src/platform-kit/base/crypto/PQFacade"
-import { WASMKyberFacade } from "../../../../../src/platform-kit/base/crypto/KyberFacade"
+import { PQFacade } from "../../../../../src/platform-kit/base/base-crypto/PQFacade"
+import { WASMKyberFacade } from "../../../../../src/platform-kit/base/base-crypto/KyberFacade"
 import { RSA_TEST_KEYPAIR } from "../../../api/worker/facades/RsaPqPerformanceTest"
 import { loadLibOQSWASM } from "../../../crypto/WebAssemblyTestUtils"
 import { EncodedEd25519Signature } from "../../../../../src/platform-kit/crypto/encryption/Ed25519"
-import { PublicKeySignatureType } from "../../../../../src/platform-kit/base/crypto/Constants.js"
+import { PublicKeySignatureType } from "../../../../../src/platform-kit/base/base-crypto/Constants.js"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 
 o.spec("PublicKeySignatureFacadeTest", function () {
 	let ed25519Facade: Ed25519Facade
@@ -51,38 +50,22 @@ o.spec("PublicKeySignatureFacadeTest", function () {
 		keyPairVersion = 10
 		tutaCryptKeyPair = { object: await pqFacade.generateKeyPairs(), version: keyPairVersion }
 		tutaCryptPubKey = {
-			object: {
-				keyPairType: KeyPairType.TUTA_CRYPT,
-				kyberPublicKey: tutaCryptKeyPair.object.kyberKeyPair.publicKey,
-				x25519PublicKey: tutaCryptKeyPair.object.x25519KeyPair.publicKey,
-			},
+			object: new PQPublicKeys(tutaCryptKeyPair.object.x25519KeyPair.publicKey, tutaCryptKeyPair.object.kyberKeyPair.publicKey),
 			version: tutaCryptKeyPair.version,
 		}
 		rsaOnlyKeyPair = { version: keyPairVersion, object: RSA_TEST_KEYPAIR }
 		rsaOnlyPubKey = {
 			version: rsaOnlyKeyPair.version,
-			object: {
-				...rsaOnlyKeyPair.object.publicKey,
-				keyPairType: KeyPairType.RSA,
-			},
+			object: rsaOnlyKeyPair.object.publicKey,
 		}
 		const x25519KeyPair = generateX25519KeyPair()
 		rsaEccKeyPair = {
 			version: keyPairVersion,
-			object: {
-				...RSA_TEST_KEYPAIR,
-				keyPairType: KeyPairType.RSA_AND_X25519,
-				privateEccKey: x25519KeyPair.privateKey,
-				publicEccKey: x25519KeyPair.publicKey,
-			},
+			object: new RsaX25519KeyPair(RSA_TEST_KEYPAIR.publicKey, RSA_TEST_KEYPAIR.privateKey, x25519KeyPair.publicKey, x25519KeyPair.privateKey),
 		}
 		rsaEccPubKey = {
 			version: rsaEccKeyPair.version,
-			object: {
-				...rsaEccKeyPair.object.publicKey,
-				keyPairType: KeyPairType.RSA_AND_X25519,
-				publicEccKey: rsaEccKeyPair.object.publicEccKey,
-			},
+			object: new RsaX25519PublicKey(rsaEccKeyPair.object.publicKey, rsaEccKeyPair.object.publicEccKey),
 		}
 	})
 	o.spec("Roundtrip", function () {

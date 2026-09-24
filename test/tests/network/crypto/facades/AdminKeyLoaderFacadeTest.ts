@@ -1,14 +1,15 @@
 import o, { assertThrows } from "@tutao/otest"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient.js"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { CacheManagementFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
-import { AsymmetricCryptoFacade } from "../../../../../src/platform-kit/base/crypto/AsymmetricCryptoFacade.js"
+import { AsymmetricCryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/AsymmetricCryptoFacade.js"
 import { matchers, object, verify, when } from "testdouble"
 import {
+	Aes128Key,
+	Aes256Key,
 	AesKey,
 	cryptoUtils,
-	CryptoWrapper,
 	MacTag,
 	PQKeyPairs,
 	PublicKeyIdentifierType,
@@ -18,13 +19,20 @@ import {
 import { createTestEntity } from "../../../TestUtils.js"
 import { CryptoProtocolVersion, ProgrammingError, TutanotaError } from "../../../../../src/platform-kit/app-env"
 import { CryptoError } from "../../../../../src/platform-kit/crypto/error"
-import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/AdminKeyLoaderFacade"
+import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/AdminKeyLoaderFacade"
 
 import { Group, GroupKey, GroupKeysRefTypeRef, GroupKeyTypeRef, GroupTypeRef, KeyMac, KeyMacTypeRef, PubEncKeyDataTypeRef } from "@tutao/entities/sys"
-import { brandKeyMac, KeyAuthenticationFacade, UserGroupKeyAuthenticationParams } from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
+import {
+	brandKeyMac,
+	KeyAuthenticationFacade,
+	SystemMapKind,
+	UserGroupKeyAuthenticationParams,
+} from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
+import { elementIdToId, idToElementId } from "../../../../../src/platform-kit/meta"
 
-const { anything, argThat, captor } = matchers
+const { anything, captor } = matchers
 
 o.spec("AdminKeyLoaderFacadeTest", function () {
 	let userFacade: UserFacade
@@ -70,9 +78,9 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 		const groupKeyVersion = 2
 
 		const pubUserGroupEccKey = object<X25519PublicKey>()
-		const groupKeyBytes = object<AesKey>()
-		const adminGroupEncGKey = object<Uint8Array>()
-		const pubAdminGroupEncSymKey = object<Uint8Array>()
+		const groupKeyBytes = new Aes256Key([1, 2, 3, 4, 5, 6, 7, 8])
+		const adminGroupEncGKey = object<Uint8Array<ArrayBuffer>>()
+		const pubAdminGroupEncSymKey = object<Uint8Array<ArrayBuffer>>()
 		const pubAdminGroupEncGKey = createTestEntity(PubEncKeyDataTypeRef, {
 			pubEncSymKey: pubAdminGroupEncSymKey,
 			protocolVersion: CryptoProtocolVersion.TUTA_CRYPT,
@@ -82,14 +90,14 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 			senderKeyVersion: groupKeyVersion.toString(),
 			symKeyMac: createTestEntity(KeyMacTypeRef, {
 				taggedKeyVersion: "2",
-				tag: object<Uint8Array>(),
+				tag: object<Uint8Array<ArrayBuffer>>(),
 				taggingKeyVersion: "1",
 			}),
 		})
 
 		o.beforeEach(function () {
 			group = createTestEntity(GroupTypeRef, {
-				_id: groupId,
+				_id: idToElementId(groupId),
 				groupKeyVersion: groupKeyVersion.toString(),
 				adminGroupKeyVersion: adminGroupKeyVersion.toString(),
 				adminGroupEncGKey: null,
@@ -149,7 +157,7 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 				group.formerGroupKeys = createTestEntity(GroupKeysRefTypeRef, { list: formerGroupKeyListId })
 
 				const formerGroupKeysV1 = createTestEntity(GroupKeyTypeRef, {
-					adminGroupEncGKey: object<Uint8Array>(),
+					adminGroupEncGKey: object<Uint8Array<ArrayBuffer>>(),
 					adminGroupKeyVersion: "1",
 				})
 				const formerGroupSymKeyV1 = object<AesKey>()
@@ -170,7 +178,7 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 				verify(
 					keyAuthenticationFacade.verifyTag(
 						{
-							tagType: "USER_GROUP_KEY_TAG",
+							tagType: SystemMapKind.USER_GROUP_KEY_TAG,
 							sourceOfTrust: { currentUserGroupKey: formerUserGroupKey.object },
 							untrustedKey: { newUserGroupKey: groupKeyBytes },
 							bindingData: {
@@ -196,17 +204,17 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
                     It is authenticated using userGroupKeyV0.
                     The userGroupKeyV0 is symmetrically encrypted for/by the admin with adminGroupSymKeyV0, therefore it is already trusted.
                  */
-				let userGroupSymKeyV0: AesKey
+				let userGroupSymKeyV0: Aes128Key
 				let groupKeysV0: GroupKey
 				let groupKeysV1: GroupKey
-				let userGroupSymKeyV1: AesKey
+				let userGroupSymKeyV1: Aes256Key
 
 				o.beforeEach(async function () {
 					group.formerGroupKeys = createTestEntity(GroupKeysRefTypeRef, { list: formerGroupKeyListId })
 
 					// Prepare V2
 					pubAdminGroupEncGKey.symKeyMac = createTestEntity(KeyMacTypeRef, {
-						tag: object<Uint8Array>(),
+						tag: object<Uint8Array<ArrayBuffer>>(),
 						taggingKeyVersion: "1",
 						taggedKeyVersion: "2",
 					})
@@ -220,18 +228,18 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 								taggedKeyVersion: "1",
 								taggingKeyVersion: "0",
 							}),
-							pubEncSymKey: object<Uint8Array>(),
+							pubEncSymKey: object<Uint8Array<ArrayBuffer>>(),
 							recipientKeyVersion: "1",
 							recipientIdentifier: adminGroupId,
 						}),
 						adminGroupKeyVersion: "1",
 					})
-					userGroupSymKeyV1 = object<AesKey>()
+					userGroupSymKeyV1 = new Aes256Key([0, 1, 2, 3, 4, 5, 6, 7])
 					const adminKeyPairV1 = object<PQKeyPairs>()
 					when(keyLoaderFacade.loadKeypair(adminGroupId, 1)).thenResolve(adminKeyPairV1)
 					when(
 						asymmetricCryptoFacade.decryptSymKeyWithKeyPairAndAuthenticate(adminKeyPairV1, groupKeysV1.pubAdminGroupEncGKey!, {
-							identifier: group._id,
+							identifier: elementIdToId(group._id),
 							identifierType: PublicKeyIdentifierType.GROUP_ID,
 						}),
 					).thenResolve({
@@ -242,12 +250,12 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 
 					// Prepare V0
 					groupKeysV0 = createTestEntity(GroupKeyTypeRef, {
-						adminGroupEncGKey: object<Uint8Array>(),
+						adminGroupEncGKey: object<Uint8Array<ArrayBuffer>>(),
 						adminGroupKeyVersion: "0",
 					})
 					const adminSymKeyV0 = object<AesKey>()
 					when(keyLoaderFacade.loadSymGroupKey(adminGroupId, 0)).thenResolve(adminSymKeyV0)
-					userGroupSymKeyV0 = object<AesKey>()
+					userGroupSymKeyV0 = object<Aes128Key>()
 					when(cryptoWrapper.decryptKey(adminSymKeyV0, anything())).thenReturn(userGroupSymKeyV0)
 				})
 
@@ -269,7 +277,7 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 					// check v1
 					let params: UserGroupKeyAuthenticationParams = paramsCaptor.values![0]
 					o(params).deepEquals({
-						tagType: "USER_GROUP_KEY_TAG",
+						tagType: SystemMapKind.USER_GROUP_KEY_TAG,
 						sourceOfTrust: { currentUserGroupKey: userGroupSymKeyV0 },
 						untrustedKey: { newUserGroupKey: userGroupSymKeyV1 },
 						bindingData: {
@@ -286,7 +294,7 @@ o.spec("AdminKeyLoaderFacadeTest", function () {
 					// verify v2
 					params = paramsCaptor.values![1]
 					o(params).deepEquals({
-						tagType: "USER_GROUP_KEY_TAG",
+						tagType: SystemMapKind.USER_GROUP_KEY_TAG,
 						untrustedKey: {
 							newUserGroupKey: groupKeyBytes,
 						},

@@ -1,7 +1,7 @@
 import { downcast, lazy, typedEntries } from "../../platform-kit/utils"
 import type { TranslationKeyType } from "./TranslationKey"
 import { getWhitelabelCustomizations } from "./WhitelabelUtils"
-import { assertMainOrNodeBoot } from "../../platform-kit/app-env"
+import { EnvProvider } from "../../platform-kit/app-env"
 import { WhitelabelCustomizations } from "../WhitelabelCustomizations"
 
 /**
@@ -35,7 +35,7 @@ export type Translation = {
 
 export type TranslationReplacements = Record<string, string | number>
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 export type DateTimeFormatOptions = {
 	hourCycle?: "h11" | "h12" | "h23" | "h24"
 }
@@ -226,6 +226,7 @@ export const languageNative: ReadonlyArray<{
 export const enum InfoLink {
 	HomePage = "https://tuta.com",
 	About = "https://tuta.com/imprint",
+	Sales = "https://tuta.com/business/contact",
 	//terms
 	Terms = "https://tuta.com/terms",
 	Privacy = "https://tuta.com/privacy-policy",
@@ -300,6 +301,7 @@ export class LanguageViewModel {
 		monthWithFullYear: Intl.DateTimeFormat
 		yearNumeric: Intl.DateTimeFormat
 		shortMonthYear2Digit: Intl.DateTimeFormat
+		durationNarrow: Intl.DurationFormat
 	}
 
 	constructor() {
@@ -510,6 +512,9 @@ export class LanguageViewModel {
 			shortMonthYear2Digit: new Intl.DateTimeFormat(tag, {
 				month: "2-digit",
 				year: "2-digit",
+			}),
+			durationNarrow: new Intl.DurationFormat(tag, {
+				style: "narrow",
 			}),
 		}
 	}

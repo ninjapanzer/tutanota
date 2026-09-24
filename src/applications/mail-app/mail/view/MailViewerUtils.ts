@@ -1,10 +1,10 @@
-import { isApp, isBrowser, isDesktop, Keys } from "../../../../platform-kit/app-env"
-import { $Promisable, assertNotNull, groupByAndMap, isEmpty, neverNull, promiseMap } from "../../../../platform-kit/utils"
-import { InfoLink, lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
+import { EnvProvider } from "../../../../platform-kit/app-env"
+import { assertNotNull, groupByAndMap, isEmpty, neverNull, promiseMap } from "../../../../platform-kit/utils"
+import { InfoLink, lang, MaybeTranslation, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { Dialog, DialogType } from "../../../../ui/base/Dialog"
 import m from "mithril"
 import { Button, ButtonType } from "../../../../ui/base/Button.js"
-import { progressIcon } from "../../../../ui/base/Icon.js"
+import { AllIcons, progressIcon } from "../../../../ui/base/Icon.js"
 import { checkApprovalStatus } from "../../../common/misc/LoginUtils.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import { UserError } from "../../../common/api/main/UserError.js"
@@ -12,9 +12,8 @@ import { showUserError } from "../../../common/misc/ErrorHandlerImpl.js"
 import { ContentBlockingStatus, MailViewerViewModel, UnsubscribeAction, UnsubscribeType } from "./MailViewerViewModel.js"
 import { DropdownButtonAttrs } from "../../../../ui/base/Dropdown.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { LockedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { ExternalLink } from "../../../../ui/base/ExternalLink.js"
 import { SourceCodeViewer } from "./SourceCodeViewer.js"
 import { getMailAddressDisplayText, hasValidEncryptionAuthForTeamOrSystemMail } from "../../../common/mailFunctionality/SharedMailUtils.js"
@@ -39,8 +38,31 @@ import { Card } from "../../../../ui/base/Card"
 import { isDarkTheme, theme } from "../../../../ui/theme"
 import { LocalAutosavedDraftData } from "../../../common/api/worker/facades/lazy/AutosaveFacade"
 import { ifAllowedTutaLinks } from "../../../common/gui/base/TutaLinkUtils"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { $Promisable } from "../../workerUtils/index/IndexerPromiseUtils"
+import { PosRect } from "../../../../ui/utils/PosRect"
+import { ClickHandler } from "../../../../ui/base/GuiUtils"
 
+// These are actions that generally show in the main toolbar for an email
+export type MailViewerToolbarActions = {
+	cancelScheduled?: (() => unknown) | null
+	edit?: (() => unknown) | null
+	reply?: (() => unknown) | null
+	replyAll?: (() => unknown) | null
+	forward?: (() => unknown) | null
+	move?: ((origin: PosRect) => unknown) | null
+	label?: ((dom: HTMLElement) => unknown) | null
+	deleteAction?: (() => unknown) | null
+	trash?: (() => unknown) | null
+	read?: (() => unknown) | null
+	unread?: (() => unknown) | null
+	markSpam?: (() => unknown) | null
+	markNotSpam?: (() => unknown) | null
+}
+
+// There are actions that should only show in the more actions section of the toolbar
 export type MailViewerMoreActions = {
+	exportAction?: (() => void) | null
 	disallowExternalContentAction?: () => void
 	showImagesAction?: () => void
 	unsubscribeAction?: () => void
@@ -49,6 +71,7 @@ export type MailViewerMoreActions = {
 	reportSpamAction?: () => void
 	reportNotSpamAction?: () => void
 	reportPhishingAction?: () => void
+	showHeaders?: () => void
 }
 
 const MAX_MAILS_BEFORE_SUGGESTING_SETTINGS_EXPORT = 1000
@@ -127,7 +150,7 @@ export async function createEditDraftDialog(viewModel: MailViewerViewModel, loca
 				try {
 					conversationEntry = await locator.entityClient.load(ConversationEntryTypeRef, viewModel.mail.conversationEntry)
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						// draft was likely deleted
 						return null
 					} else {
@@ -136,6 +159,7 @@ export async function createEditDraftDialog(viewModel: MailViewerViewModel, loca
 				}
 
 				const editorDialog = await newMailEditorFromDraft(
+					viewModel.attachmentDownloader,
 					viewModel.mail,
 					await loadMailDetails(locator.mailFacade, viewModel.mail),
 					conversationEntry,
@@ -274,16 +298,8 @@ function handleExportEmailsResult(mailList: Mail[]) {
 	}
 }
 
-export function multipleMailViewerMoreActions(exportAction: (() => void) | null, moreActions: MailViewerMoreActions | null): Array<DropdownButtonAttrs> {
+export function multipleMailViewerMoreActions(moreActions: MailViewerMoreActions | null): Array<DropdownButtonAttrs> {
 	const moreButtons: Array<DropdownButtonAttrs> = []
-
-	if (exportAction) {
-		moreButtons.push({
-			label: "export_action",
-			click: exportAction,
-			icon: Icons.CloudDownloadFilled,
-		})
-	}
 
 	if (moreActions != null) {
 		moreButtons.push(...mailViewerMoreActions(moreActions))
@@ -292,22 +308,14 @@ export function multipleMailViewerMoreActions(exportAction: (() => void) | null,
 	return moreButtons
 }
 
-export function singleMailViewerMoreActions(viewModel: MailViewerViewModel, moreActions: MailViewerMoreActions): Array<DropdownButtonAttrs> {
-	const moreButtons: Array<DropdownButtonAttrs> = []
-	if (!client.isMobileDevice() && viewModel.canExport()) {
-		moreButtons.push({
-			label: "export_action",
-			click: () => showProgressDialog("pleaseWait_msg", viewModel.exportMail()),
-			icon: Icons.CloudDownloadFilled,
-		})
-	}
+export function singleMailViewerMoreActions(
+	viewModel: MailViewerViewModel,
+	moreActions: MailViewerMoreActions,
+): Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> {
+	const moreButtons: Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> = []
 
 	if (viewModel.canShowHeaders()) {
-		moreButtons.push({
-			label: "showHeaders_action",
-			click: () => showHeaderDialog(viewModel.getHeaders()),
-			icon: Icons.UnorderedList,
-		})
+		moreActions.showHeaders = () => showHeaderDialog(viewModel.getHeaders())
 	}
 
 	addToggleLightModeButtonAttrs(viewModel, moreButtons)
@@ -331,8 +339,115 @@ export function addToggleLightModeButtonAttrs(viewModel: MailViewerViewModel, to
 	}
 }
 
+export function getMailActionAttrs(mailViewerActions: MailViewerToolbarActions): Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> {
+	const actionAttrs: Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> = []
+
+	// Note: cancelScheduled, edit, and replies are mutually exclusive
+	if (mailViewerActions.cancelScheduled) {
+		actionAttrs.push({
+			label: "cancelSend_action",
+			click: mailViewerActions.cancelScheduled,
+			icon: Icons.X,
+		})
+	} else if (mailViewerActions.edit) {
+		actionAttrs.push({
+			label: "edit_action",
+			click: mailViewerActions.edit,
+			icon: Icons.PenFilled,
+		})
+	} else {
+		if (mailViewerActions.reply) {
+			actionAttrs.push({
+				label: "reply_action",
+				click: mailViewerActions.reply,
+				icon: Icons.ArrowBackFilled,
+			})
+		}
+		if (mailViewerActions.replyAll) {
+			actionAttrs.push({
+				label: "replyAll_action",
+				click: mailViewerActions.replyAll,
+				icon: Icons.DoubleArrowBackFilled,
+			})
+		}
+		if (mailViewerActions.forward) {
+			actionAttrs.push({
+				label: "forward_action",
+				click: mailViewerActions.forward,
+				icon: Icons.ArrowForwardFilled,
+			})
+		}
+	}
+
+	const move = mailViewerActions.move
+	if (move) {
+		actionAttrs.push({
+			label: "move_action",
+			click: (_: MouseEvent, dom: HTMLElement) => move(dom.getBoundingClientRect()),
+			icon: Icons.FolderFilled,
+		})
+	}
+
+	const label = mailViewerActions.label
+	if (label) {
+		actionAttrs.push({
+			label: "assignLabel_action",
+			click: (_: MouseEvent, dom: HTMLElement) => label(dom),
+			icon: Icons.LabelFilled,
+		})
+	}
+
+	if (mailViewerActions.deleteAction) {
+		actionAttrs.push({
+			label: "delete_action",
+			click: mailViewerActions.deleteAction,
+			icon: Icons.TrashCrossFilled,
+		})
+	} else if (mailViewerActions.trash) {
+		actionAttrs.push({
+			label: "trash_action",
+			click: mailViewerActions.trash,
+			icon: Icons.TrashFilled,
+		})
+	}
+
+	// read and unread are not necessarily mutually exclusive
+	// When multiple mails are selected we show both
+	if (mailViewerActions.read) {
+		actionAttrs.push({
+			label: "markRead_action",
+			click: mailViewerActions.read,
+			icon: Icons.EyeFilled,
+		})
+	}
+	if (mailViewerActions.unread) {
+		actionAttrs.push({
+			label: "markUnread_action",
+			click: mailViewerActions.unread,
+			icon: Icons.EyeCrossedFilled,
+		})
+	}
+
+	if (mailViewerActions.markSpam) {
+		actionAttrs.push({
+			label: "reportSpam_action",
+			click: mailViewerActions.markSpam,
+			icon: Icons.BugFilled,
+		})
+	} else if (mailViewerActions.markNotSpam) {
+		actionAttrs.push({
+			label: "reportNotSpam_action",
+			click: mailViewerActions.markNotSpam,
+			icon: Icons.BugCrossedFilled,
+		})
+	}
+
+	return actionAttrs
+}
+
 export function getMailViewerMoreActions({
 	viewModel,
+	exportAction,
 	reportSpam,
 	print,
 	reportPhishing,
@@ -340,6 +455,7 @@ export function getMailViewerMoreActions({
 	reportNotSpam,
 }: {
 	viewModel: MailViewerViewModel
+	exportAction: (() => unknown) | null
 	print: (() => unknown) | null
 	reapplyInboxRules: (() => unknown) | null
 	reportSpam: (() => unknown) | null
@@ -347,6 +463,10 @@ export function getMailViewerMoreActions({
 	reportPhishing: (() => unknown) | null
 }): MailViewerMoreActions {
 	const actions: MailViewerMoreActions = {}
+
+	if (exportAction) {
+		actions.exportAction = exportAction
+	}
 
 	if (viewModel.canPersistBlockingStatus() && viewModel.isShowingExternalContent()) {
 		actions.disallowExternalContentAction = () => viewModel.setContentBlockingStatus(ContentBlockingStatus.Block)
@@ -384,6 +504,7 @@ export function getMailViewerMoreActions({
 }
 
 function mailViewerMoreActions({
+	exportAction,
 	disallowExternalContentAction,
 	showImagesAction,
 	unsubscribeAction,
@@ -392,8 +513,25 @@ function mailViewerMoreActions({
 	reportSpamAction,
 	reportNotSpamAction,
 	reportPhishingAction,
-}: MailViewerMoreActions): Array<DropdownButtonAttrs> {
-	const moreButtons: Array<DropdownButtonAttrs> = []
+	showHeaders,
+}: MailViewerMoreActions): Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> {
+	const moreButtons: Array<{ label: MaybeTranslation; click: ClickHandler; icon: AllIcons }> = []
+
+	if (exportAction != null) {
+		moreButtons.push({
+			label: "export_action",
+			click: exportAction,
+			icon: Icons.CloudDownloadFilled,
+		})
+	}
+
+	if (showHeaders) {
+		moreButtons.push({
+			label: "showHeaders_action",
+			click: showHeaders,
+			icon: Icons.UnorderedList,
+		})
+	}
 
 	if (disallowExternalContentAction != null) {
 		moreButtons.push({
@@ -498,7 +636,7 @@ async function showUnsubscribeDialog(nextUnsubscribeActions: Array<UnsubscribeAc
 				"p.m-0.mt-8",
 				nextUnsubscribeAction.type !== UnsubscribeType.HTTP_POST_UNSUBSCRIBE
 					? nextUnsubscribeAction.requestUrl
-					: isBrowser()
+					: EnvProvider.get().isBrowser()
 						? lang.get("unsubscribeHttpPostInfoWeb_msg")
 						: lang.get("unsubscribeHttpPostInfoApp_msg"),
 			),
@@ -537,7 +675,7 @@ async function showUnsubscribeDialog(nextUnsubscribeActions: Array<UnsubscribeAc
 											newMailDialog.show()
 										}
 									} else if (nextUnsubscribeAction?.type === UnsubscribeType.HTTP_GET_UNSUBSCRIBE) {
-										if (isApp()) {
+										if (EnvProvider.get().isApp()) {
 											mailLocator.systemFacade.openLink(nextUnsubscribeAction.requestUrl)
 										} else {
 											open(nextUnsubscribeAction.requestUrl)
@@ -553,7 +691,7 @@ async function showUnsubscribeDialog(nextUnsubscribeActions: Array<UnsubscribeAc
 												}
 											})
 											.catch((e) => {
-												if (e instanceof restError.LockedError) {
+												if (e instanceof LockedError) {
 													return Dialog.message("operationStillActive_msg")
 												} else {
 													if (isEmpty(nextUnsubscribeActions)) {
@@ -708,5 +846,5 @@ export function getMailFilterForType(filter: MailFilterType): ListFilter<Mail> {
 }
 
 export function canDoDragAndDropExport(): boolean {
-	return isDesktop()
+	return EnvProvider.get().isDesktop()
 }

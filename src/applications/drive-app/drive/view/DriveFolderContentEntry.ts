@@ -4,13 +4,14 @@ import { Icon, IconSize } from "../../../../ui/base/Icon"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { assertNotNull, filterInt } from "../../../../platform-kit/utils"
 import { IconButton, IconButtonAttrs } from "../../../../ui/base/IconButton"
-import { attachDropdown, DomRectReadOnlyPolyfilled, Dropdown } from "../../../../ui/base/Dropdown"
+import { attachDropdown } from "../../../../ui/base/Dropdown"
 import { theme } from "../../../../ui/theme"
-import { modal } from "../../../../ui/base/Modal"
 import { FolderItem } from "./DriveUtils"
 import { TabIndex } from "../../../../platform-kit/app-env"
-import { getContextActions, isDraggingDriveItems } from "./DriveGuiUtils"
+import { driveFolderName, getFileContextActions, isDraggingDriveItems } from "./DriveGuiUtils"
 import { getDisplayType, getFileIcon, getItemIconFill } from "../model/DriveMimeUtils"
+import { SearchToken } from "../../../../ui/utils/QueryTokenUtils"
+import { highlightTextInQueryAsChildren } from "../../../../ui/TextHighlightViewUtils"
 
 export interface FileActions {
 	onCut: (f: FolderItem) => unknown
@@ -38,7 +39,10 @@ export interface DriveFolderContentEntryAttrs {
 	onDropInto: (f: FolderItem, event: DragEvent) => unknown
 	onDragEnd: () => unknown
 	isCut: boolean
+	onContextMenu: (f: FolderItem, event: MouseEvent) => unknown
 	onDomUpdated?: (dom: HTMLElement, moreActionsDom: HTMLElement) => unknown
+	displayLocation: boolean
+	highlightedStrings?: readonly SearchToken[]
 }
 
 export class DriveFolderContentEntry implements Component<DriveFolderContentEntryAttrs> {
@@ -62,8 +66,11 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 			onDragStart,
 			onDragEnd,
 			onDropInto,
+			onContextMenu,
 			isCut,
-			fileActions: { onCopy, onCut, onTrash, onRestore, onOpenItem, onRename, onStartMove, onDelete, onDownload },
+			fileActions,
+			displayLocation,
+			highlightedStrings,
 		},
 	}: Vnode<DriveFolderContentEntryAttrs>): Children {
 		const updatedDate = item.type === "file" ? item.file.updatedDate : item.folder.updatedDate
@@ -84,7 +91,7 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 					"margin-bottom": "4px",
 					padding: "6px 12px 6px 24px",
 					"grid-column-start": "1",
-					"grid-column-end": "8",
+					"grid-column-end": displayLocation ? "9" : "8",
 					display: "grid",
 					"grid-template-columns": "subgrid",
 					background: selected ? theme.state_bg_hover : theme.surface,
@@ -120,18 +127,13 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 							onSingleSelection(item)
 						}
 					} else if (event.detail === 2) {
-						onOpenItem(item)
+						fileActions.onOpenItem(item)
 					}
 				},
 				oncontextmenu: (e: MouseEvent) => {
+					onContextMenu(item, e)
 					e.preventDefault()
 					e.stopPropagation()
-					const dropdown = new Dropdown(
-						() => getContextActions(item, onRename, onCopy, onCut, onRestore, onTrash, onStartMove, onDelete, onDownload),
-						300,
-					)
-					dropdown.setOrigin(new DomRectReadOnlyPolyfilled(e.clientX, e.clientY, 0, 0))
-					modal.displayUnique(dropdown, false)
 				},
 			},
 			[
@@ -165,8 +167,9 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 				m(
 					"div.text-ellipsis",
 					{ "data-testid": "drivecontententry:name", role: "gridcell" },
-					m("span", item.type === "file" ? item.file.name : item.folder.name),
+					this.renderItemName(item.type === "file" ? item.file.name : item.folder.name, highlightedStrings),
 				),
+				displayLocation ? m("div.text-ellipsis", { role: "gridcell" }, item.parentFolder ? driveFolderName(item.parentFolder).text : null) : null,
 				m("div", { role: "gridcell" }, fileFormat),
 				m("div", { role: "gridcell" }, item.type === "folder" ? "🐱" : formatStorageSize(filterInt(item.file.size))),
 				m("div", { role: "gridcell" }, updatedDate.toLocaleString()),
@@ -178,11 +181,11 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 							...attachDropdown({
 								mainButtonAttrs: {
 									icon: Icons.More,
-									title: "more_label",
+									label: "more_label",
 									// is focused programmatically
 									tabindex: TabIndex.Programmatic,
 								},
-								childAttrs: () => getContextActions(item, onRename, onCopy, onCut, onRestore, onTrash, onStartMove, onDelete, onDownload),
+								childAttrs: async () => getFileContextActions(item, fileActions),
 							}),
 							oncreate: (vnode: VnodeDOM<IconButtonAttrs, _NoLifecycle<IconButton>>) => {
 								this.moreButtonDom = vnode.dom as HTMLElement
@@ -192,5 +195,13 @@ export class DriveFolderContentEntry implements Component<DriveFolderContentEntr
 				),
 			],
 		)
+	}
+
+	private renderItemName(name: string, highlightedStrings?: readonly SearchToken[]): Children {
+		if (highlightedStrings) {
+			return m("span", highlightTextInQueryAsChildren(name, highlightedStrings))
+		} else {
+			return m("span", [name])
+		}
 	}
 }

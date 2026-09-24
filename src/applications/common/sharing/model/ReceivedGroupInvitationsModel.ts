@@ -5,14 +5,14 @@ import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { EventController } from "../../api/main/EventController"
 import { loadReceivedGroupInvitations } from "../GroupUtils"
 import type { LoginController } from "../../api/main/LoginController"
-import { promiseMap } from "@tutao/utils"
+import { assertNotNull, promiseMap } from "@tutao/utils"
 import { ReceivedGroupInvitation, ReceivedGroupInvitationTypeRef } from "@tutao/entities/sys"
 import { getInvitationGroupType, ShareableGroupType } from "../../../../entities/sys/Utils"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 export class ReceivedGroupInvitationsModel<TypeOfGroup extends ShareableGroupType> {
@@ -28,22 +28,23 @@ export class ReceivedGroupInvitationsModel<TypeOfGroup extends ShareableGroupTyp
 	}
 
 	init() {
-		this.eventController.addEntityListener(this.entityEventsReceived)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		loadReceivedGroupInvitations(this.logins.getUserController(), this.entityClient, this.groupType).then((invitations) =>
 			this.invitations(invitations.filter((invitation) => this.hasMatchingGroupType(invitation))),
 		)
 	}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.entityEventsReceived)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 		this.invitations.end(true)
 	}
 
-	private readonly entityEventsReceived: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ReceivedGroupInvitationsModel",
 		onEntityUpdatesReceived: (updates: ReadonlyArray<EntityUpdateData>) => {
-			return promiseMap(updates, (update) => {
+			return promiseMap(updates, async (update) => {
 				if (isUpdateForTypeRef(ReceivedGroupInvitationTypeRef, update)) {
-					const updateId = [update.instanceListId, update.instanceId] as const
+					const updateId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
 
 					if (update.operation === OperationType.CREATE) {
 						return this.entityClient.load(ReceivedGroupInvitationTypeRef, updateId).then((invitation) => {
@@ -57,7 +58,7 @@ export class ReceivedGroupInvitationsModel<TypeOfGroup extends ShareableGroupTyp
 				}
 			})
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	private hasMatchingGroupType(invitation: ReceivedGroupInvitation): boolean {

@@ -1,5 +1,5 @@
-import { assertMainOrNode, ShareCapability } from "@tutao/app-env"
-import { elementIdPart, EntityIdEncoding, getEtId, listIdPart, sortCompareById } from "@tutao/meta"
+import { EnvProvider, ShareCapability } from "@tutao/app-env"
+import { elementIdPart, EntityIdEncoding, getEtId, idToElementId, listIdPart, sortCompareById } from "@tutao/meta"
 import { assertNotNull, cleanMailAddress, first, getFirstOrThrow, isNotNull, LazyLoaded, ofClass, promiseMap } from "@tutao/utils"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
@@ -7,8 +7,7 @@ import { EntityClient, loadMultipleFromLists } from "../../../platform-kit/netwo
 import { LoginController } from "../api/main/LoginController.js"
 import { EventController } from "../api/main/EventController.js"
 import { DbError } from "../api/common/error/DbError.js"
-import * as restError from "@tutao/rest-client/error"
-import { LoginIncompleteError } from "@tutao/rest-client/error"
+import { LoginIncompleteError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 
 import { ContactSearchFacade } from "../../mail-app/workerUtils/index/ContactSearchFacade"
 import {
@@ -20,16 +19,11 @@ import {
 	ContactTypeRef,
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
-import {
-	EntityEventsListener,
-	EntityUpdateData,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { Group, GroupInfo, GroupInfoTypeRef, GroupMembership, GroupTypeRef } from "@tutao/entities/sys"
 import { hasCapabilityOnGroup, isSharedGroupOwner } from "../../../entities/sys/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type ContactListInfo = {
 	name: string
@@ -51,7 +45,7 @@ export class ContactModel {
 		private readonly contactSearchFacade: ContactSearchFacade | null,
 	) {
 		this.contactListId = lazyContactListId(loginController, this.entityClient)
-		this.eventController.addEntityListener(this.entityEventsReceived)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	async getLoadedContactListInfos(): Promise<ReadonlyArray<ContactListInfo>> {
@@ -179,8 +173,8 @@ export class ContactModel {
 				// when the group root is already deleted, or we deleted our membership
 				(groupInfo) =>
 					this.getContactListInfo(groupInfo)
-						.catch(ofClass(restError.NotFoundError, () => null))
-						.catch(ofClass(restError.NotAuthorizedError, () => null)),
+						.catch(ofClass(NotFoundError, () => null))
+						.catch(ofClass(NotAuthorizedError, () => null)),
 			)
 		).filter(isNotNull)
 
@@ -188,8 +182,8 @@ export class ContactModel {
 	}
 
 	private async getContactListInfo(groupInfo: GroupInfo): Promise<ContactListInfo> {
-		const group = await this.entityClient.load(GroupTypeRef, groupInfo.group)
-		const groupRoot = await this.entityClient.load(ContactListGroupRootTypeRef, groupInfo.group)
+		const group = await this.entityClient.load(GroupTypeRef, idToElementId(groupInfo.group))
+		const groupRoot = await this.entityClient.load(ContactListGroupRootTypeRef, idToElementId(groupInfo.group))
 		const userController = this.loginController.getUserController()
 		const { getSharedGroupName } = await import("../sharing/GroupUtils.js")
 
@@ -203,7 +197,8 @@ export class ContactModel {
 		}
 	}
 
-	private readonly entityEventsReceived: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ContactModel",
 		onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> => {
 			for (const update of updates) {
 				if (
@@ -215,7 +210,7 @@ export class ContactModel {
 				}
 			}
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 }
 
@@ -227,7 +222,7 @@ export function lazyContactListId(logins: LoginController, entityClient: EntityC
 				return contactList.contacts
 			})
 			.catch(
-				ofClass(restError.NotFoundError, (e) => {
+				ofClass(NotFoundError, (e) => {
 					if (!logins.getUserController().isInternalUser()) {
 						return null // external users have no contact list.
 					} else {

@@ -5,8 +5,8 @@ import { locator } from "../../../common/api/main/CommonLocator"
 import { FileController, zipDataFiles } from "../../../common/file/FileController"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade.js"
 import { OperationId } from "../../../common/api/main/OperationProgressTracker.js"
-import { CancelledError, isDesktop } from "../../../../platform-kit/app-env"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CancelledError, EnvProvider } from "../../../../platform-kit/app-env"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { MailBundle, MailExportMode } from "../../../common/mailFunctionality/SharedMailUtils.js"
 import { generateExportFileName, mailToEmlFile } from "./emlUtils.js"
 import { Mail } from "@tutao/entities/tutanota"
@@ -20,7 +20,7 @@ export async function generateMailFile(bundle: MailBundle, fileName: string, mod
 }
 
 export async function getMailExportMode(): Promise<MailExportMode> {
-	if (isDesktop()) {
+	if (EnvProvider.get().isDesktop()) {
 		const ConfigKeys = await import("../../../../platform-kit/app-env/ConfigKeys")
 		const mailExportMode = (await locator.desktopSettingsFacade
 			.getStringConfigValue(ConfigKeys.DesktopConfigKey.mailExportMode)
@@ -82,6 +82,7 @@ export async function exportMails(
 				try {
 					return await downloadMailBundle(mail, mailFacade, entityClient, fileController, htmlSanitizer, cryptoFacade)
 				} catch (e) {
+					console.error(`failed to export mail: ${mail._id.join("/")}`, e)
 					errorMails.push(mail)
 				} finally {
 					updateProgress()

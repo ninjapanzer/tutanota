@@ -7,24 +7,24 @@ import { Button, ButtonType } from "../../../../ui/base/Button.js"
 import { CollapsedMailView } from "./CollapsedMailView.js"
 import { MailViewerViewModel } from "./MailViewerViewModel.js"
 import { component_size, px, size } from "../../../../ui/size.js"
-import { Keys } from "../../../../platform-kit/app-env"
 import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { responsiveCardHMargin } from "../../../../ui/cards.js"
 import { assertNotNull, ofClass } from "../../../../platform-kit/utils"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { UserError } from "../../../common/api/main/UserError"
 import { showUserError } from "../../../common/misc/ErrorHandlerImpl"
 import { MailViewerMoreActions } from "./MailViewerUtils"
-import { MailHeaderActions } from "./MailViewerHeader"
 import { MailTypeRef } from "@tutao/entities/tutanota"
 import { elementIdPart, isSameId, isSameTypeRef } from "../../../../platform-kit/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export interface ConversationViewerAttrs {
 	viewModel: ConversationViewModel
 	actionableMailViewerViewModel: () => MailViewerViewModel | undefined
 	delayBodyRendering: Promise<unknown>
-	actions: (mailViewerModel: MailViewerViewModel) => MailHeaderActions
+	deleteAction: (mailViewerModel: MailViewerViewModel) => (() => unknown) | null
+	trash: (mailViewerModel: MailViewerViewModel) => (() => unknown) | null
 	moreActions: (mailViewerModel: MailViewerViewModel) => MailViewerMoreActions
 }
 
@@ -131,11 +131,8 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 					oncreate: (vnode) => {
 						this.containerDom = vnode.dom as HTMLElement
 					},
-					onremove: () => {
-						console.log("remove container")
-					},
 				},
-				this.renderItems(viewModel, this.lastItems, vnode.attrs.actions, vnode.attrs.moreActions),
+				this.renderItems(viewModel, this.lastItems, vnode.attrs.moreActions, vnode.attrs.deleteAction, vnode.attrs.trash),
 				this.renderLoadingState(viewModel),
 				this.renderFooter(),
 			),
@@ -147,7 +144,7 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 		// We reduce space by 100 for the header of the viewer and a bit more
 		const height =
 			document.body.offsetHeight -
-			(styles.isUsingBottomNavigation() ? component_size.navbar_height_mobile + component_size.bottom_nav_bar : component_size.navbar_height) -
+			(Styles.get().isUsingBottomNavigation() ? component_size.navbar_height_mobile + component_size.bottom_nav_bar : component_size.navbar_height) -
 			300
 		return m(".mt-32.noprint", {
 			style: {
@@ -159,8 +156,9 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 	private renderItems(
 		viewModel: ConversationViewModel,
 		entries: readonly ConversationItem[],
-		actions: ConversationViewerAttrs["actions"],
 		moreActions: ConversationViewerAttrs["moreActions"],
+		deleteAction: ConversationViewerAttrs["deleteAction"],
+		trash: ConversationViewerAttrs["trash"],
 	): Children {
 		return entries.map((entry, position) => {
 			switch (entry.type_ref.typeId) {
@@ -171,8 +169,9 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 					return this.renderViewer(
 						mailViewerViewModel,
 						isPrimary,
-						actions(mailViewerViewModel),
 						moreActions(mailViewerViewModel),
+						deleteAction(mailViewerViewModel),
+						trash(mailViewerViewModel),
 						viewModel.isFinished() ? position : null,
 					)
 				}
@@ -206,8 +205,9 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 	private renderViewer(
 		mailViewerViewModel: MailViewerViewModel,
 		isPrimary: boolean,
-		actions: MailHeaderActions,
 		moreActions: MailViewerMoreActions,
+		deleteAction: (() => unknown) | null,
+		trash: (() => unknown) | null,
 		position: number | null,
 	): Children {
 		const verificationBanner = null
@@ -225,7 +225,7 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 						backgroundColor: theme.surface,
 						marginTop: px(position == null || position === 0 ? 0 : conversationCardMargin),
 						// column resize element takes some space, reduce margin to make the gap smaller
-						marginLeft: styles.isSingleColumnLayout() ? undefined : px(size.spacing_16),
+						marginLeft: Styles.get().isSingleColumnLayout() ? undefined : px(size.spacing_16),
 					},
 				},
 				mailViewerViewModel.isCollapsed()
@@ -238,7 +238,8 @@ export class ConversationViewer implements Component<ConversationViewerAttrs> {
 							// we want to expand for the first email like when it's a forwarded email
 							defaultQuoteBehavior: position === 0 ? "expand" : "collapse",
 							moreActions,
-							actions,
+							deleteAction,
+							trash,
 						}),
 			),
 		)

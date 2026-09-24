@@ -1,13 +1,12 @@
 import type { TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { downcast, isEmpty, LazyLoaded } from "@tutao/utils"
 import { locator } from "../../api/main/CommonLocator"
-import { ApprovalStatus, CertificateType, getClientType, isIOSApp, ProgrammingError, reverse, UpgradePromptType } from "@tutao/app-env"
+import { ApprovalStatus, CertificateType, EnvProvider, getClientType, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest.js"
 import { MobilePaymentSubscriptionOwnership } from "@tutao/native-bridge/generatedIpc/enums"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { formatMonthlyPrice, PaymentInterval, PriceAndConfigProvider } from "./PriceUtils.js"
 import { ReplacementKey, UpgradePriceType } from "../FeatureListProvider.js"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
 import {
 	AccountingInfo,
 	Booking,
@@ -18,7 +17,7 @@ import {
 	CustomerInfo,
 	CustomerInfoTypeRef,
 	CustomerTypeRef,
-	PaymentDataService,
+	PaymentDataService_GET,
 	PlanConfiguration,
 } from "@tutao/entities/sys"
 import {
@@ -28,14 +27,17 @@ import {
 	BookingItemFeatureType,
 	CustomDomainType,
 	CustomDomainTypeCount,
-	LegacyPrivatePlans,
+	LegacyBusinessPlans,
 	NewBusinessPlans,
 	NewPaidPlans,
 	PaymentMethodType,
 	PlanName,
 	PlanType,
 } from "../../../../entities/sys/Utils"
-import { EntityUpdateData, isUpdateFor, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateFor, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { reverse } from "../../misc/EnumUtils"
+import { idToElementId } from "@tutao/meta"
 
 export const enum UpgradeType {
 	/**
@@ -179,13 +181,14 @@ export enum SubscriptionApp {
 export function getLazyLoadedPayPalUrl(): LazyLoaded<string> {
 	return new LazyLoaded(async () => {
 		const clientType = getClientType()
-		const subscriptionApp = client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
-		const result = await locator.serviceExecutor.get(
-			PaymentDataService,
+		const subscriptionApp = ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
+		const result = await locator.serviceExecutor.execute(
+			PaymentDataService_GET,
 			createPaymentDataServiceGetData({
 				clientType,
 				subscriptionApp,
 			}),
+			null,
 		)
 		return result.loginUrl
 	})
@@ -312,7 +315,7 @@ export function hasRunningAppStoreSubscription(accountingInfo: AccountingInfo): 
 }
 
 /** Check if the latest transaction using the current Store Account belongs to the user */
-export async function queryAppStoreSubscriptionOwnership(userIdBytes: Uint8Array | null): Promise<MobilePaymentSubscriptionOwnership> {
+export async function queryAppStoreSubscriptionOwnership(userIdBytes: Uint8Array<ArrayBuffer> | null): Promise<MobilePaymentSubscriptionOwnership> {
 	return await locator.mobilePaymentsFacade.queryAppStoreSubscriptionOwnership(userIdBytes)
 }
 
@@ -321,42 +324,49 @@ export async function queryAppStoreSubscriptionOwnership(userIdBytes: Uint8Array
 // ordered.
 export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanType, customerId: Id): Promise<boolean> {
 	const timeout_ms = 60_000
-	const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+	const customer = await locator.entityClient.load(CustomerTypeRef, idToElementId(customerId), {
+		...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 		cacheMode: CacheMode.WriteOnly,
 	})
-	const customerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, { cacheMode: CacheMode.WriteOnly })
+	const customerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, {
+		...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+		cacheMode: CacheMode.WriteOnly,
+	})
 	if (expectedPlan === customerInfo.plan) {
 		// plan is already correct!
 		return true
 	} else {
 		return new Promise<boolean>((resolve) => {
 			try {
-				const customerInfoUpdateListener = {
+				const entityUpdatesListener: EntityUpdatesListener = {
+					id: "SubscriptionUtils",
 					onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>) => {
 						for (const update of updates) {
 							if (isUpdateFor(customerInfo, update)) {
 								// since we're waiting for an account upgrade, the customerInfo moves between the free and the paid list.
 								// we need to load the customer to find the new location.
-								const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+								const customer = await locator.entityClient.load(CustomerTypeRef, idToElementId(customerId), {
+									...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 									cacheMode: CacheMode.WriteOnly,
 								})
 								const newCustomerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, {
+									...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 									cacheMode: CacheMode.WriteOnly,
 								})
 								if (expectedPlan === newCustomerInfo.plan) {
 									// plan is now correct!
 									console.log("app store upgrade listener succeeded for", customer.customerInfo)
 									resolve(true)
-									locator.eventController.removeEntityListener(customerInfoUpdateListener)
+									locator.eventController.removeEntityUpdatesListener(entityUpdatesListener)
 								}
 							}
 						}
 					},
-					priority: OnEntityUpdateReceivedPriority.NORMAL,
+					priority: ListenerPriority.NORMAL,
 				}
-				locator.eventController.addEntityListener(customerInfoUpdateListener)
+				locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
 				setTimeout(() => {
-					locator.eventController.removeEntityListener(customerInfoUpdateListener)
+					locator.eventController.removeEntityUpdatesListener(entityUpdatesListener)
 					console.warn("app store upgrade listener timed out for", customer.customerInfo)
 					resolve(false)
 				}, timeout_ms)
@@ -481,7 +491,7 @@ export function isAppStorePayment(accountingInfo: AccountingInfo | null): boolea
  */
 export function shouldShowApplePrices(accountingInfo: AccountingInfo | null): boolean {
 	const paymentMethod = downcast<PaymentMethodType | undefined>(accountingInfo?.paymentMethod)
-	return isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)
+	return EnvProvider.get().isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)
 }
 
 /**
@@ -531,7 +541,7 @@ export function getFeaturePlaceholderReplacement(
  * @return true if the given plan is a business plan
  */
 export function isBusinessPlan(plan: AvailablePlanType): boolean {
-	return NewBusinessPlans.includes(plan) || LegacyPrivatePlans.includes(plan)
+	return NewBusinessPlans.includes(plan) || LegacyBusinessPlans.includes(plan)
 }
 
 /**
@@ -539,7 +549,7 @@ export function isBusinessPlan(plan: AvailablePlanType): boolean {
  */
 export function shouldHideBusinessPlans(): boolean {
 	// we cannot currently subscribe iOS users to business plans
-	return isIOSApp()
+	return EnvProvider.get().isIOSApp()
 }
 
 /**
@@ -556,10 +566,11 @@ export function canSubscribeToPlan(plan: AvailablePlanType): boolean {
 export function getCurrentPaymentInterval(accountingInfo: AccountingInfo | null): PaymentInterval | undefined {
 	return accountingInfo ? (parseInt(accountingInfo.paymentInterval) as PaymentInterval) : undefined
 }
+
 export const BookingItemFeatureByCode = reverse(BookingItemFeatureType)
 
 export function getDefaultPaymentMethod(): PaymentMethodType {
-	if (isIOSApp()) {
+	if (EnvProvider.get().isIOSApp()) {
 		return PaymentMethodType.AppStore
 	}
 

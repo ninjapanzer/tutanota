@@ -3,7 +3,6 @@
 import { CredentialEncryptionMode } from "../types/CredentialEncryptionMode"
 import { PersistedCredentials } from "../types/PersistedCredentials"
 import { UnencryptedCredentials } from "../types/UnencryptedCredentials"
-
 /**
  * Operations for credential encryption operations using OS keychain.
  */
@@ -38,6 +37,6 @@ export interface NativeCredentialsFacade {
 	migrateToNativeCredentials(
 		credentials: ReadonlyArray<PersistedCredentials>,
 		encryptionMode: CredentialEncryptionMode,
-		credentialsKey: Uint8Array,
+		credentialsKey: Uint8Array<ArrayBuffer>,
 	): Promise<void>
 }

@@ -1,8 +1,3 @@
-import { AssociationType, Cardinality, Type, ValueType } from "./EntityConstants.js"
-import { AppName, TypeRef } from "./TypeRef.js"
-import { Nullable } from "@tutao/utils"
-import type { BlobElement, Element, ListElement } from "./EntityUtils.js"
-
 /**
  * Tuta Metamodel Entity Types
  *
@@ -31,15 +26,9 @@ import type { BlobElement, Element, ListElement } from "./EntityUtils.js"
  * fields.
  */
 
-// // //
-//
-// Metamodel Types - used to define the actual Model Types detailed below.
-//
-// // //
-
-export type AttributeId = number
-export type TypeId = number
-export type AttributeName = string
+import { AppName, TypeRef } from "./TypeRef.js"
+import { BrandedType, Nullable, TsBrand } from "@tutao/utils"
+import { AssociationTypeEnum, AttributeId, AttributeName, CardinalityEnum, EntityTypeEnum, TypeId, ValueTypeEnum } from "./EntityConstants"
 
 /**
  * scalar fields on types in the model
@@ -51,9 +40,9 @@ export type ModelValue = {
 	/* human-readable name */
 	name: AttributeName
 	/* the basic data type contained in the field*/
-	type: Values<typeof ValueType>
+	type: ValueTypeEnum
 	/* how many values can be assigned to the field */
-	cardinality: Values<typeof Cardinality>
+	cardinality: CardinalityEnum
 	/* whether the client is allowed to update the field */
 	final: boolean
 	/* whether the field should be encrypted with the containing types session key before being sent to the server. */
@@ -73,9 +62,9 @@ export type ModelAssociation = {
 	/* human-readable name */
 	name: AttributeName
 	/** if this is a reference or an aggregate. this determines the runtime representation of the containing type. */
-	type: Values<typeof AssociationType>
+	type: AssociationTypeEnum
 	/** how many values can be assigned to the field */
-	cardinality: Values<typeof Cardinality>
+	cardinality: CardinalityEnum
 	/* the ID of the type of the values that this field contains */
 	refTypeId: number
 	/* whether the client is allowed to update the field */
@@ -85,11 +74,19 @@ export type ModelAssociation = {
 	 * the field only exists for aggregates because they are only ones
 	 * which can be imported across models.
 	 */
-	dependency?: AppName | null
+	dependency: Nullable<AppName>
 }
 
-export type ClientTypeModel = Distinct<TypeModel, ClientModelTypeSeparator>
-export type ServerTypeModel = Distinct<TypeModel, ServerModelTypeSeparator>
+/** simple separator to distinguish between client model types and server model types */
+class ServerModelTsBrand extends TsBrand {
+	protected __brand: Nullable<never> = null
+}
+/** simple separator to distinguish between server model types and client model types */
+class ClientModelTsBrand extends TsBrand {
+	protected __brand: Nullable<never> = null
+}
+export type ClientTypeModel = BrandedType<TypeModel, ClientModelTsBrand>
+export type ServerTypeModel = BrandedType<TypeModel, ServerModelTsBrand>
 
 /**
  * this type models how the main entity types in the model are defined.
@@ -112,11 +109,11 @@ export type TypeModel = {
 	/**
 	 * the version of another typeModel this type (and its corresponding application) depends on, if applicable.
 	 */
-	dependsOnVersion?: number
+	dependsOnVersion: Nullable<number>
 	/** human-readable name. */
 	name: string
 	/** the type of entity. this defines how (and if) the type is persisted. */
-	type: Values<typeof Type>
+	type: EntityTypeEnum
 	/** unused legacy field */
 	versioned: boolean
 	/** whether the type contains encrypted values */
@@ -135,86 +132,6 @@ export type TypeModel = {
 	isPublic: boolean
 }
 
-/**
- * Untyped Instance Stage - this is the result of deserializing a wire format representation of an entity instance.
- * it does not conform to a specific model type yet.
- */
-
-/*
- * at this stage, all values are encoded as strings or not present.
- */
-export type UntypedValue = Nullable<string>
-
-/**
- * the server sends the values of associations as arrays, the cardinality is checked just
- * before the actual instance is assembled for use by the business logic.
- */
-export type UntypedAssociation =
-	/** reference(s) to an ElementEntity instance or a list of ListElementEntity instances */
-	| Array<Id>
-	/** reference(s) to a specific ListElementEntity instance */
-	| Array<IdTuple>
-	/** compound AggregatedEntity instance(s) defined directly in its parent */
-	| Array<UntypedInstance>
-
-/**
- * Compound values. The keys are AttributeIds.
- */
-export type UntypedInstance = Record<string, UntypedValue | UntypedAssociation>
-
-/**
- * ParsedInstance stage. This exists in an encrypted and an unencrypted version.
- *
- * here the field values already conform to their types defined in the type model of the containing
- * entity.
- */
-
-export type EncryptedParsedValue =
-	| Id // element association or list association or _id
-	| IdTuple // list element association
-	| boolean // unencrypted
-	| Date // unencrypted
-	| number // unencrypted
-	| string // unencrypted
-	| Uint8Array // Either Bytes or encrypted value
-
-export type EncryptedParsedAssociation =
-	| Array<Id> // element references / list references
-	| Array<IdTuple> // list element ref, card any
-	| Array<EncryptedParsedInstance> // aggregate
-
-// this contains JS values except in encrypted fields, those are kept as a base64 string.
-export type EncryptedParsedInstance = Record<AttributeId, Nullable<EncryptedParsedValue> | EncryptedParsedAssociation>
-
-/** only defined here for documentation purposes */
-export type ParsedValue = EncryptedParsedValue
-/** only defined here for documentation purposes */
-export type ParsedAssociation = EncryptedParsedAssociation
-
-/** a parsed instance after/before going through decryption/encryption */
-export type ParsedInstance = Record<AttributeId, Nullable<ParsedValue> | ParsedAssociation> & {
-	/** crypto errors that happened during deserialization/serialization */
-	_errors?: Record<AttributeId, string>
-}
-
-/** simple separator to distinguish between client model types and server model types */
-export type ClientModelTypeSeparator = "ClientModel"
-
-/** simple separator to distinguish between server model types and client model types */
-export type ServerModelTypeSeparator = "ServerModel"
-
-export type Distinct<T, ModelTypeSeparator> = T & { __MODEL_TYPE_SEPARATOR__: ModelTypeSeparator }
-
-export type ClientModelParsedInstance = Distinct<ParsedInstance, ClientModelTypeSeparator>
-
-export type ServerModelParsedInstance = Distinct<ParsedInstance, ServerModelTypeSeparator>
-export type ClientModelEncryptedParsedInstance = Distinct<EncryptedParsedInstance, ClientModelTypeSeparator>
-
-export type ServerModelEncryptedParsedInstance = Distinct<EncryptedParsedInstance, ServerModelTypeSeparator>
-export type ClientModelUntypedInstance = Distinct<UntypedInstance, ClientModelTypeSeparator>
-
-export type ServerModelUntypedInstance = Distinct<UntypedInstance, ServerModelTypeSeparator>
-
 // // //
 //
 // Model Types
@@ -222,41 +139,57 @@ export type ServerModelUntypedInstance = Distinct<UntypedInstance, ServerModelTy
 // // //
 
 // decouples from sys entities
-export interface IBucketKey {
+export interface IBucketKey extends AggregatedEntity {
 	bucketEncSessionKeys: IInstanceSessionsKey[]
 	keyGroup: Id | null
-	pubEncBucketKey: null | Uint8Array
-	groupEncBucketKey: null | Uint8Array
+	pubEncBucketKey: null | Uint8Array<ArrayBuffer>
+	groupEncBucketKey: null | Uint8Array<ArrayBuffer>
 	protocolVersion: NumberString
 	recipientKeyVersion: NumberString
 	senderKeyVersion: null | NumberString
+	isAdapter: false
+	_permissions: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
 }
-export interface IInstanceSessionsKey {
+
+export interface IInstanceSessionsKey extends AggregatedEntity {
 	instanceList: Id
 	instanceId: Id
-	symEncSessionKey: Uint8Array
-	encryptionAuthStatus: null | Uint8Array
+	symEncSessionKey: Uint8Array<ArrayBuffer>
+	encryptionAuthStatus: null | Uint8Array<ArrayBuffer>
 	symKeyVersion: NumberString
-	keyVerificationState: null | Uint8Array
+	keyVerificationState: null | Uint8Array<ArrayBuffer>
 	typeInfo: ITypeInfo
+	isAdapter: false
+	_permissions: null
+	bucketKey: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
 }
 
-export interface ITypeInfo {
-	_type: TypeRef<ITypeInfo>
-	_original?: ITypeInfo
-
+export interface ITypeInfo extends AggregatedEntity {
 	_id: Id
 	application: string
 	typeId: NumberString
+	isAdapter: false
+	_permissions: null
+	bucketKey: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
 }
-//	pubEncBucketKey: null | Uint8Array
-// 	groupEncBucketKey: null | Uint8Array
-// 	protocolVersion: NumberString
-// 	recipientKeyVersion: NumberString
-// 	senderKeyVersion: null | NumberString
-//
-// 	keyGroup: null | Id
-// 	bucketEncSessionKeys: InstanceSessionKey[]
 
 /**
  * representation of an instance of a type defined in the model.
@@ -266,37 +199,74 @@ export interface ITypeInfo {
 export interface Entity {
 	/** the address of the TypeModel this entity conforms to. */
 	_type: TypeRef<this>
-	_id?: Id | IdTuple
-	_original?: this
-	bucketKey?: null | IBucketKey
-	_ownerGroup?: null | Id
-	_ownerEncSessionKey?: null | Uint8Array
-	_ownerKeyVersion?: null | NumberString
-	_kdfNonce?: null | Uint8Array
-	ownerEncSessionKey?: null | Uint8Array
-	ownerEncSessionKeyVersion?: null | NumberString
-	_permissions?: null | Id
-	isAdapter?: boolean
+	_original: Nullable<this>
+	bucketKey: Nullable<IBucketKey>
+	_ownerGroup: Nullable<Id>
+	_ownerEncSessionKey: Nullable<Uint8Array<ArrayBuffer>>
+	_ownerKeyVersion: Nullable<NumberString>
+	_kdfNonce: Nullable<Uint8Array<ArrayBuffer>>
+	ownerEncSessionKey: Nullable<Uint8Array<ArrayBuffer>>
+	ownerEncSessionKeyVersion: Nullable<NumberString>
+	_permissions: Nullable<Id>
+	isAdapter: boolean
 }
+
+export type EntityId<L, E> = readonly [L, E]
+export type AnyEntityId = EntityId<Nullable<Id>, Id>
+export type ListElementId = EntityId<Id, Id>
+export type BlobElementId = EntityId<Id, Id>
+export type ElementId = EntityId<Nullable<never>, Id>
+export type DataTransferId = EntityId<Nullable<never>, Nullable<never>>
 
 /**
  * Entity types with instances that stand on their own, not being part of a list
  */
-export type ElementEntity = Entity & Element
+export interface ElementEntity extends PersistentEntity {
+	_id: ElementId
+}
 
 /**
  * Entity types with instances that are part of a list
  */
-export type ListElementEntity = Entity & ListElement
-
+export interface ListElementEntity extends PersistentEntity {
+	_id: ListElementId
+}
 /**
  * Entity types that are stored in an immutable blob storage
  */
-export type BlobElementEntity = Entity & BlobElement
+export interface BlobElementEntity extends PersistentEntity {
+	_id: BlobElementId
+}
 
-export type SomeEntity = ElementEntity | ListElementEntity | BlobElementEntity
-export const enum OperationType {
-	CREATE = "0",
-	UPDATE = "1",
-	DELETE = "2",
+export interface PersistentEntity extends Entity {
+	_id: AnyEntityId
+}
+
+export interface DataTransferEntity extends Entity {
+	_id: DataTransferId
+}
+
+export interface AggregatedEntity extends Entity {
+	_id: Id
+}
+
+export const NullEntityTypeRef = new TypeRef<NullEntity>("non-existant-app", 0)
+class NullEntityBrand extends TsBrand {
+	protected __brand: Nullable<never> = null
+}
+export type NullEntity = BrandedType<DataTransferEntity, NullEntityBrand>
+export const NULL_ENTITY: NullEntity = {
+	_type: NullEntityTypeRef,
+	__brand: new NullEntityBrand(),
+	isAdapter: false,
+	_id: [null, null],
+	_kdfNonce: null,
+	_original: null,
+	_ownerEncSessionKey: null,
+	_ownerGroup: null,
+	_ownerKeyVersion: null,
+	_permissions: null,
+	bucketKey: null,
+	ownerEncSessionKey: null,
+	ownerEncSessionKeyVersion: null,
 }

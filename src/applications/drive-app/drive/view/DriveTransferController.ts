@@ -1,25 +1,27 @@
 import { DriveFacade } from "../../../common/api/worker/facades/lazy/DriveFacade"
-import { filterInt } from "../../../../platform-kit/utils"
+import { assertNotNull, filterInt, findAllAndRemove } from "@tutao/utils"
 import { BlobFacade } from "../../../common/api/worker/facades/lazy/BlobFacade"
-import { CancelledError, SECOND_IN_MILLIS } from "../../../../platform-kit/app-env"
+import { CancelledError, ProgrammingError } from "@tutao/app-env"
 import { handleUncaughtError } from "../../../common/misc/ErrorHandler"
 import { FileController } from "../../../common/file/FileController"
-import { Scheduler } from "../../../common/api/common/utils/Scheduler"
-import { ArchiveDataType } from "../../../../entities/sys/Utils"
 import { FileReference, WebFile } from "../../../../entities/tutanota/Utils"
-import { isOfflineError } from "../../../../platform-kit/rest-client/error"
+import { isOfflineError } from "@tutao/rest-client/error"
 import { DriveFile } from "@tutao/entities/drive"
 import { TransferId } from "../../../../entities/drive/Utils"
+import { ArchiveDataType } from "../../../../entities/sys/Utils"
+import { FileTooLargeError } from "../../../common/api/common/error/FileTooLargeError"
+import { UserError } from "../../../common/api/main/UserError"
 
-type DriveTransferType = "upload" | "download"
+export type DriveTransferType = "upload" | "download"
 
 export interface DriveTransferState {
 	id: TransferId
 	type: DriveTransferType
 	filename: string
 	state: "finished" | "failed" | "active" | "waiting"
-	transferredSize: number // bytes
-	totalSize: number // bytes
+	transferredBytes: number
+	totalBytes: number
+	timeRemainingSec: number | undefined
 }
 
 type QueuedTransfer =
@@ -28,7 +30,9 @@ type QueuedTransfer =
 			state: "waiting" | "active" | "finished" | "failed"
 			file: DriveFile
 			type: "download"
-			transferredSize: number // bytes
+			transferredBytes: number
+			startTime: Date | null
+			lastChunkUpdateTime: Date | null
 			filename: string
 			intent: "download" | "open"
 	  }
@@ -37,48 +41,72 @@ type QueuedTransfer =
 			state: "waiting" | "active" | "finished" | "failed"
 			file: WebFile | FileReference
 			type: "upload"
-			transferredSize: number // bytes
+			transferredBytes: number
+			startTime: Date | null
+			lastChunkUpdateTime: Date | null
 			filename: string
 			targetFolderId: IdTuple
 	  }
 
-type FileId = TransferId
+export interface DriveTransfers {
+	/** All the transfers: current batch and the ones from finished batches */
+	allTransfers: readonly DriveTransferState[]
+	/**
+	 * Transfers from the current batch. Newly queued transfers are going here. Some of them can be finished.
+	 * Current transfer batch is emptied once all the transfers in it finish or fail.
+	 */
+	currentTransfers: readonly DriveTransferState[]
+	timeRemainingSec: number | null
+}
 
-/** @private visibleForTesting */
-export const FINISHED_TRANSFER_RETAIN_TIMEOUT_MS = 4 * SECOND_IN_MILLIS
+type FileId = TransferId
 
 export class DriveTransferController {
 	private queue: QueuedTransfer[] = []
+	private finishedTransfers: QueuedTransfer[] = []
+	private allTransfersDoneListener: (() => unknown) | null = null
 
-	get state(): DriveTransferState[] {
-		return this.queue.map((transfer) => {
-			let fileSize: number
-			if (transfer.file._type === "WebFile") {
-				fileSize = transfer.file.file.size
-			} else if (transfer.file._type === "FileReference") {
-				fileSize = transfer.file.size
-			} else {
-				// DriveFile
-				fileSize = filterInt(transfer.file.size)
-			}
+	get state(): DriveTransfers {
+		const currentTransfers = this.queue.map(queuedTransferToState)
+		const finishedTransfers = this.finishedTransfers.map(queuedTransferToState)
+		const allTransfers = [...finishedTransfers, ...currentTransfers]
+		const timeRemaining = this.remainingTime()
 
-			return {
-				id: transfer.id,
-				state: transfer.state,
-				type: transfer.type,
-				filename: transfer.filename,
-				totalSize: fileSize,
-				transferredSize: transfer.transferredSize,
-			}
-		})
+		return { allTransfers, currentTransfers, timeRemainingSec: timeRemaining }
 	}
+
+	private remainingTime(): number | null {
+		let numberOfActiveTransfers: number = 0
+		let totalTransferSpeed: number = 0
+		for (const queuedTransfer of this.queue) {
+			if (queuedTransfer.state === "active") {
+				numberOfActiveTransfers++
+				const avgSpeed = averageTransferSpeed(queuedTransfer)
+				if (avgSpeed) {
+					totalTransferSpeed += avgSpeed
+				}
+			}
+		}
+		if (numberOfActiveTransfers === 0) {
+			return null
+		}
+		const speed = totalTransferSpeed / numberOfActiveTransfers
+		const currentBatchTotalSize = this.queue.reduce((acc, curr) => BigInt(transferSize(curr)) + acc, 0n)
+		const currentBatchTransferredSize = this.queue.reduce((acc, curr) => BigInt(curr.transferredBytes) + acc, 0n)
+
+		return speed !== 0 ? Number((currentBatchTotalSize - currentBatchTransferredSize) / BigInt(Math.round(speed))) : null
+	}
+
 	constructor(
 		private readonly driveFacade: DriveFacade,
 		private readonly blobFacade: BlobFacade,
 		private readonly updateUi: () => unknown,
 		private readonly fileController: FileController,
-		private readonly scheduler: Scheduler,
 	) {}
+
+	setAllTransfersDoneListener(listener: () => unknown) {
+		this.allTransfersDoneListener = listener
+	}
 
 	async upload(file: WebFile | FileReference, filename: string, targetFolderId: IdTuple) {
 		const transferId = await this.blobFacade.generateTransferId()
@@ -88,10 +116,26 @@ export class DriveTransferController {
 			file,
 			filename,
 			type: "upload",
-			transferredSize: 0,
+			transferredBytes: 0,
+			startTime: null,
+			lastChunkUpdateTime: null,
 			targetFolderId,
 		})
 		this.drainQueue("upload")
+	}
+
+	private async reset(failedTransfer: QueuedTransfer) {
+		findAllAndRemove(this.finishedTransfers, (transfer) => transfer.id === failedTransfer.id)
+
+		// reset volatile properties
+		failedTransfer.transferredBytes = 0
+		failedTransfer.startTime = null
+		failedTransfer.lastChunkUpdateTime = null
+
+		// reset state and get the queue moving again
+		failedTransfer.state = "waiting"
+		this.queue.push(failedTransfer)
+		this.drainQueue(failedTransfer.type)
 	}
 
 	private drainQueue(transferType: "upload" | "download") {
@@ -119,7 +163,9 @@ export class DriveTransferController {
 					this.removeTransfer(transfer.id)
 				} else {
 					this.transferFailed(id)
-					if (!isOfflineError(e)) {
+					if (e instanceof FileTooLargeError) {
+						handleUncaughtError(new UserError("nativeFileUploadTooLarge_msg"))
+					} else if (!isOfflineError(e)) {
 						handleUncaughtError(e)
 					}
 				}
@@ -157,20 +203,23 @@ export class DriveTransferController {
 
 	private startUpload(transfer: QueuedTransfer) {
 		transfer.state = "active"
+		transfer.startTime = new Date()
 		this.updateUi()
 	}
 
 	async onChunkUploaded(transferId: FileId, uploadedBytesSoFar: number): Promise<void> {
 		const stateForThisFile = this.transferForId(transferId)
 		if (stateForThisFile) {
-			stateForThisFile.transferredSize = uploadedBytesSoFar
+			stateForThisFile.transferredBytes = uploadedBytesSoFar
+			stateForThisFile.lastChunkUpdateTime = new Date()
+			this.updateUi()
 		} else {
 			console.debug(`${transferId} is not part of the state. This can be due to an upload being canceled`)
 		}
 	}
 
 	private transferForId(fileId: TransferId) {
-		return this.queue.find((item) => item.id === fileId)
+		return this.queue.find((item) => item.id === fileId) || this.finishedTransfers.find((item) => item.id === fileId)
 	}
 
 	async cancelTransfer(transferId: TransferId): Promise<void> {
@@ -186,22 +235,36 @@ export class DriveTransferController {
 		}
 	}
 
-	private finishUpload(fileId: FileId) {
-		const stateForThisFile = this.transferForId(fileId)
-		if (stateForThisFile) {
-			stateForThisFile.state = "finished"
-			this.updateUi()
-			this.cleanupTransfer(fileId)
+	retryTransfer(transferId: TransferId) {
+		const state = this.transferForId(transferId)
+		if (state) {
+			if (state.state === "failed") {
+				this.reset(state)
+			} else {
+				throw new ProgrammingError("wanted to retry non-failed transfer")
+			}
 		}
 	}
 
-	private transferFailed(fileId: FileId) {
-		const fileState = this.transferForId(fileId)
-		if (fileState) {
-			fileState.state = "failed"
-			this.updateUi()
-			this.cleanupTransfer(fileId)
+	retryFailedTransfers() {
+		const failedTransfers = this.finishedTransfers.filter((transfer) => transfer.state === "failed")
+		for (const failed of failedTransfers) {
+			this.retryTransfer(failed.id)
 		}
+	}
+
+	async flush() {
+		const activeTransfers = this.queue.filter((transfer) => transfer.state === "active" || transfer.state === "waiting")
+		this.queue.splice(0, this.queue.length, ...activeTransfers)
+		this.finishedTransfers.splice(0)
+	}
+
+	private finishUpload(fileId: FileId) {
+		this.finalizeTransfer(fileId, "finished")
+	}
+
+	private transferFailed(fileId: FileId) {
+		this.finalizeTransfer(fileId, "failed")
 	}
 
 	async download(file: DriveFile, intent: "download" | "open") {
@@ -211,7 +274,9 @@ export class DriveTransferController {
 			state: "waiting",
 			file: file,
 			type: "download",
-			transferredSize: 0,
+			transferredBytes: 0,
+			startTime: null,
+			lastChunkUpdateTime: null,
 			filename: file.name,
 			intent: intent,
 		})
@@ -222,6 +287,7 @@ export class DriveTransferController {
 		const stateForThisFile = this.transferForId(fileId)
 		if (stateForThisFile) {
 			stateForThisFile.state = "active"
+			stateForThisFile.startTime = new Date()
 			this.updateUi()
 		}
 	}
@@ -229,28 +295,84 @@ export class DriveTransferController {
 	async onChunkDownloaded(transferId: TransferId, completedBytes: number): Promise<void> {
 		const fileState = this.transferForId(transferId)
 		if (fileState != null) {
-			fileState.transferredSize = completedBytes
+			fileState.transferredBytes = completedBytes
+			fileState.lastChunkUpdateTime = new Date()
 			this.updateUi()
 		}
 	}
 
 	private finishDownload(transferId: TransferId) {
-		const stateForThisFile = this.transferForId(transferId)
-		if (stateForThisFile) {
-			stateForThisFile.state = "finished"
-			this.updateUi()
-			this.cleanupTransfer(transferId)
-		}
+		this.finalizeTransfer(transferId, "finished")
 	}
 
-	private cleanupTransfer(transferId: TransferId) {
-		this.scheduler.scheduleAfter(() => this.removeTransfer(transferId), FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)
-	}
 	private removeTransfer(fileId: TransferId) {
 		const index = this.queue.findIndex((item) => item.id === fileId)
 		if (index !== -1) {
 			this.queue.splice(index, 1)
 		}
+		this.checkAllTransfersDone()
 		this.updateUi()
 	}
+
+	private finalizeTransfer(transferId: TransferId, newState: "finished" | "failed") {
+		const stateForThisFile = this.transferForId(transferId)
+		if (stateForThisFile) {
+			stateForThisFile.state = newState
+			// once all transfers are done move them to the finished, which are not used for progress
+			const allTransfersDone = this.checkAllTransfersDone()
+			if (allTransfersDone) {
+				this.finishedTransfers.push(...this.queue.splice(0))
+			}
+			this.updateUi()
+		}
+	}
+
+	private checkAllTransfersDone(): boolean {
+		const done = this.queue.every((transfer) => transfer.state === "finished" || transfer.state === "failed")
+		if (done) {
+			this.allTransfersDoneListener?.()
+		}
+
+		return done
+	}
+}
+
+function transferSize(transfer: QueuedTransfer): number {
+	if (transfer.file._type === "WebFile") {
+		return transfer.file.file.size
+	} else if (transfer.file._type === "FileReference") {
+		return transfer.file.size
+	} else {
+		let file: DriveFile = transfer.file // assert that this is a DriveFile
+		return filterInt(file.size)
+	}
+}
+
+function queuedTransferToState(transfer: QueuedTransfer): DriveTransferState {
+	return {
+		id: transfer.id,
+		state: transfer.state,
+		type: transfer.type,
+		filename: transfer.filename,
+		totalBytes: transferSize(transfer),
+		transferredBytes: transfer.transferredBytes,
+		timeRemainingSec: calculateRemainingTimeSec(transfer),
+	}
+}
+
+function averageTransferSpeed(queuedTransfer: QueuedTransfer): number | undefined {
+	if (queuedTransfer.lastChunkUpdateTime == null) {
+		return undefined
+	} else {
+		return (
+			queuedTransfer.transferredBytes /
+			((assertNotNull(queuedTransfer.lastChunkUpdateTime).getTime() - assertNotNull(queuedTransfer.startTime).getTime()) / 1000)
+		)
+	}
+}
+
+function calculateRemainingTimeSec(queuedTransfer: QueuedTransfer): number | undefined {
+	const speed = averageTransferSpeed(queuedTransfer)
+
+	return speed ? (transferSize(queuedTransfer) - queuedTransfer.transferredBytes) / speed : undefined
 }

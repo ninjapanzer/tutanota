@@ -1,7 +1,8 @@
 // some things should be defined before we import the tests
 
 // @ts-nocheck
-globalThis.isBrowser = false
+
+globalThis.isBrowserTest = false
 
 const noOp = () => {}
 

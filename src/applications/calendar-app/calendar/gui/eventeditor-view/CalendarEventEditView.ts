@@ -2,7 +2,7 @@ import m, { Children, Component, Vnode, VnodeDOM } from "mithril"
 import { AttendeeListEditor } from "./AttendeeListEditor.js"
 import { locator } from "../../../../common/api/main/CommonLocator.js"
 import { EventTimeEditor, EventTimeEditorAttrs } from "./EventTimeEditor.js"
-import { DEFAULT_CALENDAR_COLOR, RepeatPeriod, TabIndex, TimeFormat, Weekday } from "../../../../../platform-kit/app-env"
+import { DEFAULT_CALENDAR_COLOR, RepeatPeriod, TabIndex, TimeFormat, Weekday } from "@tutao/app-env"
 import { lang, TranslationKey } from "../../../../../ui/utils/LanguageViewModel.js"
 import { RecipientsSearchModel } from "../../../../common/misc/RecipientsSearchModel.js"
 import { CalendarInfo } from "../../model/CalendarModel.js"
@@ -18,7 +18,7 @@ import { Card } from "../../../../../ui/base/Card.js"
 import { Select, SelectAttributes, SelectOption } from "../../../../../ui/base/Select.js"
 import { Icon, IconSize } from "../../../../../ui/base/Icon.js"
 import { theme } from "../../../../../ui/theme.js"
-import { deepEqual } from "../../../../../platform-kit/utils"
+import { deepEqual } from "@tutao/utils"
 import { ButtonColor, getColors } from "../../../../../ui/base/Button.js"
 import stream from "mithril/stream"
 import { RepeatRuleEditor, RepeatRuleEditorAttrs } from "./RepeatRuleEditor.js"
@@ -28,6 +28,9 @@ import { DefaultAnimationTime } from "../../../../../ui/animation/Animations.js"
 import { Icons } from "../../../../../ui/base/icons/Icons.js"
 import { SectionButton } from "../../../../../ui/base/buttons/SectionButton.js"
 import { CalendarRepeatRule } from "@tutao/entities/tutanota"
+import { elementIdToId } from "@tutao/meta"
+import { TimeZoneSelectionPage, TimeZoneSelectionPageAttrs } from "./TimeZoneSelectionPage"
+import { isFreeSignupOnly } from "../../../../common/misc/LoginUtils"
 
 export type CalendarEventEditViewAttrs = {
 	model: CalendarEventModel
@@ -55,6 +58,7 @@ export enum EditorPages {
 	MAIN,
 	REPEAT_RULES,
 	GUESTS,
+	TIMEZONE_SELECTOR,
 }
 
 /**
@@ -77,6 +81,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 	private dialogHeight: number | null = null
 	private pageWidth: number = -1
 	private translate = 0
+	private separateStartAndEndTimeZone: boolean
 
 	constructor(vnode: Vnode<CalendarEventEditViewAttrs>) {
 		this.timeFormat = vnode.attrs.timeFormat
@@ -84,12 +89,16 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 		this.defaultAlarms = vnode.attrs.defaultAlarms
 
 		if (vnode.attrs.model.operation === CalendarOperation.Create) {
-			const initialAlarms = vnode.attrs.defaultAlarms.get(vnode.attrs.model.editModels.whoModel.selectedCalendar.group._id) ?? []
+			const selectedCalendarGroupId = vnode.attrs.model.editModels.whoModel.selectedCalendar.group._id
+			const initialAlarms = vnode.attrs.defaultAlarms.get(elementIdToId(selectedCalendarGroupId)) ?? []
 			vnode.attrs.model.editModels.alarmModel.addAll(initialAlarms)
 		}
 
 		this.pages.set(EditorPages.REPEAT_RULES, this.renderRepeatRulesPage)
 		this.pages.set(EditorPages.GUESTS, this.renderGuestsPage)
+		this.pages.set(EditorPages.TIMEZONE_SELECTOR, this.renderTimeZoneSelectionPage)
+
+		this.separateStartAndEndTimeZone = vnode.attrs.model.editModels.whenModel.hasSeparateStartAndEndTimeZone()
 
 		vnode.attrs.currentPage.map((page) => {
 			this.hasAnimationEnded = false
@@ -194,19 +203,22 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 		return m(
 			Card,
 			{
+				classes: ["event-editor-section"],
 				style: {
 					padding: "0",
 				},
 			},
 			m(SingleLineTextField, {
+				classes: ["full-height"],
 				value: model.editModels.summary.content,
 				oninput: (newValue: any) => {
 					model.editModels.summary.content = newValue
 				},
-				ariaLabel: lang.get("title_placeholder"),
-				placeholder: lang.get("title_placeholder"),
+				ariaLabel: lang.getTranslation("title_placeholder"),
+				placeholder: lang.getTranslation("title_placeholder").text,
 				disabled: !model.isFullyWritable(),
 				style: {
+					padding: `${px(size.spacing_8)} ${px(size.spacing_12)}`,
 					fontSize: px(font_size.base * 1.25), // Overriding the component style
 				},
 				type: LegacyTextFieldType.Text,
@@ -239,13 +251,13 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 	}
 
 	private renderEventTimeEditor(attrs: CalendarEventEditViewAttrs): Children {
-		const padding = px(size.spacing_8)
 		const { whenModel } = attrs.model.editModels
 		return m(
 			Card,
-			{ style: { padding: `${padding} 0 ${padding} ${padding}` } },
+			{ style: { padding: `${px(size.spacing_8)} ${px(size.spacing_12)}` } },
 			m(EventTimeEditor, {
 				editModel: whenModel,
+				separateStartAndEndTimeZone: this.separateStartAndEndTimeZone,
 				timeFormat: this.timeFormat,
 				startOfTheWeekOffset: this.startOfTheWeekOffset,
 				disabled: !attrs.model.isFullyWritable(),
@@ -253,13 +265,20 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 					whenModel.rescheduleEventToDate(date)
 					if (whenModel.repeatPeriod === RepeatPeriod.MONTHLY) whenModel.resetMonthlyByDayRules(date)
 				},
+				onTimeZoneSelectionClick: () => this.transitionTo(EditorPages.TIMEZONE_SELECTOR, attrs.navigationCallback),
 			} satisfies EventTimeEditorAttrs),
 		)
 	}
 
 	private renderRepeatRuleNavButton({ model, navigationCallback }: CalendarEventEditViewAttrs): Children {
-		const repeatRuleText = this.getTranslatedRepeatRule(model.editModels.whenModel.result.repeatRule, model.editModels.whenModel.isAllDay)
+		const repeatRuleText = this.getTranslatedRepeatRule(model.editModels.whenModel.getRepeatRuleOrNull(), model.editModels.whenModel.isAllDay)
 		return m(SectionButton, {
+			style: {
+				minHeight: px(size.core_48),
+			},
+			cardStyle: {
+				padding: px(size.spacing_12),
+			},
 			leftIcon: { icon: Icons.Sync, title: "calendarRepeating_label" },
 			text: lang.makeTranslation(repeatRuleText, repeatRuleText),
 			isDisabled: !model.canEditSeries(),
@@ -285,6 +304,12 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 			onclick: () => {
 				this.transitionTo(EditorPages.GUESTS, navigationCallback)
 			},
+			style: {
+				minHeight: px(size.core_48),
+			},
+			cardStyle: {
+				padding: px(size.spacing_12),
+			},
 		})
 	}
 
@@ -294,9 +319,10 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 
 		const options: CalendarSelectItem[] = availableCalendars.map((calendarInfo) => {
 			const name = getSharedGroupName(calendarInfo.groupInfo, model.userController.userSettingsGroupRoot, calendarInfo.hasMultipleMembers)
+			const calendarGroupColor = groupColors.get(elementIdToId(calendarInfo.group._id))
 			return {
 				name,
-				color: "#" + (groupColors.get(calendarInfo.group._id) ?? DEFAULT_CALENDAR_COLOR),
+				color: "#" + (calendarGroupColor ?? DEFAULT_CALENDAR_COLOR),
 				value: calendarInfo,
 				ariaValue: name,
 			}
@@ -310,7 +336,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 		)
 		let selected: CalendarSelectItem = {
 			name: selectedCalendarName,
-			color: "#" + (groupColors.get(selectedCalendarInfo.group._id) ?? DEFAULT_CALENDAR_COLOR),
+			color: "#" + (groupColors.get(elementIdToId(selectedCalendarInfo.group._id)) ?? DEFAULT_CALENDAR_COLOR),
 			value: model.editModels.whoModel.selectedCalendar,
 			ariaValue: selectedCalendarName,
 		}
@@ -319,14 +345,15 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 			{ style: { padding: "0" } },
 			m(Select<CalendarSelectItem, CalendarInfo>, {
 				onchange: (val) => {
+					const defaultAlarms = this.defaultAlarms.get(elementIdToId(val.value.group._id)) ?? []
 					model.editModels.alarmModel.removeAll()
-					model.editModels.alarmModel.addAll(this.defaultAlarms.get(val.value.group._id) ?? [])
+					model.editModels.alarmModel.addAll(defaultAlarms)
 					model.editModels.whoModel.selectedCalendar = val.value
 				},
 				options: stream(options),
 				expanded: true,
 				selected,
-				classes: ["button-min-height", "pl-8", "pr-8"],
+				classes: ["button-min-height", "pr-12", "event-editor-section"],
 				renderOption: (option) => this.renderCalendarOptions(option, deepEqual(option.value, selected.value), false),
 				renderDisplay: (option) => this.renderCalendarOptions(option, false, true),
 				ariaLabel: lang.get("calendar_label"),
@@ -337,13 +364,13 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 
 	private renderCalendarOptions(option: CalendarSelectItem, isSelected: boolean, isDisplay: boolean) {
 		return m(
-			".flex.items-center.gap-8.flex-grow.overflow-hidden",
-			{ class: `${isDisplay ? "" : "state-bg plr-8 button-content dropdown-button pt-8 pb-8 button-min-height"}` },
+			".flex.items-center.gap-16.flex-grow.overflow-hidden",
+			{ class: `${isDisplay ? "plr-16 pt-12 pb-12" : "state-bg plr-16 button-content dropdown-button pt-12 pb-12 button-min-height"}` },
 			[
 				m(".no-shrink", {
 					style: {
-						width: px(size.spacing_24),
-						height: px(size.spacing_24),
+						width: px(size.core_16),
+						height: px(size.core_16),
 						borderRadius: "50%",
 						backgroundColor: option.color,
 						marginInline: px(size.spacing_4 / 2),
@@ -367,8 +394,8 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 
 		return m(
 			Card,
-			{ classes: ["button-min-height", "flex", "items-center"] },
-			m(".flex.gap-8.items-start.flex-grow", [
+			{ classes: ["flex", "items-center"], style: { padding: px(size.spacing_12) } },
+			m(".flex.gap-16.items-start.flex-grow", [
 				m(
 					".flex",
 					{
@@ -376,7 +403,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 					},
 					[
 						m(Icon, {
-							icon: Icons.AlarmOutline,
+							icon: Icons.AlarmFilled,
 							style: { fill: getColors(ButtonColor.Content).button },
 							title: lang.get("reminderBeforeEvent_label"),
 							size: IconSize.PX24,
@@ -401,24 +428,24 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 			{
 				style: { padding: "0" },
 			},
-			m(
-				".flex.gap-8.items-center",
-				m(SingleLineTextField, {
-					value: model.editModels.location.content,
-					oninput: (newValue: string) => {
-						model.editModels.location.content = newValue
-					},
-					classes: ["button-min-height"],
-					ariaLabel: lang.get("location_label"),
-					placeholder: lang.get("location_label"),
-					disabled: !model.isFullyWritable(),
-					leadingIcon: {
-						icon: Icons.PlaceFilled,
-						color: getColors(ButtonColor.Content).button,
-					},
-					type: LegacyTextFieldType.Text,
-				}),
-			),
+			m(SingleLineTextField, {
+				value: model.editModels.location.content,
+				oninput: (newValue: string) => {
+					model.editModels.location.content = newValue
+				},
+				classes: ["event-editor-section"],
+				style: {
+					padding: px(size.spacing_12),
+				},
+				ariaLabel: lang.getTranslation("location_label"),
+				placeholder: lang.get("location_label"),
+				disabled: !model.isFullyWritable(),
+				leadingIcon: {
+					icon: Icons.PlaceFilled,
+					color: getColors(ButtonColor.Content).button,
+				},
+				type: LegacyTextFieldType.Text,
+			}),
 		)
 	}
 
@@ -442,7 +469,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 
 	private renderMainPage(vnode: Vnode<CalendarEventEditViewAttrs>): Children {
 		return m(
-			".pb-16.pt-16.flex.col.gap-16.fit-height.box-content",
+			".pb-16.pt-16.flex.col.gap-8.fit-height.box-content",
 			{
 				style: {
 					// The date picker dialogs have position: fixed, and they are fixed relative to the most recent ancestor with
@@ -466,7 +493,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 							this.renderCalendarPicker(vnode),
 							this.renderRepeatRuleNavButton(vnode.attrs),
 							this.renderRemindersEditor(vnode),
-							this.renderGuestsNavButton(vnode.attrs),
+							isFreeSignupOnly() && locator.logins.getUserController().isFreeAccount() ? null : this.renderGuestsNavButton(vnode.attrs),
 							this.renderLocationField(vnode),
 						])
 					: null,
@@ -490,6 +517,28 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 				m.redraw()
 			},
 		} satisfies RepeatRuleEditorAttrs)
+	}
+
+	private renderTimeZoneSelectionPage({ attrs }: Vnode<CalendarEventEditViewAttrs>) {
+		const whenModel = attrs.model.editModels.whenModel
+
+		return m(TimeZoneSelectionPage, {
+			width: this.pageWidth,
+			whenModel,
+			separateStartAndEndTimeZone: this.separateStartAndEndTimeZone,
+			onToggleSeparateStartAndEndTimeZone: (value) => {
+				this.separateStartAndEndTimeZone = value
+			},
+			onRemoveTimeZone: () => {
+				attrs.navigationCallback(EditorPages.MAIN)
+			},
+			onConfirm: (selectedStartTimeZone, selectedEndTimeZone) => {
+				whenModel.setStartTimeZone(selectedStartTimeZone)
+				whenModel.setEndTimeZone(selectedEndTimeZone)
+
+				attrs.navigationCallback(EditorPages.MAIN)
+			},
+		} satisfies TimeZoneSelectionPageAttrs)
 	}
 
 	private getTranslatedRepeatRule(rule: CalendarRepeatRule | null, isAllDay: boolean): string {

@@ -55,7 +55,7 @@ export class WhitelabelNotificationEmailSettings implements Component<Whitelabel
 					columnWidths: [ColumnWidth.Largest, ColumnWidth.Largest],
 					showActionButtonColumn: true,
 					addButtonAttrs: {
-						title: "add_action",
+						label: "add_action",
 						click: () => {
 							onAddTemplate()
 						},
@@ -69,11 +69,11 @@ export class WhitelabelNotificationEmailSettings implements Component<Whitelabel
 							cells: [langName, template.subject],
 							actionButtonAttrs: attachDropdown({
 								mainButtonAttrs: {
-									title: "edit_action",
+									label: "edit_action",
 									icon: Icons.PenFilled,
 									size: ButtonSize.Compact,
 								},
-								childAttrs: () => [
+								childAttrs: async () => [
 									{
 										label: "edit_action",
 										click: () => onEditTemplate(template),

@@ -4,10 +4,11 @@
  */
 
 import { TutanotaError } from "@tutao/app-env"
+import { isNotNull, Nullable } from "@tutao/utils"
 
 export class CryptoError extends TutanotaError {
-	constructor(message: string, error?: Error) {
-		super("CryptoError", error ? message + "> " + (error.stack ? error.stack : error.message) : message)
+	constructor(message: string, error: Nullable<Error> = null) {
+		super("CryptoError", isNotNull(error) ? message + "> " + (error.stack ?? error.message) : message)
 	}
 }
 

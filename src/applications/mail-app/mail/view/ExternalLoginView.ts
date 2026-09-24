@@ -1,10 +1,10 @@
 import m, { Children, Vnode } from "mithril"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { AccessExpiredError } from "../../../../platform-kit/rest-client/error"
 import { assertNotNull, base64ToUint8Array, base64UrlToBase64, noOp } from "../../../../platform-kit/utils"
 import type { MaybeTranslation } from "../../../../ui/utils/LanguageViewModel.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager.js"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { progressIcon } from "../../../../ui/base/Icon.js"
 import { Autocomplete } from "../../../../ui/base/LegacyTextField.js"
@@ -15,7 +15,7 @@ import { getLoginErrorMessage, handleExpectedLoginError } from "../../../common/
 import type { CredentialsProvider } from "../../../common/misc/credentials/CredentialsProvider.js"
 import { credentialsToUnencrypted } from "../../../common/misc/credentials/Credentials.js"
 import { SessionType } from "../../../../platform-kit/app-env/SessionType.js"
-import { ResumeSessionErrorReason } from "../../../../platform-kit/base/facades/LoginFacade.js"
+import { ResumeSessionState } from "../../../../platform-kit/base/facades/LoginFacade.js"
 import { TopLevelAttrs, TopLevelView } from "../../../../ui/base/TopLevelView.js"
 import { BaseTopLevelView } from "../../../../ui/BaseTopLevelView.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
@@ -24,12 +24,13 @@ import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
 import { UnencryptedCredentials } from "@tutao/native-bridge/generatedIpc/types"
 import { PasswordField } from "../../../common/misc/passwords/PasswordField.js"
 import { renderInfoLinks } from "../../../common/gui/RenderLoginInfoLinks.js"
-import { assertMainOrNode, Keys } from "../../../../platform-kit/app-env"
-import { asKdfType, KdfType } from "../../../../platform-kit/base/crypto/Constants"
+import { EnvProvider } from "../../../../platform-kit/app-env"
+import { asKdfType, KdfType } from "../../../../platform-kit/base/base-crypto/Constants"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
-type UrlData = { userId: Id; salt: Uint8Array; kdfType: KdfType }
+type UrlData = { userId: Id; salt: Uint8Array<ArrayBuffer>; kdfType: KdfType }
 
 export class ExternalLoginViewModel {
 	password: string = ""
@@ -57,7 +58,7 @@ export class ExternalLoginViewModel {
 
 	private async doFormLogin() {
 		const password = this.password
-		const clientIdentifier = client.browser + " " + client.device
+		const clientIdentifier = ClientDetector.get().browser + " " + ClientDetector.get().device
 		const persistentSession = this.doSavePassword
 
 		const sessionType = persistentSession ? SessionType.Persistent : SessionType.Login
@@ -95,19 +96,12 @@ export class ExternalLoginViewModel {
 	}
 
 	private async resumeSession(credentials: UnencryptedCredentials): Promise<void> {
-		const result = await locator.logins.resumeSession(
-			credentials,
-			{
-				salt: this.urlData.salt,
-				kdfType: this.urlData.kdfType,
-			},
-			null,
-		)
-		if (result.type === "error") {
-			switch (result.reason) {
-				case ResumeSessionErrorReason.OfflineNotAvailableForFree:
-					throw new Error("Cannot happen")
-			}
+		const result = await locator.logins.resumeSession(credentials, {
+			salt: this.urlData.salt,
+			kdfType: this.urlData.kdfType,
+		})
+		if (result.state === ResumeSessionState.Failure) {
+			throw new Error("Cannot happen")
 		}
 	}
 
@@ -132,7 +126,7 @@ export class ExternalLoginViewModel {
 		} catch (e) {
 			const messageId = getLoginErrorMessage(e, true)
 
-			if (e instanceof restError.AccessExpiredError) {
+			if (e instanceof AccessExpiredError) {
 				this.errorMessageId = messageId
 			} else {
 				this.helpText = messageId

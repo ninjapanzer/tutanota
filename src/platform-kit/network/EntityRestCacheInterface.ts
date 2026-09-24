@@ -1,7 +1,13 @@
-import { ListElementEntity, SomeEntity, TypeRef } from "@tutao/meta"
+import { ListElementEntity, PersistentEntity, TypeRef } from "@tutao/meta"
 import { OwnerEncSessionKeyProvider } from "@tutao/instance-pipeline"
-import { EntityUpdateData } from "../instance-pipeline/utils/EntityUpdateUtils"
-import { EntityRestClientEraseOptions, EntityRestClientLoadOptions, EntityRestClientSetupOptions, EntityRestClientUpdateOptions } from "./EntityRestClient"
+import { CacheSyncStatus, EntityUpdateData } from "../instance-pipeline/utils/EntityUpdateUtils"
+import { Nullable } from "@tutao/utils"
+import {
+	EntityRestClientEraseOptions,
+	EntityRestClientLoadOptions,
+	EntityRestClientSetupOptions,
+	EntityRestClientUpdateOptions,
+} from "../instance-pipeline/RestClientOptions"
 
 /**
  * The EntityRestInterface provides a convenient interface for invoking server side REST services.
@@ -13,7 +19,7 @@ export interface EntityRestInterface {
 	 * @param id
 	 * @param loadOptions
 	 */
-	load<T extends SomeEntity>(typeRef: TypeRef<T>, id: PropertyType<T, "_id">, loadOptions?: EntityRestClientLoadOptions): Promise<T>
+	load<T extends PersistentEntity>(typeRef: TypeRef<T>, id: T["_id"], loadOptions: EntityRestClientLoadOptions): Promise<T>
 
 	/**
 	 * Reads a range of elements from the server (or cache). Entities are decrypted before they are returned.
@@ -24,7 +30,7 @@ export interface EntityRestInterface {
 		start: Id,
 		count: number,
 		reverse: boolean,
-		loadOptions?: EntityRestClientLoadOptions,
+		loadOptions: EntityRestClientLoadOptions,
 	): Promise<T[]>
 
 	/**
@@ -35,47 +41,52 @@ export interface EntityRestInterface {
 	 * @param ownerEncSessionKeyProvider use this to resolve the instances session key in case instance.ownerEncSessionKey is not defined (which might be undefined for MailDetails / Files)
 	 * @param loadOptions
 	 */
-	loadMultiple<T extends SomeEntity>(
+	loadMultiple<T extends PersistentEntity>(
 		typeRef: TypeRef<T>,
 		listId: Id | null,
 		elementIds: Array<Id>,
-		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
-		loadOptions?: EntityRestClientLoadOptions,
+		ownerEncSessionKeyProvider: Nullable<OwnerEncSessionKeyProvider>,
+		loadOptions: EntityRestClientLoadOptions,
 	): Promise<Array<T>>
 
 	/**
 	 * Creates a single element on the server. Entities are encrypted before they are sent.
 	 * @return the element id generated on the server side or null if it is a custom id
 	 */
-	setup<T extends SomeEntity>(listId: Id | null, instance: T, extraHeaders?: Dict, options?: EntityRestClientSetupOptions): Promise<Id | null>
+	setup<T extends PersistentEntity>(
+		listId: Nullable<Id>,
+		instance: T,
+		extraHeaders: Nullable<Dict>,
+		options: Nullable<EntityRestClientSetupOptions>,
+	): Promise<Id | null>
 
 	/**
 	 * Creates multiple elements on the server. Entities are encrypted before they are sent.
 	 */
-	setupMultiple<T extends SomeEntity>(listId: Id | null, instances: ReadonlyArray<T>): Promise<Array<Id>>
+	setupMultiple<T extends PersistentEntity>(listId: Id | null, instances: ReadonlyArray<T>): Promise<Array<Id>>
 
 	/**
 	 * Modifies a single element on the server. Entities are encrypted before they are sent.
 	 * @param instance
 	 * @param options
 	 */
-	update<T extends SomeEntity>(instance: T, options?: EntityRestClientUpdateOptions): Promise<void>
+	update<T extends PersistentEntity>(instance: T, options: EntityRestClientUpdateOptions): Promise<void>
 
 	/**
 	 * Deletes a single element on the server.
 	 */
-	erase<T extends SomeEntity>(instance: T, options?: EntityRestClientEraseOptions): Promise<void>
+	erase<T extends PersistentEntity>(instance: T, options: EntityRestClientEraseOptions): Promise<void>
 
 	/**
 	 * Deletes multiple elements on the server.
 	 */
-	eraseMultiple<T extends SomeEntity>(listId: Id, instances: Array<T>, options?: EntityRestClientEraseOptions): Promise<void>
+	eraseMultiple<T extends PersistentEntity>(listId: Id, instances: Array<T>, options: EntityRestClientEraseOptions): Promise<void>
 
 	/**
-	 * Must be called when entity events are received.
-	 * @return Similar to the events in the data parameter, but reduced by the events which are obsolete.
+	 * Must be called when entity updates are received.
+	 * @return Similar to the updates in the data parameter, but reduced by the updates which are obsolete.
 	 */
-	entityEventsReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id): Promise<readonly EntityUpdateData[]>
+	onEntityUpdatesReceived(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id): Promise<readonly EntityUpdateData[]>
 }
 
 export interface EntityRestCache extends EntityRestInterface {
@@ -103,5 +114,15 @@ export interface EntityRestCache extends EntityRestInterface {
 	/**
 	 * Delete a cached entity. Sometimes this is necessary to do to ensure you always load the new version
 	 */
-	deleteFromCacheIfExists<T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id | null, elementId: Id): Promise<void>
+	deleteFromCacheIfExists<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id | null, elementId: Id): Promise<void>
+	/**
+	 * Updates the cache with the given missed entity updates. Groups the entity updates by typeRef, and uses cacheStorage.putMultiple to update the cache.
+	 * This is used because IPC is slow on Desktop and Android, and syncing takes longer if putMultiple is not used and the items are put to cache one-by-one.
+	 */
+	updateCacheWithMissedEntityUpdates(entityUpdates: EntityUpdateData[]): Promise<void>
+
+	/**
+	 * set the new CacheSyncStatus
+	 */
+	setCacheSyncStatus(cacheSyncStatus: CacheSyncStatus): Promise<void>
 }

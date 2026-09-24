@@ -3,18 +3,18 @@ import { px, size } from "../../../../ui/size"
 import { displayOverlay } from "../../../../ui/base/Overlay"
 import { DefaultAnimationTime } from "../../../../ui/animation/Animations"
 import { EventController } from "../../../common/api/main/EventController"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { LayerType } from "../../../../ui/base/RootView"
 import type { Dialog } from "../../../../ui/base/Dialog"
 import type { SendMailModel } from "../../../common/mailFunctionality/SendMailModel.js"
 import type { MinimizedEditor, SaveStatus } from "../model/MinimizedMailEditorViewModel"
 import { MinimizedMailEditorViewModel } from "../model/MinimizedMailEditorViewModel"
 import { MinimizedEditorOverlay } from "./MinimizedEditorOverlay"
-import { assertMainOrNode } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import Stream from "mithril/stream"
 import { noOp } from "../../../../platform-kit/utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 const MINIMIZED_OVERLAY_WIDTH_WIDE = 350
 const MINIMIZED_OVERLAY_WIDTH_SMALL = 220
 
@@ -54,10 +54,10 @@ function showMinimizedEditorOverlay(viewModel: MinimizedMailEditorViewModel, min
 
 function getOverlayPosition() {
 	return {
-		bottom: styles.isUsingBottomNavigation() ? px(size.spacing_12) : px(size.spacing_16),
+		bottom: Styles.get().isUsingBottomNavigation() ? px(size.spacing_12) : px(size.spacing_16),
 		// position will change with translateY
-		right: styles.isUsingBottomNavigation() ? px(size.spacing_12) : px(size.spacing_24),
-		width: px(styles.isSingleColumnLayout() ? MINIMIZED_OVERLAY_WIDTH_SMALL : MINIMIZED_OVERLAY_WIDTH_WIDE),
+		right: Styles.get().isUsingBottomNavigation() ? px(size.spacing_12) : px(size.spacing_24),
+		width: px(Styles.get().isSingleColumnLayout() ? MINIMIZED_OVERLAY_WIDTH_SMALL : MINIMIZED_OVERLAY_WIDTH_WIDE),
 		zIndex: LayerType.LowPriorityOverlay,
 	}
 }

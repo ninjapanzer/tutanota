@@ -4,9 +4,10 @@ import { random } from "../random/Randomizer.js"
 import { stringToUtf8Uint8Array } from "@tutao/utils"
 import { CryptoError } from "@tutao/crypto/error"
 import { sha256Hash } from "./Sha256.js"
-import { AesKey, uint8ArrayToKey } from "../encryption/symmetric/SymmetricCipherUtils.js"
+import { uint8ArrayToKey } from "../encryption/symmetric/SymmetricCipherUtils.js"
 
 import { KeyLength } from "../CryptoTypes"
+import { AesKey } from "../encryption/symmetric/AesKey"
 
 const logRounds = 8 // pbkdf2 number of iterations
 
@@ -16,7 +17,7 @@ export type SignedBytes = number[]
  * Create a 128 bit random _salt value.
  * return _salt 128 bit of random data, encoded as a hex string.
  */
-export function generateRandomSalt(): Uint8Array {
+export function generateRandomSalt(): Uint8Array<ArrayBuffer> {
 	return random.generateRandomData(128 / 8)
 }
 
@@ -27,7 +28,7 @@ export function generateRandomSalt(): Uint8Array {
  * @param keyLengthType Defines the length of the key that shall be generated.
  * @return resolved with the key
  */
-export function generateKeyFromPassphrase(passphrase: string, salt: Uint8Array, keyLengthType: KeyLength): AesKey {
+export function generateKeyFromPassphrase(passphrase: string, salt: Uint8Array<ArrayBuffer>, keyLengthType: KeyLength): AesKey {
 	// hash the password first to avoid login with multiples of a password, i.e. "hello" and "hellohello" produce the same key if the same _salt is used
 	let passphraseBytes = sha256Hash(stringToUtf8Uint8Array(passphrase))
 	let bytes = crypt_raw(passphraseBytes, salt, logRounds)
@@ -39,7 +40,7 @@ export function generateKeyFromPassphrase(passphrase: string, salt: Uint8Array, 
 	}
 }
 
-function crypt_raw(passphraseBytes: Uint8Array, saltBytes: Uint8Array, logRounds: number): Uint8Array {
+function crypt_raw(passphraseBytes: Uint8Array<ArrayBuffer>, saltBytes: Uint8Array<ArrayBuffer>, logRounds: number): Uint8Array<ArrayBuffer> {
 	try {
 		return _signedBytesToUint8Array(new bCrypt().crypt_raw(_uint8ArrayToSignedBytes(passphraseBytes), _uint8ArrayToSignedBytes(saltBytes), logRounds))
 	} catch (e) {
@@ -53,7 +54,7 @@ function crypt_raw(passphraseBytes: Uint8Array, saltBytes: Uint8Array, logRounds
  * @param signedBytes The signed byte values.
  * @return The unsigned byte values.
  */
-function _signedBytesToUint8Array(signedBytes: SignedBytes): Uint8Array {
+function _signedBytesToUint8Array(signedBytes: SignedBytes): Uint8Array<ArrayBuffer> {
 	return new Uint8Array(new Int8Array(signedBytes))
 }
 
@@ -62,6 +63,6 @@ function _signedBytesToUint8Array(signedBytes: SignedBytes): Uint8Array {
  * @param unsignedBytes The unsigned byte values.
  * @return The signed byte values.
  */
-function _uint8ArrayToSignedBytes(unsignedBytes: Uint8Array): SignedBytes {
+function _uint8ArrayToSignedBytes(unsignedBytes: Uint8Array<ArrayBuffer>): SignedBytes {
 	return Array.from(new Uint8Array(new Int8Array(unsignedBytes)))
 }

@@ -1,4 +1,4 @@
-import { ALLOWED_IMAGE_FORMATS, assertMainOrNode, EncryptionAuthStatus, MAX_BASE64_IMAGE_SIZE, TUTA_MAIL_ADDRESS_DOMAINS } from "@tutao/app-env"
+import { ALLOWED_IMAGE_FORMATS, EncryptionAuthStatus, EnvProvider, MAX_BASE64_IMAGE_SIZE, TUTA_MAIL_ADDRESS_DOMAINS } from "@tutao/app-env"
 import { fullNameToFirstAndLastName, mailAddressToFirstAndLastName } from "../misc/parsing/MailAddressParser.js"
 import { assertNotNull, endsWith, neverNull, uint8ArrayToBase64 } from "@tutao/utils"
 import { UserController } from "../api/main/UserController.js"
@@ -7,16 +7,17 @@ import { lang, Language, TranslationKey } from "../../../ui/utils/LanguageViewMo
 import { MailboxDetail } from "./MailboxModel.js"
 import { LoginController } from "../api/main/LoginController.js"
 import { EntityClient } from "../../../platform-kit/network/EntityClient.js"
-import { showFileChooser } from "../file/FileController.js"
+import { FileChooserMultiMode, showFileChooser } from "../file/FileController.js"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { ImageHandler } from "../../../ui/editor/Editor"
-import { CustomerPropertiesTypeRef, GroupInfo, User } from "../../../entities/sys/TypeRefs"
-import { Contact, createContact, createContactMailAddress, Mail } from "../../../entities/tutanota/TypeRefs"
+import { CustomerPropertiesTypeRef, GroupInfo, User } from "@tutao/entities/sys"
+import { Contact, createContact, createContactMailAddress, Mail } from "@tutao/entities/tutanota"
 import { Attachment, ContactAddressType, ConversationType, MailState, MAX_ATTACHMENT_SIZE } from "../../../entities/tutanota/Utils"
 import { GroupType, SYSTEM_GROUP_MAIL_ADDRESS } from "../../../entities/sys/Utils"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
+import { idToElementId } from "@tutao/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export const LINE_BREAK = "<br>"
 
 /**
@@ -30,10 +31,6 @@ export function createNewContact(user: User, mailAddress: string, name: string):
 	// use the name or mail address to extract first and last name. first part is used as first name, all other parts as last name
 	let firstAndLastName = name.trim() !== "" ? fullNameToFirstAndLastName(name) : mailAddressToFirstAndLastName(mailAddress)
 	let contact = createContact({
-		_ownerGroup: assertNotNull(
-			user.memberships.find((m) => m.groupType === GroupType.Contact),
-			"called createNewContact as user without contact group mship",
-		).group,
 		firstName: firstAndLastName.firstName,
 		lastName: firstAndLastName.lastName,
 		mailAddresses: [
@@ -68,6 +65,10 @@ export function createNewContact(user: User, mailAddress: string, name: string):
 		relationships: [],
 		websites: [],
 	})
+	contact._ownerGroup = assertNotNull(
+		user.memberships.find((m) => m.groupType === GroupType.Contact),
+		"called createNewContact as user without contact group mship",
+	).group
 	return contact
 }
 
@@ -155,7 +156,7 @@ export function getTemplateLanguages(sortedLanguages: Array<Language>, entityCli
 	return loginController
 		.getUserController()
 		.reloadCustomer()
-		.then((customer) => entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties)))
+		.then((customer) => entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties))))
 		.then((customerProperties) => {
 			return sortedLanguages.filter((sL) => customerProperties.notificationMailTemplates.find((nmt) => nmt.language === sL.code))
 		})
@@ -281,7 +282,7 @@ export function isNoReplyTeamAddress(address: string): boolean {
 }
 
 export function insertInlineImageB64ClickHandler(ev: Event, handler: ImageHandler) {
-	showFileChooser(true, ALLOWED_IMAGE_FORMATS).then((files) => {
+	showFileChooser(FileChooserMultiMode.Multi, ALLOWED_IMAGE_FORMATS).then((files) => {
 		const tooBig: DataFile[] = []
 
 		for (let file of files) {

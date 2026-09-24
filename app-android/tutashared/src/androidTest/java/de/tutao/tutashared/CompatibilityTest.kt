@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import de.tutao.tutashared.AndroidNativeCryptoFacade.Companion.AES256_KEY_LENGTH_BYTES
 import de.tutao.tutashared.AndroidNativeCryptoFacade.Companion.IV_LENGTH_BYTES
 import de.tutao.tutashared.AndroidNativeCryptoFacade.Companion.bytesToKey
+import de.tutao.tutashared.file.TempFs
 import de.tutao.tutashared.ipc.DataWrapper
 import de.tutao.tutashared.ipc.IPCEd25519PrivateKey
 import de.tutao.tutashared.ipc.IPCEd25519PublicKey
@@ -48,7 +49,7 @@ class CompatibilityTest {
 	@Before
 	fun setup() {
 		val context: Context = ApplicationProvider.getApplicationContext()
-		crypto = AndroidNativeCryptoFacade(context, TempDir(context))
+		crypto = AndroidNativeCryptoFacade(context, TempFs(context, SecureRandom(), TempDir(context)))
 	}
 
 	@Test
@@ -327,7 +328,7 @@ class CompatibilityTest {
 				primeExponentP = keyParts[4],
 				primeExponentQ = keyParts[5],
 				crtCoefficient = keyParts[6],
-				keyLength = AndroidNativeCryptoFacade.RSA_KEY_LENGTH_IN_BITS,
+				keyLength = AndroidNativeCryptoFacade.RSA_KEY_LENGTH_IN_BITS.toLong(),
 			)
 		}
 
@@ -335,8 +336,8 @@ class CompatibilityTest {
 			return RsaPublicKey(
 				version = 0,
 				modulus = keyArray[0].toByteArray().toBase64(),
-				keyLength = AndroidNativeCryptoFacade.RSA_KEY_LENGTH_IN_BITS,
-				publicExponent = AndroidNativeCryptoFacade.RSA_PUBLIC_EXPONENT,
+				keyLength = AndroidNativeCryptoFacade.RSA_KEY_LENGTH_IN_BITS.toLong(),
+				publicExponent = AndroidNativeCryptoFacade.RSA_PUBLIC_EXPONENT.toLong(),
 			)
 		}
 

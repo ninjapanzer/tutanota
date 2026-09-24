@@ -20,9 +20,9 @@ import { lang } from "../../../ui/utils/LanguageViewModel.js"
 import Stream from "mithril/stream"
 import { SupportDialogState } from "../support/SupportDialog.js"
 import { showSnackBar } from "../../../ui/base/SnackBar.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { windowFacade } from "../misc/WindowFacade.js"
-import { isApp, isIOSApp, TUTA_MAIL_APP_STORE_URL, TUTA_MAIL_GOOGLE_PLAY_URL } from "@tutao/app-env"
+import { EnvProvider, TUTA_MAIL_APP_STORE_URL, TUTA_MAIL_GOOGLE_PLAY_URL } from "@tutao/app-env"
 import { isEmpty, noOp } from "@tutao/utils"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { SupportCategory, SupportTopic } from "@tutao/entities/tutanota"
@@ -140,7 +140,7 @@ export async function showUserSatisfactionDialog(triggerType: TriggerType): Prom
 export async function handleRatingByEvent(triggerType: TriggerType) {
 	createEvent(deviceConfig)
 
-	const disallowReasons = await evaluateRatingEligibility(getCurrentDate(), deviceConfig, isApp())
+	const disallowReasons = await evaluateRatingEligibility(getCurrentDate(), deviceConfig, EnvProvider.get().isApp())
 
 	if (!isEmpty(disallowReasons)) {
 		return
@@ -156,10 +156,10 @@ function onSupportRequestSend(dialog: Dialog) {
 
 	void showSnackBar({
 		message: "ratingSupportContactedSnackbar_msg",
-		button: client.isCalendarApp()
+		button: ClientDetector.get().isCalendarApp()
 			? {
 					label: lang.makeTranslation("", "Get Tuta Mail"),
-					click: () => windowFacade.openLink(isIOSApp() ? TUTA_MAIL_APP_STORE_URL : TUTA_MAIL_GOOGLE_PLAY_URL),
+					click: () => windowFacade.openLink(EnvProvider.get().isIOSApp() ? TUTA_MAIL_APP_STORE_URL : TUTA_MAIL_GOOGLE_PLAY_URL),
 				}
 			: {
 					label: "ok_action",

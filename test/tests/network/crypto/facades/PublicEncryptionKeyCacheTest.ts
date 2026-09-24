@@ -3,12 +3,13 @@ import { object } from "testdouble"
 import { KeyVersion } from "../../../../../src/platform-kit/utils"
 
 import { createTestEntity } from "../../../TestUtils"
-import { MaybeSignedPublicKey, PublicEncryptionKeyCache } from "../../../../../src/app-kit/local-store/PublicEncryptionKeyCache"
+import { PublicEncryptionKeyCache } from "../../../../../src/platform-kit/base/base-crypto/persistence/PublicEncryptionKeyCache"
 
 import { PublicKeyIdentifier, PublicKeyIdentifierType } from "../../../../../src/platform-kit/crypto"
 
 import { PublicKeySignatureTypeRef } from "@tutao/entities/sys"
 import { SYSTEM_GROUP_MAIL_ADDRESS } from "../../../../../src/entities/sys/Utils"
+import { MaybeSignedPublicKey } from "../../../../../src/platform-kit/base/base-crypto/MaybeSignedPublicKey"
 
 const PUBLIC_KEY_IDENTIFIER_MAIL_ADDRESS = "alice@tuta.com"
 
@@ -32,7 +33,7 @@ o.spec("PublicEncryptionKeyCacheTest", function () {
 
 	o.spec("put and get", function () {
 		o("get - not present returns undefined", async function () {
-			o(pubKeyCache.get(publicKeyIdentifier, version)).equals(undefined)
+			o(pubKeyCache.get(publicKeyIdentifier, version)).equals(null)
 		})
 
 		o("put and get success", async function () {
@@ -51,7 +52,7 @@ o.spec("PublicEncryptionKeyCacheTest", function () {
 		o("no update without signature", async function () {
 			publicKey.signature = null
 			pubKeyCache.put(publicKeyIdentifier, publicKey)
-			o(pubKeyCache.get(publicKeyIdentifier, version)).equals(undefined)
+			o(pubKeyCache.get(publicKeyIdentifier, version)).equals(null)
 		})
 
 		o("update without signature for system user group", async function () {

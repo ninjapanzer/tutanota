@@ -13,12 +13,11 @@ import { LoginController } from "../../../../src/applications/common/api/main/Lo
 import { EventController } from "../../../../src/applications/common/api/main/EventController.js"
 import { WorkerFacade } from "../../../../src/applications/common/api/worker/facades/WorkerFacade.js"
 import * as restError from "../../../../src/platform-kit/rest-client/error"
-import { SearchModel } from "../../../../src/applications/mail-app/search/model/SearchModel.js"
 import { MailFacade } from "../../../../src/applications/common/api/worker/facades/lazy/MailFacade.js"
 import { FileController } from "../../../../src/applications/common/file/FileController.js"
 import { createTestEntity } from "../../TestUtils.js"
-import { EncryptionAuthStatus, isBrowser, MailAuthenticationStatus } from "../../../../src/platform-kit/app-env"
-import { CryptoFacade } from "../../../../src/platform-kit/base/crypto/CryptoFacade.js"
+import { EncryptionAuthStatus, EnvProvider, MailAuthenticationStatus } from "../../../../src/platform-kit/app-env"
+import { CryptoFacade } from "../../../../src/platform-kit/base/base-crypto/CryptoFacade.js"
 import { ContactImporter } from "../../../../src/applications/mail-app/contacts/ContactImporter.js"
 import { MailboxDetail, MailboxModel } from "../../../../src/applications/common/mailFunctionality/MailboxModel.js"
 import { ContactModel } from "../../../../src/applications/common/contactsFunctionality/ContactModel.js"
@@ -43,6 +42,7 @@ import {
 
 import { GroupInfoTypeRef } from "@tutao/entities/sys"
 import { ExternalImageRule, MailPhishingStatus, MailState } from "../../../../src/entities/tutanota/Utils"
+import { AttachmentDownloader } from "../../../../src/applications/mail-app/mail/view/MailGuiUtils"
 
 o.spec("MailViewerViewModel", function () {
 	let mail: Mail
@@ -56,10 +56,10 @@ o.spec("MailViewerViewModel", function () {
 	let contactModel: ContactModel
 	let configFacade: ConfigurationDatabase
 	let fileController: FileController
+	let attachmentDownloader: AttachmentDownloader
 	let logins: LoginController
 	let eventController: EventController
 	let workerFacade: WorkerFacade
-	let searchModel: SearchModel
 	let mailFacade: MailFacade
 	let sendMailModel: SendMailModel
 	let cryptoFacade: CryptoFacade
@@ -76,11 +76,11 @@ o.spec("MailViewerViewModel", function () {
 		contactModel = object()
 		configFacade = object()
 		fileController = object()
+		attachmentDownloader = object()
 		logins = object()
 		sendMailModel = object()
 		eventController = object()
 		workerFacade = object()
-		searchModel = object()
 		mailFacade = object()
 		cryptoFacade = object()
 		contactImporter = object()
@@ -99,10 +99,10 @@ o.spec("MailViewerViewModel", function () {
 			contactModel,
 			configFacade,
 			fileController,
+			attachmentDownloader,
 			logins,
 			eventController,
 			workerFacade,
-			searchModel,
 			mailFacade,
 			cryptoFacade,
 			async () => contactImporter,
@@ -110,6 +110,8 @@ o.spec("MailViewerViewModel", function () {
 			eventsRepository,
 			undoModel,
 			transferProgressDispatcher,
+			object(),
+			object(),
 		)
 	}
 
@@ -249,7 +251,7 @@ o.spec("MailViewerViewModel", function () {
 			const unsubscribeAction = unsubscribeActions.shift()!
 			const postResult = await viewModel.unsubscribePost(unsubscribeAction)
 
-			if (!isBrowser()) {
+			if (!EnvProvider.get().isBrowser()) {
 				verify(commonSystemFacade.executePostRequest(unsubscribeAction.requestUrl, LIST_UNSUBSCRIBE_POST_PAYLOAD), {
 					times: expectedPostResult ? 1 : 0,
 				})

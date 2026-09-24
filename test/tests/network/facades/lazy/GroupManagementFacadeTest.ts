@@ -4,17 +4,19 @@ import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFac
 import { CounterFacade } from "../../../../../src/platform-kit/network/CounterFacade.js"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient.js"
 import { IServiceExecutor } from "../../../../../src/platform-kit/network/ServiceRequest.js"
-import { PQFacade } from "../../../../../src/platform-kit/base/crypto/PQFacade.js"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
+import { PQFacade } from "../../../../../src/platform-kit/base/base-crypto/PQFacade.js"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { CacheManagementFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { matchers, object, verify, when } from "testdouble"
 
-import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/AdminKeyLoaderFacade"
-import { IdentityKeyCreator } from "../../../../../src/platform-kit/base/crypto/IdentityKeyCreator"
+import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/AdminKeyLoaderFacade"
+import { IdentityKeyCreator } from "../../../../../src/platform-kit/base/base-crypto/IdentityKeyCreator"
 import { freshVersioned } from "../../../../../src/platform-kit/utils"
-import { AesKey, CryptoWrapper, KeyPairType, PQKeyPairs } from "../../../../../src/platform-kit/crypto"
+import { AesKey, PQKeyPairs } from "../../../../../src/platform-kit/crypto"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
 import { CustomerTypeRef, GroupInfo, GroupInfoTypeRef } from "@tutao/entities/sys"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
+import { MailGroupService_POST } from "@tutao/entities/tutanota"
 
 const { anything } = matchers
 
@@ -65,15 +67,11 @@ o.spec("GroupManagementFacadeTest", function () {
 		const adminGroupKey = freshVersioned(object<AesKey>())
 		when(keyLoaderFacade.getCurrentSymGroupKey(adminGroupId)).thenResolve(adminGroupKey)
 
-		const newMailGroupKeyPair: PQKeyPairs = {
-			x25519KeyPair: object(),
-			kyberKeyPair: object(),
-			keyPairType: KeyPairType.TUTA_CRYPT,
-		}
+		const newMailGroupKeyPair = new PQKeyPairs(object(), object())
 		when(pqFacade.generateKeyPairs()).thenResolve(newMailGroupKeyPair)
 		when(cryptoWrapper.encryptKeyWithVersionedKey(anything(), anything())).thenReturn(object())
 		let mailGroupId = "sharedMailGroupId"
-		when(serviceExecutor.post(anything(), anything())).thenResolve({ mailGroup: mailGroupId })
+		when(serviceExecutor.execute(MailGroupService_POST, anything(), null)).thenResolve({ mailGroup: mailGroupId })
 
 		await groupManagementFacade.createSharedMailGroup("some group", "example@tuta.com")
 

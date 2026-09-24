@@ -1,19 +1,20 @@
 import { Cat, log, timer } from "./utils/Log"
 import { layout_size } from "./size"
-import { assertMainOrNodeBoot, isAdminClient, isTest } from "../platform-kit/app-env"
+import { EnvProvider } from "../platform-kit/app-env"
 import { theme } from "./theme"
 import { assertNotNull, neverNull } from "../platform-kit/utils"
 import { ThemeController } from "./ThemeController.js"
-import { client } from "../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../platform-kit/app-env/boot/ClientDetector"
+import { isNull } from "../platform-kit/utils/Utils"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 export type StyleSheetId = "main" | "outline"
 
 /**
  * Writes all styles to a single dom <style>-tag
  */
 
-class Styles {
+export class Styles {
 	styles: Map<StyleSheetId, (...args: Array<any>) => any>
 	initialized: boolean
 	bodyWidth: number
@@ -24,13 +25,21 @@ class Styles {
 	// theme-color hints web browsers what color to use when decorating their UIs
 	private readonly themeColorMeta: HTMLMetaElement | null
 
+	private static singleton: Styles | null = null
+	public static get(): Styles {
+		if (isNull(Styles.singleton)) {
+			Styles.singleton = new Styles()
+		}
+		return Styles.singleton
+	}
+
 	constructor() {
 		this.initialized = false
 		this.styles = new Map()
 		this.bodyWidth = neverNull(document.body).offsetWidth
 		this.bodyHeight = neverNull(document.body).offsetHeight
 
-		if (isTest()) {
+		if (EnvProvider.isTest()) {
 			this.themeColorMeta = null
 		} else {
 			this.themeColorMeta = document.createElement("meta")
@@ -86,15 +95,15 @@ class Styles {
 	}
 
 	isUsingBottomNavigation(): boolean {
-		return !isAdminClient() && (client.isMobileDevice() || !this.isDesktopLayout())
+		return !EnvProvider.get().isAdminClient() && (ClientDetector.get().isMobileDevice() || !this.isDesktopLayout())
 	}
 
 	isAppUsingBottomNav(): boolean {
-		return client.isMailApp()
+		return ClientDetector.get().isMailApp()
 	}
 
 	isAppNotUsingBottomNav(): boolean {
-		return client.isCalendarApp()
+		return ClientDetector.get().isCalendarApp() || ClientDetector.get().isDriveApp()
 	}
 
 	registerStyle(id: StyleSheetId, styleCreator: (...args: Array<any>) => Record<string, Partial<CSSStyleDeclaration> | object>) {
@@ -124,7 +133,7 @@ class Styles {
 
 	private updateDomStyles() {
 		// This is hacking but we currently import gui stuff from a lot of tested things
-		if (isTest()) {
+		if (EnvProvider.isTest()) {
 			return
 		}
 
@@ -182,5 +191,3 @@ function toCss(obj: Record<string, any>, indent = "") {
 		.join("\n")
 	return ret
 }
-
-export const styles: Styles = new Styles()

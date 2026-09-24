@@ -1,5 +1,5 @@
 import { showProgressDialog } from "../../../../../ui/dialogs/ProgressDialog.js"
-import { isApp, ProgrammingError, SecondFactorType } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError, SecondFactorType } from "@tutao/app-env"
 import type { DropDownSelectorAttrs } from "../../../../../ui/base/DropDownSelector.js"
 import { DropDownSelector } from "../../../../../ui/base/DropDownSelector.js"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
@@ -19,7 +19,7 @@ import { IconButton, IconButtonAttrs } from "../../../../../ui/base/IconButton.j
 import { ButtonSize } from "../../../../../ui/base/ButtonSize.js"
 import { NameValidationStatus, SecondFactorEditModel, SecondFactorTypeToNameTextId, VerificationStatus } from "./SecondFactorEditModel.js"
 import { UserError } from "../../../api/main/UserError.js"
-import * as restError from "@tutao/rest-client/error"
+import { NotAuthorizedError } from "@tutao/rest-client/error"
 import { PrimaryButton } from "../../../../../ui/base/buttons/VariantButtons.js"
 import { User } from "@tutao/entities/sys"
 
@@ -49,7 +49,7 @@ export class SecondFactorEditDialog {
 			allowCancel: attrs?.allowCancel ?? true,
 			okActionTextId: "save_action",
 			cancelAction: () => this.model.abort(),
-			validator: () => this.model.validationMessage(),
+			validator: async () => this.model.validationMessage(),
 		})
 	}
 
@@ -64,7 +64,7 @@ export class SecondFactorEditDialog {
 			if (e instanceof UserError) {
 				// noinspection ES6MissingAwait
 				Dialog.message(lang.makeTranslation("error_msg", e.message))
-			} else if (e instanceof restError.NotAuthorizedError) {
+			} else if (e instanceof NotAuthorizedError) {
 				this.dialog.close()
 				if (this.attrs?.onTokenExpired) {
 					this.attrs?.onTokenExpired()
@@ -137,7 +137,7 @@ export class SecondFactorEditDialog {
 
 	private renderOtpFields(): Children {
 		const copyButtonAttrs: IconButtonAttrs = {
-			title: "copy_action",
+			label: "copy_action",
 			click: () => copyToClipboard(this.model.totpKeys.readableKey),
 			icon: Icons.ClipboardFilled,
 			size: ButtonSize.Compact,
@@ -145,12 +145,12 @@ export class SecondFactorEditDialog {
 		return m(".mb-16", [
 			m(LegacyTextField, {
 				label: "totpSecret_label",
-				helpLabel: () => lang.get(isApp() ? "totpTransferSecretApp_msg" : "totpTransferSecret_msg"),
+				helpLabel: () => lang.get(EnvProvider.get().isApp() ? "totpTransferSecretApp_msg" : "totpTransferSecret_msg"),
 				value: this.model.totpKeys.readableKey,
 				injectionsRight: () => m(IconButton, copyButtonAttrs),
 				isReadOnly: true,
 			}),
-			isApp()
+			EnvProvider.get().isApp()
 				? m(
 						".pt-16",
 						m(PrimaryButton, {

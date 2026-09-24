@@ -1,7 +1,7 @@
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import { getDayShifted, getStartOfDay, getStartOfNextDay, ofClass } from "../../../platform-kit/utils"
-import * as restError from "../../../platform-kit/rest-client/error"
+import { InvalidDataError, PreconditionFailedError } from "../../../platform-kit/rest-client/error"
 import type { EntityClient } from "../../../platform-kit/network/EntityClient"
 import { lang, LanguageViewModel } from "../../../ui/utils/LanguageViewModel"
 import type { UserController } from "../../common/api/main/UserController"
@@ -189,18 +189,18 @@ export class EditOutOfOfficeNotificationDialogModel {
 			.then(async (sendableNotification) => {
 				// Error messages are already shown if sendableNotification is null. We do not close the dialog.
 				if (this._isNewNotification()) {
-					await this._entityClient.setup(null, sendableNotification)
+					await this._entityClient.setup(null, sendableNotification, null)
 				} else {
 					await this._entityClient.update(sendableNotification)
 				}
 			})
 			.catch(
-				ofClass(restError.TooManyRequestsError, (e) => {
+				ofClass(InvalidDataError, (e) => {
 					throw new UserError("outOfOfficeMessageInvalid_msg")
 				}),
 			)
 			.catch(
-				ofClass(restError.PreconditionFailedError, async (e) => {
+				ofClass(PreconditionFailedError, async (e) => {
 					if (e.data === FAILURE_UPGRADE_REQUIRED) {
 						throw new UpgradeRequiredError("upgradeRequired_msg", await getAvailablePlansWithAutoResponder())
 					} else {

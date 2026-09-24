@@ -7,15 +7,14 @@ import { modal } from "../../../../../ui/base/Modal.js"
 import { EventPreviewView, EventPreviewViewAttrs } from "./EventPreviewView.js"
 import { Dialog } from "../../../../../ui/base/Dialog.js"
 import { createAsyncDropdown, DROPDOWN_MARGIN, showDropdown } from "../../../../../ui/base/Dropdown.js"
-import { Keys } from "../../../../../platform-kit/app-env"
 import type { HtmlSanitizer } from "../../../../common/misc/HtmlSanitizer.js"
 import { IconButton } from "../../../../../ui/base/IconButton.js"
-import { convertTextToHtml } from "../../../../../ui/utils/Formatter.js"
 import { CalendarEventPreviewViewModel } from "./CalendarEventPreviewViewModel.js"
 import { showDeletePopup } from "../CalendarGuiUtils.js"
 import { prepareCalendarDescription } from "../../../../common/api/common/utils/CommonCalendarUtils.js"
-
 import { PosRect } from "../../../../../ui/utils/PosRect"
+import { convertTextToHtml } from "@tutao/utils"
+import { Keys } from "../../../../../ui/utils/KeyboardKeys"
 
 /**
  * small modal displaying all relevant information about an event in a compact fashion. offers limited editing capabilities to participants in the
@@ -159,23 +158,23 @@ export class CalendarEventPopup implements ModalComponent {
 
 	private renderDuplicateButton(): Children {
 		if (!this.model.canEdit) return null
-		return m(IconButton, { title: "duplicateEvent_label", icon: Icons.DuplicateFilled, click: this.handleCloneButtonClick })
+		return m(IconButton, { label: "duplicateEvent_label", icon: Icons.DuplicateFilled, click: this.handleCloneButtonClick })
 	}
 
 	private renderEditButton(): Children {
 		if (!this.model.canEdit) return null
-		return m(IconButton, { title: "edit_action", icon: Icons.PenFilled, click: this.handleEditButtonClick })
+		return m(IconButton, { label: "edit_action", icon: Icons.PenFilled, click: this.handleEditButtonClick })
 	}
 
 	private renderDeleteButton(): Children {
 		if (!this.model.canDelete) return null
-		return m(IconButton, { title: "delete_action", icon: Icons.TrashFilled, click: this.handleDeleteButtonClick })
+		return m(IconButton, { label: "delete_action", icon: Icons.TrashFilled, click: this.handleDeleteButtonClick })
 	}
 
 	private renderSendUpdateButton(): Children {
 		if (!this.model.canSendUpdates) return null
 		return m(IconButton, {
-			title: "sendUpdates_label",
+			label: "sendUpdates_label",
 			click: () => this.handleSendUpdatesClick(),
 			icon: Icons.MailFilled,
 		})
@@ -183,7 +182,7 @@ export class CalendarEventPopup implements ModalComponent {
 
 	private renderCloseButton(): Children {
 		return m(IconButton, {
-			title: "close_alt",
+			label: "close_alt",
 			click: () => this.close(),
 			icon: Icons.X,
 		})

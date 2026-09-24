@@ -53,11 +53,13 @@ import de.tutao.tutashared.AndroidThemeFacade
 import de.tutao.tutashared.AppType
 import de.tutao.tutashared.CancelledError
 import de.tutao.tutashared.NetworkUtils
+import de.tutao.tutashared.TempDir
 import de.tutao.tutashared.Theme
 import de.tutao.tutashared.WebViewReloader
 import de.tutao.tutashared.credentials.CredentialsEncryptionFactory
 import de.tutao.tutashared.data.AppDatabase
 import de.tutao.tutashared.file.AndroidFileFacade
+import de.tutao.tutashared.file.TempFs
 import de.tutao.tutashared.ipc.AndroidGlobalDispatcher
 import de.tutao.tutashared.ipc.CalendarOpenAction
 import de.tutao.tutashared.ipc.CommonNativeFacade
@@ -67,7 +69,6 @@ import de.tutao.tutashared.ipc.MobileFacadeSendDispatcher
 import de.tutao.tutashared.ipc.SqlCipherFacade
 import de.tutao.tutashared.offline.AndroidSqlCipherFacade
 import de.tutao.tutashared.remote.RemoteBridge
-import de.tutao.tutashared.remote.RemoteExecutionException
 import de.tutao.tutashared.toDp
 import de.tutao.tutashared.toPx
 import de.tutao.tutashared.webauthn.AndroidWebauthnFacade
@@ -130,6 +131,8 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 		enableEdgeToEdge()
 
 		val localNotificationsFacade = LocalNotificationsFacade(this)
+		val tempDir = TempDir(this)
+		val tempFs = TempFs(this, SecureRandom(), tempDir)
 
 		val fileFacade =
 			AndroidFileFacade(
@@ -137,21 +140,22 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 				this,
 				localNotificationsFacade,
 				SecureRandom(),
+				tempFs,
 				NetworkUtils.defaultClient,
 				{ fileId, bytes ->
 					lifecycleScope.launch {
-						commonNativeFacade.downloadProgress(fileId, bytes)
+						commonNativeFacade.downloadProgress(fileId, bytes.toLong())
 					}
 				},
 				{ fileId, bytes ->
 					lifecycleScope.launch {
-						commonNativeFacade.uploadProgress(fileId, bytes)
+						commonNativeFacade.uploadProgress(fileId, bytes.toLong())
 					}
 				},
 				BuildConfig.FILE_PROVIDER_AUTHORITY
 			)
 		val calendarFacade = AndroidCalendarFacade(NetworkUtils.defaultClient, webView.settings.userAgentString)
-		val cryptoFacade = AndroidNativeCryptoFacade(this, fileFacade.tempDir)
+		val cryptoFacade = AndroidNativeCryptoFacade(this, tempFs)
 
 		val ipcJson = Json { ignoreUnknownKeys = true }
 
@@ -159,7 +163,7 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 
 		sqlCipherFacade = AndroidSqlCipherFacade(this)
 		commonSystemFacade =
-			AndroidCommonSystemFacade(this, sqlCipherFacade, fileFacade.tempDir, NetworkUtils.defaultClient)
+			AndroidCommonSystemFacade(this, sqlCipherFacade, tempDir, NetworkUtils.defaultClient)
 
 		val webauthnFacade = AndroidWebauthnFacade(this, ipcJson, "tutadrive", BuildConfig.APPLICATION_ID)
 
@@ -176,7 +180,8 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 				db,
 				BuildConfig.FILE_PROVIDER_AUTHORITY,
 				AppType.DRIVE,
-				null
+				null,
+				tempDir
 			),
 			CredentialsEncryptionFactory.create(this, cryptoFacade, db),
 			cryptoFacade,
@@ -233,7 +238,7 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 			)
 			val imeHeight = windowInsets.getInsets(ime()).bottom
 			lifecycleScope.launch {
-				mobileFacade.keyboardSizeChanged(imeHeight.toDp())
+				mobileFacade.keyboardSizeChanged(imeHeight.toDp().toLong())
 			}
 
 			// Convert raw pixels to density independent pixels
@@ -304,6 +309,9 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 							slice(1..lastIndex)
 						}
 						if (!assetPath.startsWith(BuildConfig.RES_ADDRESS)) throw IOException("can't find this")
+						//Devtools sometimes requests non-existent files. That's why we let it run into IO error
+						//instead of crashing because of failing to determine the mime type
+						val data = assets.open(assetPath)
 						val mimeType = getMimeTypeForUrl(url.toString())
 						WebResourceResponse(
 							mimeType,
@@ -311,7 +319,7 @@ class MainActivity : FragmentActivity(), ActivityUtils, WebViewReloader, Webauth
 							200,
 							"OK",
 							null,
-							assets.open(assetPath)
+							data
 						)
 					} catch (e: IOException) {
 						Log.w(TAG, "Resource not found ${url.path}")

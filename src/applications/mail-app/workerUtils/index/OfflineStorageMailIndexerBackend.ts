@@ -31,11 +31,11 @@ export class OfflineStorageMailIndexerBackend implements MailIndexerBackend {
 	}
 
 	async enableIndexing(): Promise<void> {
-		await this.persistence.setMailIndexingEnabled(true)
+		// no-op; always enabled
 	}
 
 	async isMailIndexingEnabled(): Promise<boolean> {
-		return this.persistence.isMailIndexingEnabled()
+		return true
 	}
 
 	async onMailCreated(mailData: MailWithDetailsAndAttachments): Promise<void> {

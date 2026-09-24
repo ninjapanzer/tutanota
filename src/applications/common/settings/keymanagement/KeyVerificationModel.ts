@@ -5,19 +5,17 @@ import { PermissionType } from "@tutao/native-bridge/generatedIpc/enums"
 import { KeyVerificationScanCompleteMetric, KeyVerificationUsageTestUtils } from "./KeyVerificationUsageTestUtils"
 import { KeyVerificationQrPayload } from "./KeyVerificationQrPayload"
 import { QRCode } from "jsqr"
-import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import {
+	EnvProvider,
 	IdentityKeyQrVerificationResult,
 	IdentityKeySourceOfTrust,
 	IdentityKeyVerificationMethod,
-	isApp,
-	isAppleDevice,
-	isDesktop,
 	ProgrammingError,
 } from "../../../../platform-kit/app-env"
 import { getCleanedMailAddress } from "../../misc/parsing/MailAddressParser"
-import { TrustDBEntry } from "../../../../app-kit/local-store/IdentityKeyTrustDatabase"
 import { PublicKeyIdentifierType } from "../../../../platform-kit/crypto/CryptoTypes"
+import { TrustDBEntry } from "../../../../platform-kit/base/base-crypto/persistence/IdentityKeyTrustDatabase"
 
 export type PublicIdentity = {
 	fingerprint: Hex
@@ -157,7 +155,7 @@ export class KeyVerificationModel {
 
 	public async requestCameraPermission(): Promise<boolean> {
 		let hasPermission = true
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			hasPermission = await this.mobileSystemFacade.hasPermission(PermissionType.Camera)
 			if (!hasPermission) {
 				try {
@@ -167,7 +165,7 @@ export class KeyVerificationModel {
 					hasPermission = false
 				}
 			}
-		} else if (isDesktop() && isAppleDevice()) {
+		} else if (EnvProvider.get().isDesktop() && EnvProvider.get().isAppleDevice()) {
 			hasPermission = await this.desktopSystemFacade.requestVideoPermission()
 		}
 

@@ -1,7 +1,7 @@
 import m, { Children, Component, Vnode } from "mithril"
 import { TextField } from "../../../../ui/base/TextField"
 import { Autocapitalize, Autocomplete } from "../../../../ui/base/LegacyTextField"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { EmailDomainData } from "../../settings/mailaddress/MailAddressesUtils"
 import { IconButton, IconButtonAttrs } from "../../../../ui/base/IconButton"
 import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
@@ -13,11 +13,11 @@ import { Icon } from "../../../../ui/base/Icon"
 import { isMailAddress } from "../../../../platform-kit/utils/FormatUtils"
 import { isTutaMailAddress } from "../../mailFunctionality/SharedMailUtils"
 import { locator } from "../../api/main/CommonLocator"
-import * as restError from "@tutao/rest-client/error"
+import { AccessDeactivatedError } from "@tutao/rest-client/error"
 import { theme } from "../../../../ui/theme"
 import { Icons } from "../../../../ui/base/icons/Icons"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 const VALID_MESSAGE_ID = "mailAddressAvailable_msg"
 const CHECK_ADDRESS_DEBOUNCE_MS = 500
@@ -114,11 +114,11 @@ export class SelectMailAddressFormNew implements Component<SelectMailAddressForm
 							IconButton,
 							attachDropdown({
 								mainButtonAttrs: {
-									title: "domain_label",
+									label: "domain_label",
 									icon: Icons.ArrowDown,
 									size: ButtonSize.Compact,
 								},
-								childAttrs: () => attrs.availableDomains.map((domain) => this.createDropdownItemAttrs(domain, attrs)),
+								childAttrs: async () => attrs.availableDomains.map((domain) => this.createDropdownItemAttrs(domain, attrs)),
 								showDropdown: () => true,
 								width: 250,
 							}),
@@ -221,7 +221,7 @@ export class SelectMailAddressFormNew implements Component<SelectMailAddressForm
 							errorId: attrs.mailAddressNAError ?? "mailAddressNA_msg",
 						}
 			} catch (e) {
-				if (e instanceof restError.AccessDeactivatedError) {
+				if (e instanceof AccessDeactivatedError) {
 					result = { isValid: false, errorId: "mailAddressDelay_msg" }
 				} else {
 					throw e

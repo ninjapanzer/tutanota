@@ -1,31 +1,43 @@
-import { assertMainOrNodeBoot, isAndroidApp, isApp, isBrowser, isDesktop, isIOSApp, Mode } from "../Env"
+import { EnvProvider, PlatformId } from "../Env"
 import { BrowserData, BrowserType, DeviceType } from "./ClientConstants"
 import { BotKind, load } from "@fingerprintjs/botd"
 import { AppType } from "../AppType"
+import { TypeChecks } from "../TsTypeChecks"
+import {
+	_cssQuerySelectorIsSupported,
+	_expectedBuiltInsArePresent,
+	_expectedJsSyntaxes,
+	_haveWebsocket,
+	_isSupportedBrowserVersion,
+} from "../TsPlatformConstants"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 
 export class ClientDetector {
-	userAgent!: string
-	browser!: BrowserType
-	browserVersion!: number
-	device!: DeviceType
-	overflowAuto!: string
-	isMacOS!: boolean
-	appType!: AppType
+	private userAgent: string | null = null
+	overflowAuto: string | null = null
+	isMacOS: boolean | null = null
+	appType: AppType | null = null
 	isAutomatedBrowser: boolean = false
+	browserVersion: number = 0
+	browser: BrowserType = BrowserType.OTHER
+	device: DeviceType = DeviceType.DESKTOP
+
+	private static singeleton: ClientDetector | null = null
+	public static get(): ClientDetector {
+		if (ClientDetector.singeleton != null) {
+			return ClientDetector.singeleton
+		}
+		this.singeleton = new ClientDetector()
+		return this.singeleton
+	}
 
 	constructor() {}
 
-	init(userAgent: string, platform: string, appType: AppType = AppType.Integrated) {
+	init(userAgent: string, platform: string, appType: AppType = AppType.Integrated): void {
 		this.userAgent = userAgent
-		this.browser = BrowserType.OTHER
-		this.browserVersion = 0
-		this.device = DeviceType.DESKTOP
 		this.appType = appType
-
 		this._setBrowserAndVersion()
-
 		this._setDeviceInfo()
 
 		load({ monitoring: false })
@@ -39,104 +51,29 @@ export class ClientDetector {
 		this.isMacOS = platform.indexOf("Mac") !== -1
 	}
 
-	/**
-	 * This function uses syntax constructs which we want to make sure are supported. If they are not then this file cannot be imported.
-	 */
-	syntaxChecks() {
-		// By default rollup disables tree-shaking inside the try-catch.
-		try {
-			const arrowFunction = () => {
-				return 1
-			}
-
-			let aLet = 2
-
-			function* testGenerator() {}
-
-			async function testAsync() {}
-
-			function testDefaultArgs(a = 2) {}
-
-			testGenerator()
-			testAsync()
-			testDefaultArgs()
-			const anArray = [1, 2, 3]
-			const spreadArray = [...anArray]
-			const dynamicString = ""
-			const impossibleCondition = arrowFunction() === aLet
-
-			if (impossibleCondition) {
-				import(dynamicString)
-			}
-
-			const objectSyntax = {
-				[dynamicString]: true,
-
-				testFn() {},
-
-				get accessor() {
-					return null
-				},
-
-				set accessor(newValue) {},
-			}
-			const templateString = `test ${dynamicString}`
-			const x = 1
-			const y = 2
-			const propertyShorthand = {
-				x,
-				y,
-			}
-			const { x: x2, y: y2 } = propertyShorthand
-			const [a1, a2, ...arest] = anArray
-
-			class WithStatisMember {
-				static aFuncton() {}
-			}
-
-			for (const item of testGenerator()) {
-				/* empty */
-			}
-		} catch (e) {
-			/* empty */
+	getUserAgent(): NonNullable<string> {
+		if (this.userAgent == null) {
+			throw new Error("Client detector is not yet initialized!")
 		}
-	}
-
-	testBuiltins(): boolean {
-		return (
-			typeof Set !== "undefined" &&
-			typeof Map !== "undefined" &&
-			typeof Array.prototype.includes === "function" &&
-			typeof Object.entries === "function" &&
-			typeof Object.values === "function" &&
-			typeof Object.fromEntries === "function" &&
-			typeof Symbol !== "undefined" &&
-			typeof Uint8Array !== "undefined" &&
-			typeof Proxy !== "undefined" &&
-			typeof Reflect !== "undefined" &&
-			typeof Promise.prototype.finally !== "undefined" &&
-			typeof String.prototype.replaceAll === "function" &&
-			typeof BigInt !== "undefined" &&
-			typeof structuredClone === "function"
-		)
-	}
-
-	testCss(): boolean {
-		try {
-			document.querySelector("blockquote:not(blockquote blockquote)")
-			document.querySelectorAll(":where(.mouse-nav)")
-			return true
-		} catch (e) {
-			return false
-		}
+		return this.userAgent
 	}
 
 	/**
 	 * Browsers which support these features are supported
 	 */
 	isSupported(): boolean {
-		this.syntaxChecks()
-		return this.isSupportedBrowserVersion() && this.testBuiltins() && this.websockets() && this.testCss() && this.lookBehindRegex()
+		return (
+			_expectedJsSyntaxes() &&
+			this.isSupportedBrowserVersion() &&
+			_expectedBuiltInsArePresent &&
+			_haveWebsocket() &&
+			_cssQuerySelectorIsSupported() &&
+			this.lookBehindRegex()
+		)
+	}
+
+	isSupportedBrowserVersion(): boolean {
+		return _isSupportedBrowserVersion(this.browser, this.browserVersion)
 	}
 
 	isMobileDevice(): boolean {
@@ -145,13 +82,6 @@ export class ClientDetector {
 
 	isDesktopDevice(): boolean {
 		return this.device === DeviceType.DESKTOP
-	}
-
-	/**
-	 * @see https://github.com/Modernizr/Modernizr/blob/5e3f359bfc9aa511543ece60bd8a6ea8aa7defd3/feature-detects/websockets.js
-	 */
-	websockets(): boolean {
-		return "WebSocket" in window && window.WebSocket.CLOSING === 2
 	}
 
 	localStorage(): boolean {
@@ -169,14 +99,14 @@ export class ClientDetector {
 	 * @returns true if webassembly is supported
 	 */
 	webassembly(): boolean {
-		return typeof WebAssembly === "object" && typeof WebAssembly.instantiate === "function"
+		return TypeChecks.isObject(WebAssembly) && TypeChecks.isFunction(WebAssembly.instantiate)
 	}
 
 	/**
 	 * @see https://github.com/Modernizr/Modernizr/blob/master/feature-detects/history.js
 	 */
 	history(): boolean {
-		return window.history && "pushState" in window.history
+		return window.history != null && "pushState" in window.history
 	}
 
 	/**
@@ -203,18 +133,19 @@ export class ClientDetector {
 		}
 	}
 
-	_setBrowserAndVersion() {
-		const operaIndex1 = this.userAgent.indexOf("Opera")
-		const operaIndex2 = this.userAgent.indexOf("OPR/")
-		const firefoxIndex = this.userAgent.indexOf("Firefox/")
-		const paleMoonIndex = this.userAgent.indexOf("PaleMoon/")
-		const iceweaselIndex = this.userAgent.indexOf("Iceweasel/")
-		const chromeIndex = this.userAgent.indexOf("Chrome/")
-		const chromeIosIndex = this.userAgent.indexOf("CriOS/")
-		const safariIndex = this.userAgent.indexOf("Safari/")
-		const edgeIndex = this.userAgent.indexOf("Edge") // "Old" edge based on EdgeHTML, "new" one based on Blink has only "Edg"
+	_setBrowserAndVersion(): void {
+		const userAgent = this.getUserAgent()
+		const operaIndex1 = userAgent.indexOf("Opera")
+		const operaIndex2 = userAgent.indexOf("OPR/")
+		const firefoxIndex = userAgent.indexOf("Firefox/")
+		const paleMoonIndex = userAgent.indexOf("PaleMoon/")
+		const iceweaselIndex = userAgent.indexOf("Iceweasel/")
+		const chromeIndex = userAgent.indexOf("Chrome/")
+		const chromeIosIndex = userAgent.indexOf("CriOS/")
+		const safariIndex = userAgent.indexOf("Safari/")
+		const edgeIndex = userAgent.indexOf("Edge") // "Old" edge based on EdgeHTML, "new" one based on Blink has only "Edg"
 
-		const androidIndex = this.userAgent.indexOf("Android")
+		const androidIndex = userAgent.indexOf("Android")
 		let versionIndex = -1
 
 		if (edgeIndex !== -1) {
@@ -222,7 +153,7 @@ export class ClientDetector {
 			versionIndex = edgeIndex + 5
 		} else if (operaIndex1 !== -1) {
 			this.browser = BrowserType.OPERA
-			versionIndex = this.userAgent.indexOf("Version/")
+			versionIndex = userAgent.indexOf("Version/")
 
 			if (versionIndex !== -1) {
 				versionIndex += 8
@@ -256,7 +187,7 @@ export class ClientDetector {
 			// Chrome and black berry pretends to be Safari, so it is skipped
 			this.browser = BrowserType.SAFARI
 			// Safari prints its version after "Version/"
-			versionIndex = this.userAgent.indexOf("Version/")
+			versionIndex = userAgent.indexOf("Version/")
 
 			if (versionIndex !== -1) {
 				versionIndex += 8
@@ -265,7 +196,7 @@ export class ClientDetector {
 				this.extractIosVersion()
 				return
 			}
-		} else if (this.userAgent.match(/iPad.*AppleWebKit/) || this.userAgent.match(/iPhone.*AppleWebKit/)) {
+		} else if (userAgent.match(/iPad.*AppleWebKit/) != null || userAgent.match(/iPhone.*AppleWebKit/) != null) {
 			// iPad and iPhone do not send the Safari this.userAgent when HTML-apps are directly started from the homescreen a browser version is sent neither
 			// after "OS" the iOS version is sent, so use that one
 			// Also there are a lot of browsers on iOS but they all are based on Safari so we can use the same extraction mechanism for all of them.
@@ -274,11 +205,11 @@ export class ClientDetector {
 		}
 
 		if (versionIndex !== -1) {
-			const mainVersionEndIndex = this.userAgent.indexOf(".", versionIndex)
+			const mainVersionEndIndex = userAgent.indexOf(".", versionIndex)
 
 			if (mainVersionEndIndex !== -1) {
 				try {
-					this.browserVersion = Number(this.userAgent.substring(versionIndex, mainVersionEndIndex + 2)) // we recognize one digit after the '.'
+					this.browserVersion = Number(userAgent.substring(versionIndex, mainVersionEndIndex + 2)) // we recognize one digit after the '.'
 				} catch (e) {
 					/* empty */
 				}
@@ -291,10 +222,11 @@ export class ClientDetector {
 		}
 	}
 
-	extractIosVersion() {
+	extractIosVersion(): void {
 		// Extracting version does not work with iPad OS WebView because it's not in the userAgent. We could look it up
 		// from Webkit version but maybe we don't need that for now.
-		const versionIndex = this.userAgent.indexOf(" OS ")
+		const userAgent = this.getUserAgent()
+		const versionIndex = userAgent.indexOf(" OS ")
 
 		if (versionIndex !== -1) {
 			this.browser = BrowserType.SAFARI
@@ -304,10 +236,10 @@ export class ClientDetector {
 				let pos = versionIndex + 4
 				let hadNan = false
 
-				while (pos < this.userAgent.length) {
+				while (pos < userAgent.length) {
 					pos++
 
-					if (isNaN(Number(this.userAgent.charAt(pos)))) {
+					if (isNaN(Number(userAgent.charAt(pos)))) {
 						if (hadNan) {
 							break
 						} else {
@@ -316,7 +248,7 @@ export class ClientDetector {
 					}
 				}
 
-				const numberString = this.userAgent.substring(versionIndex + 4, pos)
+				const numberString = userAgent.substring(versionIndex + 4, pos)
 				this.browserVersion = Number(numberString.replace(/_/g, "."))
 			} catch (e) {
 				/* empty */
@@ -324,26 +256,27 @@ export class ClientDetector {
 		}
 	}
 
-	_setDeviceInfo() {
+	_setDeviceInfo(): void {
 		this.device = DeviceType.DESKTOP
 
+		const userAgent = this.getUserAgent()
 		if (
-			this.userAgent.match(/iPad.*AppleWebKit/) != null || // iPadOS does not differ in UserAgent from Safari on macOS. Use hack with TouchEvent to detect iPad
+			userAgent.match(/iPad.*AppleWebKit/) != null || // iPadOS does not differ in UserAgent from Safari on macOS. Use hack with TouchEvent to detect iPad
 			// Desktop Chrome has TouchEvent but it also has Chrome in it. Mobile iOS has CriOS in it and not Chrome.
-			(/Macintosh; Intel Mac OS X.*AppleWebKit/.test(this.userAgent) && window.TouchEvent && /.*Chrome.*/.test(this.userAgent) === false)
+			(/Macintosh; Intel Mac OS X.*AppleWebKit/.test(userAgent) && window.TouchEvent != null && /.*Chrome.*/.test(userAgent) === false)
 		) {
 			this.device = DeviceType.IPAD
-		} else if (this.userAgent.match(/iPhone.*AppleWebKit/) != null) {
+		} else if (userAgent.match(/iPhone.*AppleWebKit/) != null) {
 			this.device = DeviceType.IPHONE
-		} else if (this.userAgent.match(/Android/) != null) {
-			if (this.userAgent.match(/Ubuntu/) != null) {
+		} else if (userAgent.match(/Android/) != null) {
+			if (userAgent.match(/Ubuntu/) != null) {
 				this.device = DeviceType.OTHER_MOBILE
 			} else {
 				this.device = DeviceType.ANDROID
 			}
-		} else if (this.userAgent.match(/Windows NT/) != null) {
+		} else if (userAgent.match(/Windows NT/) != null) {
 			this.device = DeviceType.DESKTOP
-		} else if (this.userAgent.match(/Mobile/) != null || this.userAgent.match(/Tablet/) != null) {
+		} else if (userAgent.match(/Mobile/) != null || userAgent.match(/Tablet/) != null) {
 			this.device = DeviceType.OTHER_MOBILE
 		}
 	}
@@ -363,36 +296,25 @@ export class ClientDetector {
 	}
 
 	getIdentifier(): string {
-		if (env.mode === Mode.App) {
-			if (this.appType === AppType.Integrated) throw new Error("AppType.Integrated is not allowed for mobile apps")
-			const appType = this.appType === AppType.Mail ? "Mail" : "Calendar"
-			return `${client.device} ${appType} App`
-		} else if (isBrowser()) {
-			return client.browser + " Browser"
-		} else if (env.platformId === "linux") {
+		const platformId = EnvProvider.get().getPlatformId()
+
+		if (EnvProvider.get().isApp()) {
+			if (this.appType === AppType.Integrated) {
+				throw new Error("AppType.Integrated is not allowed for mobile apps")
+			}
+			const appType: string = this.appType === AppType.Mail ? "Mail" : "Calendar"
+			return `${ClientDetector.get().device} ${appType} App`
+		} else if (EnvProvider.get().isBrowser()) {
+			return ClientDetector.get().browser + " Browser"
+		} else if (platformId === PlatformId.Linux) {
 			return "Linux Desktop"
-		} else if (env.platformId === "darwin") {
+		} else if (platformId === PlatformId.Darwin) {
 			return "Mac Desktop"
-		} else if (env.platformId === "win32") {
+		} else if (platformId === PlatformId.Win32) {
 			return "Windows Desktop"
 		}
 
 		return "Unknown"
-	}
-
-	isSupportedBrowserVersion(): boolean {
-		return this.notOldFirefox() && this.notOldChrome()
-	}
-
-	notOldFirefox(): boolean {
-		// issue only occurs for old Firefox browsers
-		// Object.hasOwn() is only supported starting in 92
-		return this.browser !== BrowserType.FIREFOX || this.browserVersion > 92
-	}
-
-	notOldChrome(): boolean {
-		// Object.hasOwn() is only supported starting in 93
-		return this.browser !== BrowserType.CHROME || this.browserVersion > 93
 	}
 
 	needsMicrotaskHack(): boolean {
@@ -418,40 +340,37 @@ export class ClientDetector {
 	}
 
 	compressionStreamSupported(): boolean {
-		return typeof CompressionStream !== "undefined"
+		return TypeChecks.hasProperty("CompressionStream")
 	}
 
 	isCalendarApp(): boolean {
-		return isApp() && this.appType === AppType.Calendar
+		return EnvProvider.get().isApp() && this.appType === AppType.Calendar
 	}
 
 	isMailApp(): boolean {
-		return isApp() && this.appType === AppType.Mail
+		return EnvProvider.get().isApp() && this.appType === AppType.Mail
 	}
 
 	isDriveApp(): boolean {
-		return isApp() && this.appType === AppType.Drive
+		return EnvProvider.get().isApp() && this.appType === AppType.Drive
 	}
 
 	getClientPlatform(): ClientPlatform {
-		if (isDesktop()) {
-			if (env.platformId === "darwin") return ClientPlatform.DESKTOP_MAC
-			if (env.platformId === "linux") return ClientPlatform.DESKTOP_LINUX
-			if (env.platformId === "win32") return ClientPlatform.DESKTOP_WINDOWS
-			return ClientPlatform.DESKTOP_UNKNOWN
+		if (EnvProvider.get().isDesktop()) {
+			const platformId = EnvProvider.get().getPlatformId()
+			if (platformId === PlatformId.Darwin) return ClientPlatform.DESKTOP_MAC
+			else if (platformId === PlatformId.Linux) return ClientPlatform.DESKTOP_LINUX
+			else if (platformId === PlatformId.Win32) return ClientPlatform.DESKTOP_WINDOWS
+			else return ClientPlatform.DESKTOP_UNKNOWN
+		} else if (!EnvProvider.get().isApp()) return ClientPlatform.WEB
+		else if (EnvProvider.get().isAndroidApp()) {
+			return this.appType === AppType.Calendar ? ClientPlatform.ANDROID_CALENDAR_APP : ClientPlatform.ANDROID_MAIL_APP
+		} else if (EnvProvider.get().isIOSApp()) {
+			return this.appType === AppType.Calendar ? ClientPlatform.IOS_CALENDAR_APP : ClientPlatform.IOS_MAIL_APP
+		} else {
+			// Fallback
+			return ClientPlatform.UNKNOWN
 		}
-		if (!isApp()) return ClientPlatform.WEB
-
-		if (isAndroidApp()) {
-			return APP_TYPE === AppType.Calendar ? ClientPlatform.ANDROID_CALENDAR_APP : ClientPlatform.ANDROID_MAIL_APP
-		}
-
-		if (isIOSApp()) {
-			return APP_TYPE === AppType.Calendar ? ClientPlatform.IOS_CALENDAR_APP : ClientPlatform.IOS_MAIL_APP
-		}
-
-		// Fallback
-		return ClientPlatform.UNKNOWN
 	}
 }
 
@@ -469,5 +388,3 @@ export enum ClientPlatform {
 	DESKTOP_LINUX,
 	DESKTOP_WINDOWS,
 }
-
-export const client: ClientDetector = new ClientDetector()

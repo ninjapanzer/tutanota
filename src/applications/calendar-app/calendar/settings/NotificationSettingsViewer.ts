@@ -5,13 +5,14 @@ import { UpdatableSettingsViewer } from "../../../common/settings/Interfaces.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { IdentifierRow } from "../../../common/settings/IdentifierRow.js"
 import { noOp, ofClass } from "../../../../platform-kit/utils"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { AppType, isApp, isBrowser, isDesktop, PushServiceType } from "../../../../platform-kit/app-env"
+import { NotFoundError } from "@tutao/rest-client/error"
+import { AppType, EnvProvider, PushServiceType } from "../../../../platform-kit/app-env"
 import { NotificationTargetsList, NotificationTargetsListAttrs } from "../../../common/settings/NotificationTargetsList.js"
 import { calendarLocator } from "../../calendarLocator.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { PushIdentifier, PushIdentifierTypeRef, User } from "@tutao/entities/sys"
+import { elementIdToId } from "@tutao/meta"
 
 export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 	private currentIdentifier: string | null = null
@@ -30,9 +31,9 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 		identifier.disabled = !identifier.disabled
 		locator.entityClient.update(identifier).then(() => m.redraw)
 
-		if (!isBrowser() && identifier.identifier === this.currentIdentifier) {
+		if (!EnvProvider.get().isBrowser() && identifier.identifier === this.currentIdentifier) {
 			if (identifier.disabled) {
-				locator.pushService.invalidateAlarmsForUser(this.user._id)
+				locator.pushService.invalidateAlarmsForUser(elementIdToId(this.user._id))
 			} else {
 				locator.pushService.reRegister()
 			}
@@ -42,7 +43,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 	view(): Children {
 		const rows = this.identifiers
 			.map((identifier) => {
-				const isCurrentDevice = (isApp() || isDesktop()) && identifier.identifier === this.currentIdentifier
+				const isCurrentDevice = (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && identifier.identifier === this.currentIdentifier
 
 				return m(IdentifierRow, {
 					name: this.identifierDisplayName(isCurrentDevice, identifier.pushServiceType, identifier.displayName),
@@ -50,7 +51,7 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 					identifier: identifier.identifier,
 					current: isCurrentDevice,
 					removeClicked: () => {
-						calendarLocator.entityClient.erase(identifier).catch(ofClass(restError.NotFoundError, noOp))
+						calendarLocator.entityClient.erase(identifier).catch(ofClass(NotFoundError, noOp))
 					},
 					formatIdentifier: identifier.pushServiceType !== PushServiceType.EMAIL,
 					disableClicked: () => this.togglePushIdentifier(identifier),
@@ -91,10 +92,10 @@ export class NotificationSettingsViewer implements UpdatableSettingsViewer {
 
 	private getCurrentIdentifier(): string | null {
 		const identifier = calendarLocator.pushService.getLoadedPushIdentifier()?.identifier
-		return (isApp() || isDesktop()) && identifier ? identifier : null
+		return (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && identifier ? identifier : null
 	}
 
-	async entityEventsReceived(updates: readonly EntityUpdateData[]): Promise<void> {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[]): Promise<void> {
 		for (let update of updates) {
 			if (isUpdateForTypeRef(PushIdentifierTypeRef, update)) {
 				await this.loadPushIdentifiers()

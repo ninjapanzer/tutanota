@@ -1,7 +1,7 @@
 import { Commands, Request } from "../../../../app-kit/native-bridge/shared/MessageTypes"
 import { MessageDispatcher } from "../../../../app-kit/native-bridge/shared/MessageDispatcher.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { assertWorkerOrNode, isMainOrNode, ProgrammingError } from "../../../../platform-kit/app-env"
+import { NotAuthenticatedError } from "@tutao/rest-client/error"
+import { EnvProvider, ProgrammingError } from "../../../../platform-kit/app-env"
 import { initLocator, locator, resetLocator } from "../index/CalendarWorkerLocator.js"
 import { DelayedImpls, exposeLocalDelayed, exposeRemote } from "../../../common/api/common/WorkerProxy.js"
 import { random } from "../../../../platform-kit/crypto"
@@ -14,7 +14,7 @@ import { objToError } from "../../../common/api/common/utils/ErrorUtils"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
 import { NamedClientModel } from "@tutao/instance-pipeline"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 type WorkerRequest = Request<WorkerRequestType>
 
@@ -33,7 +33,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 
 		// only register oncaught error handler if we are in the *real* worker scope
 		// Otherwise uncaught error handler might end up in an infinite loop for test cases.
-		if (workerScope && !isMainOrNode()) {
+		if (workerScope && !EnvProvider.get().isMainOrNode()) {
 			workerScope.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
 				this.sendError(event.reason)
 			})
@@ -64,7 +64,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 	get exposedInterface(): DelayedImpls<CommonWorkerInterface> {
 		return {
 			async loginFacade() {
-				return locator.login
+				return locator.base.login
 			},
 
 			async customerFacade() {
@@ -76,11 +76,11 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async groupManagementFacade() {
-				return locator.groupManagement()
+				return locator.base.groupManagement()
 			},
 
 			async identityKeyCreator() {
-				return locator.identityKeyCreator()
+				return locator.base.identityKeyCreator()
 			},
 
 			async configFacade() {
@@ -100,7 +100,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async shareFacade() {
-				return locator.share()
+				return locator.base.share()
 			},
 
 			async cacheManagementFacade() {
@@ -108,7 +108,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async counterFacade() {
-				return locator.counters()
+				return locator.base.counters()
 			},
 
 			async bookingFacade() {
@@ -120,11 +120,11 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async keyVerificationFacade() {
-				return locator.keyVerification()
+				return locator.base.keyVerification()
 			},
 
 			async blobAccessTokenFacade() {
-				return locator.blobAccessToken
+				return locator.base.blobAccessToken
 			},
 
 			async blobFacade() {
@@ -136,27 +136,27 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async recoverCodeFacade() {
-				return locator.recoverCode()
+				return locator.base.recoverCode()
 			},
 
 			async restInterface() {
-				return locator.cache
+				return locator.base.cache
 			},
 
 			async serviceExecutor() {
-				return locator.serviceExecutor
+				return locator.base.serviceExecutor
 			},
 
 			async cryptoFacade() {
-				return locator.crypto
+				return locator.base.crypto
 			},
 
 			async publicEncryptionKeyProvider() {
-				return locator.publicEncryptionKeyProvider
+				return locator.base.publicEncryptionKeyProvider
 			},
 
 			async publicIdentityKeyProvider() {
-				return locator.publicIdentityKeyProvider
+				return locator.base.publicIdentityKeyProvider
 			},
 
 			async cacheStorage() {
@@ -180,7 +180,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async entropyFacade() {
-				return locator.entropyFacade
+				return locator.base.entropyFacade
 			},
 
 			async workerFacade() {
@@ -192,7 +192,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 			},
 
 			async applicationTypesFacade() {
-				return locator.applicationTypesFacade
+				return locator.base.applicationTypesFacade
 			},
 
 			async driveFacade() {
@@ -214,7 +214,7 @@ export class CalendarWorkerImpl implements NativeInterface {
 				const errorTypes = {
 					ProgrammingError,
 					CryptoError,
-					NotAuthenticatedError: restError.NotAuthenticatedError,
+					NotAuthenticatedError,
 				}
 				// @ts-ignore
 				let ErrorType = errorTypes[message.args[0].errorType]

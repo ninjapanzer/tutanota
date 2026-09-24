@@ -7,7 +7,6 @@ use crate::entities::generated::tutanota::{
 	Mail, MailBox, MailDetails, MailDetailsBlob, MailDetailsDraft, MailSet, MailboxGroupRoot,
 	MoveMailData, SimpleMoveMailPostIn, TutanotaFile, UnreadMailStatePostIn,
 };
-use crate::tutanota_constants::ArchiveDataType;
 use crate::entities::Entity;
 use crate::folder_system::{FolderSystem, MailSetKind};
 use crate::groups::GroupType;
@@ -22,6 +21,7 @@ use crate::services::generated::tutanota::{
 };
 #[cfg_attr(test, mockall_double::double)]
 use crate::services::service_executor::ResolvingServiceExecutor;
+use crate::tutanota_constants::ArchiveDataType;
 #[cfg_attr(test, mockall_double::double)]
 use crate::user_facade::UserFacade;
 use crate::GeneratedId;
@@ -34,9 +34,9 @@ pub struct MailFacade {
 	crypto_entity_client: Arc<CryptoEntityClient>,
 	user_facade: Arc<UserFacade>,
 	service_executor: Arc<ResolvingServiceExecutor>,
-	blob_facade: Arc<BlobFacade>,
-	key_loader_facade: Arc<KeyLoaderFacade>,
-	json_serializer: Arc<JsonSerializer>,
+	blob_facade: Option<Arc<BlobFacade>>,
+	key_loader_facade: Option<Arc<KeyLoaderFacade>>,
+	json_serializer: Option<Arc<JsonSerializer>>,
 }
 
 impl MailFacade {
@@ -44,18 +44,31 @@ impl MailFacade {
 		crypto_entity_client: Arc<CryptoEntityClient>,
 		user_facade: Arc<UserFacade>,
 		service_executor: Arc<ResolvingServiceExecutor>,
-		blob_facade: Arc<BlobFacade>,
-		key_loader_facade: Arc<KeyLoaderFacade>,
-		json_serializer: Arc<JsonSerializer>,
 	) -> Self {
 		MailFacade {
 			crypto_entity_client,
 			user_facade,
 			service_executor,
-			blob_facade,
-			key_loader_facade,
-			json_serializer,
+			blob_facade: None,
+			key_loader_facade: None,
+			json_serializer: None,
 		}
+	}
+
+	/// Enables loading mail bodies -- blob-backed details, drafts and attachments
+	/// -- which need the blob transport, group-key loading and the entity
+	/// serialiser. Kept off `new` so callers that never load bodies, upstream's own tests included, are unaffected.
+	#[must_use]
+	pub fn with_mail_details_support(
+		mut self,
+		blob_facade: Arc<BlobFacade>,
+		key_loader_facade: Arc<KeyLoaderFacade>,
+		json_serializer: Arc<JsonSerializer>,
+	) -> Self {
+		self.blob_facade = Some(blob_facade);
+		self.key_loader_facade = Some(key_loader_facade);
+		self.json_serializer = Some(json_serializer);
+		self
 	}
 }
 
@@ -67,7 +80,8 @@ const MAX_MAIL_UPDATE_LIMIT: usize = 50;
 /// All allowed targets for the SimpleMoveMailService.
 ///
 /// This should be kept up-to-date with the server if any more targets are desired.
-const ALLOWED_SIMPLE_MOVE_MAIL_TARGETS: &[MailSetKind] = &[MailSetKind::Trash];
+const ALLOWED_SIMPLE_MOVE_MAIL_TARGETS: &[MailSetKind] =
+	&[MailSetKind::Trash, MailSetKind::Archive];
 
 impl MailFacade {
 	pub async fn load_user_mailbox(&self) -> Result<MailBox, ApiCallError> {
@@ -111,10 +125,17 @@ impl MailFacade {
 	/// Blob elements don't carry their own `_ownerEncSessionKey`, so the session
 	/// key is resolved from the parent `Mail` — mirroring TS
 	/// `MailFacade.loadMailDetailsBlob()` + `keyProviderFromInstance()`.
-	pub async fn load_mail_details_blob(
-		&self,
-		mail: &Mail,
-	) -> Result<MailDetails, ApiCallError> {
+	pub async fn load_mail_details_blob(&self, mail: &Mail) -> Result<MailDetails, ApiCallError> {
+		let (Some(blob_facade), Some(key_loader_facade), Some(json_serializer)) = (
+			self.blob_facade.as_ref(),
+			self.key_loader_facade.as_ref(),
+			self.json_serializer.as_ref(),
+		) else {
+			return Err(ApiCallError::internal(
+				"MailFacade has no mail-details support; build it with with_mail_details_support"
+					.to_owned(),
+			));
+		};
 		if mail.mailDetailsDraft.is_some() {
 			return Err(ApiCallError::internal(
 				"not supported, must be mail details blob".to_owned(),
@@ -137,32 +158,27 @@ impl MailFacade {
 			.ok_or_else(|| ApiCallError::internal("Mail missing _ownerGroup".to_owned()))?;
 		let owner_key_version = mail._ownerKeyVersion.unwrap_or(0).unsigned_abs();
 
-		let group_key = self
-			.key_loader_facade
+		let group_key = key_loader_facade
 			.load_sym_group_key(owner_group, owner_key_version, None)
 			.await
-			.map_err(|e| {
-				ApiCallError::internal(format!("Failed to load group key: {e}"))
-			})?;
-		let session_key = group_key.decrypt_aes_key(owner_enc_sk).map_err(|e| {
-			ApiCallError::internal(format!("Failed to decrypt session key: {e}"))
-		})?;
+			.map_err(|e| ApiCallError::internal(format!("Failed to load group key: {e}")))?;
+		let session_key = group_key
+			.decrypt_aes_key(owner_enc_sk)
+			.map_err(|e| ApiCallError::internal(format!("Failed to decrypt session key: {e}")))?;
 
 		let type_ref = MailDetailsBlob::type_ref();
 
-		let body = self
-			.blob_facade
+		let body = blob_facade
 			.load_blob_element(&type_ref, list_id, element_id, list_id)
 			.await?;
 
-		let raw_entities: Vec<RawEntity> =
-			serde_json::from_slice(&body).map_err(|e| {
-				ApiCallError::internal(format!("Failed to parse blob response: {e}"))
-			})?;
-		let raw = raw_entities.into_iter().next().ok_or_else(|| {
-			ApiCallError::internal("Empty blob response".to_owned())
-		})?;
-		let parsed = self.json_serializer.parse(&type_ref, raw)?;
+		let raw_entities: Vec<RawEntity> = serde_json::from_slice(&body)
+			.map_err(|e| ApiCallError::internal(format!("Failed to parse blob response: {e}")))?;
+		let raw = raw_entities
+			.into_iter()
+			.next()
+			.ok_or_else(|| ApiCallError::internal("Empty blob response".to_owned()))?;
+		let parsed = json_serializer.parse(&type_ref, raw)?;
 
 		let blob: MailDetailsBlob = self.crypto_entity_client.decrypt_with_owner_key(
 			parsed,
@@ -181,10 +197,13 @@ impl MailFacade {
 	/// `_ownerGroup` + `_ownerKeyVersion`), never from the
 	/// `MailDetailsDraft` itself, because the draft's own
 	/// `_ownerEncSessionKey` is allowed to be absent on the wire.
-	pub async fn load_mail_details_draft(
-		&self,
-		mail: &Mail,
-	) -> Result<MailDetails, ApiCallError> {
+	pub async fn load_mail_details_draft(&self, mail: &Mail) -> Result<MailDetails, ApiCallError> {
+		let key_loader_facade = self.key_loader_facade.as_ref().ok_or_else(|| {
+			ApiCallError::internal(
+				"MailFacade has no mail-details support; build it with with_mail_details_support"
+					.to_owned(),
+			)
+		})?;
 		if mail.mailDetails.is_some() {
 			return Err(ApiCallError::internal(
 				"not supported, must be mail details draft".to_owned(),
@@ -205,8 +224,7 @@ impl MailFacade {
 			.ok_or_else(|| ApiCallError::internal("Mail missing _ownerGroup".to_owned()))?;
 		let owner_key_version = mail._ownerKeyVersion.unwrap_or(0).unsigned_abs();
 
-		let group_key = self
-			.key_loader_facade
+		let group_key = key_loader_facade
 			.load_sym_group_key(owner_group, owner_key_version, None)
 			.await
 			.map_err(|e| ApiCallError::internal(format!("Failed to load group key: {e}")))?;
@@ -246,31 +264,34 @@ impl MailFacade {
 		&self,
 		file: &TutanotaFile,
 	) -> Result<Vec<u8>, ApiCallError> {
-		let owner_enc_sk = file._ownerEncSessionKey.as_ref().ok_or_else(|| {
-			ApiCallError::internal("File missing _ownerEncSessionKey".to_owned())
-		})?;
-		let owner_group = file._ownerGroup.as_ref().ok_or_else(|| {
-			ApiCallError::internal("File missing _ownerGroup".to_owned())
-		})?;
+		let (Some(blob_facade), Some(key_loader_facade)) =
+			(self.blob_facade.as_ref(), self.key_loader_facade.as_ref())
+		else {
+			return Err(ApiCallError::internal(
+				"MailFacade has no mail-details support; build it with with_mail_details_support"
+					.to_owned(),
+			));
+		};
+		let owner_enc_sk = file
+			._ownerEncSessionKey
+			.as_ref()
+			.ok_or_else(|| ApiCallError::internal("File missing _ownerEncSessionKey".to_owned()))?;
+		let owner_group = file
+			._ownerGroup
+			.as_ref()
+			.ok_or_else(|| ApiCallError::internal("File missing _ownerGroup".to_owned()))?;
 		let owner_key_version = file._ownerKeyVersion.unwrap_or(0).unsigned_abs();
 
-		let group_key = self
-			.key_loader_facade
+		let group_key = key_loader_facade
 			.load_sym_group_key(owner_group, owner_key_version, None)
 			.await
-			.map_err(|e| {
-				ApiCallError::internal(format!("Failed to load group key: {e}"))
-			})?;
+			.map_err(|e| ApiCallError::internal(format!("Failed to load group key: {e}")))?;
 		let session_key = group_key.decrypt_aes_key(owner_enc_sk).map_err(|e| {
 			ApiCallError::internal(format!("Failed to decrypt file session key: {e}"))
 		})?;
 
-		self.blob_facade
-			.download_and_decrypt(
-				ArchiveDataType::Attachments,
-				&file.blobs,
-				&session_key,
-			)
+		blob_facade
+			.download_and_decrypt(ArchiveDataType::Attachments, &file.blobs, &session_key)
 			.await
 	}
 
@@ -430,6 +451,11 @@ impl MailFacade {
 	pub async fn trash_mails(&self, mails: Vec<IdTupleGenerated>) -> Result<(), ApiCallError> {
 		self.simple_move_mail(mails, MailSetKind::Trash).await
 	}
+
+	/// Move the given mails to the archive folder of their respective mailboxes.
+	pub async fn archive_mails(&self, mails: Vec<IdTupleGenerated>) -> Result<(), ApiCallError> {
+		self.simple_move_mail(mails, MailSetKind::Archive).await
+	}
 }
 
 fn get_enabled_mail_addresses_for_group_info(group_info: &GroupInfo) -> Vec<String> {
@@ -458,8 +484,8 @@ mod tests {
 	use crate::json_serializer::JsonSerializer;
 	use crate::key_loader_facade::MockKeyLoaderFacade;
 	use crate::mail_facade::MailFacade;
-	use crate::services::generated::tutanota::{MoveMailService, SimpleMoveMailService};
 	use crate::services::generated::tutanota::UnreadMailStateService;
+	use crate::services::generated::tutanota::{MoveMailService, SimpleMoveMailService};
 	use crate::services::service_executor::MockResolvingServiceExecutor;
 	use crate::type_model_provider::TypeModelProvider;
 	use crate::user_facade::MockUserFacade;
@@ -467,8 +493,8 @@ mod tests {
 	use crate::GeneratedId;
 	use crate::HeadersProvider;
 	use crate::IdTupleGenerated;
-	use crypto_primitives::randomizer_facade::RandomizerFacade;
 	use crypto_primitives::randomizer_facade::test_util::DeterministicRng;
+	use crypto_primitives::randomizer_facade::RandomizerFacade;
 	use mockall::predicate::{always, eq};
 	use std::sync::Arc;
 
@@ -491,6 +517,8 @@ mod tests {
 			Arc::new(MockCryptoEntityClient::default()),
 			Arc::new(MockUserFacade::default()),
 			Arc::new(executor),
+		)
+		.with_mail_details_support(
 			blob_facade,
 			Arc::new(MockKeyLoaderFacade::default()),
 			Arc::new(JsonSerializer::new(type_model_provider.clone())),
@@ -675,6 +703,106 @@ mod tests {
 			});
 		let facade = make_test_facade(executor);
 		facade.trash_mails(mails).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn archive_mail_split() {
+		let mut executor = MockResolvingServiceExecutor::default();
+		let mails = generate_id_tuples(100);
+		let first_invocation = SimpleMoveMailPostIn {
+			_format: 0,
+			mails: mails[..50].to_vec(),
+			destinationSetType: MailSetKind::Archive as i64,
+			moveReason: None,
+		};
+		let second_invocation = SimpleMoveMailPostIn {
+			_format: 0,
+			mails: mails[50..].to_vec(),
+			destinationSetType: MailSetKind::Archive as i64,
+			moveReason: None,
+		};
+
+		executor
+			.expect_post::<SimpleMoveMailService>()
+			.with(eq(first_invocation), always())
+			.returning(|_, _| {
+				Ok(MoveMailPostOut {
+					..create_test_entity()
+				})
+			});
+
+		executor
+			.expect_post::<SimpleMoveMailService>()
+			.with(eq(second_invocation), always())
+			.returning(|_, _| {
+				Ok(MoveMailPostOut {
+					..create_test_entity()
+				})
+			});
+
+		let facade = MailFacade::new(
+			Arc::new(MockCryptoEntityClient::default()),
+			Arc::new(MockUserFacade::default()),
+			Arc::new(executor),
+		);
+		facade.archive_mails(mails).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn archive_mail_dedupe() {
+		let mut executor = MockResolvingServiceExecutor::default();
+		let mails: Vec<IdTupleGenerated> = std::iter::repeat(IdTupleGenerated::new(
+			GeneratedId::test_random(),
+			GeneratedId::test_random(),
+		))
+		.take(100)
+		.collect();
+		let invocation = SimpleMoveMailPostIn {
+			_format: 0,
+			mails: vec![mails[0].clone()],
+			destinationSetType: MailSetKind::Archive as i64,
+			moveReason: None,
+		};
+		executor
+			.expect_post::<SimpleMoveMailService>()
+			.with(eq(invocation), always())
+			.returning(|_, _| {
+				Ok(MoveMailPostOut {
+					..create_test_entity()
+				})
+			});
+		let facade = MailFacade::new(
+			Arc::new(MockCryptoEntityClient::default()),
+			Arc::new(MockUserFacade::default()),
+			Arc::new(executor),
+		);
+		facade.archive_mails(mails).await.unwrap();
+	}
+
+	#[tokio::test]
+	async fn archive_mail_one() {
+		let mut executor = MockResolvingServiceExecutor::default();
+		let mails = generate_id_tuples(1);
+		let invocation = SimpleMoveMailPostIn {
+			_format: 0,
+			mails: mails.clone(),
+			destinationSetType: MailSetKind::Archive as i64,
+			moveReason: None,
+		};
+		executor
+			.expect_post::<SimpleMoveMailService>()
+			.with(eq(invocation), always())
+			.returning(|_, _| {
+				Ok(MoveMailPostOut {
+					..create_test_entity()
+				})
+			});
+		let facade = MailFacade::new(
+			Arc::new(MockCryptoEntityClient::default()),
+			Arc::new(MockUserFacade::default()),
+			Arc::new(executor),
+		);
+		facade.archive_mails(mails).await.unwrap();
 	}
 
 	#[tokio::test]

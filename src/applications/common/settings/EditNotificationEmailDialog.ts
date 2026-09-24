@@ -9,7 +9,7 @@ import {
 	NotificationMailTemplate,
 } from "@tutao/entities/sys"
 import { PlanType } from "../../../entities/sys/Utils"
-import { GENERATED_MAX_ID } from "@tutao/meta"
+import { GENERATED_MAX_ID, idToElementId } from "@tutao/meta"
 import { HtmlEditor } from "../../../ui/editor/HtmlEditor.js"
 import { InfoLink, lang, languages } from "../../../ui/utils/LanguageViewModel.js"
 import stream from "mithril/stream"
@@ -22,7 +22,7 @@ import { LegacyTextField } from "../../../ui/base/LegacyTextField.js"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog.js"
 import { assertNotNull, LazyLoaded, memoized, neverNull, ofClass } from "@tutao/utils"
 import { getHtmlSanitizer } from "../misc/HtmlSanitizer.js"
-import * as restError from "@tutao/rest-client/error"
+import { PayloadTooLargeError } from "@tutao/rest-client/error"
 import { SegmentControl } from "../../../ui/base/SegmentControl.js"
 import { UserError } from "../api/main/UserError.js"
 import { showNotAvailableForFreeDialog, showPlanUpgradeRequiredDialog } from "../misc/SubscriptionDialogs.js"
@@ -38,7 +38,7 @@ export function showAddOrEditNotificationEmailDialog(userController: UserControl
 	let existingTemplate: NotificationMailTemplate | undefined = undefined
 	userController.reloadCustomer().then((customer) => {
 		if (customer.properties) {
-			const customerProperties = new LazyLoaded(() => locator.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties)))
+			const customerProperties = new LazyLoaded(() => locator.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties))))
 			return customerProperties
 				.getAsync()
 				.then((loadedCustomerProperties) => {
@@ -245,7 +245,7 @@ export function show(existingTemplate: NotificationMailTemplate | null, customer
 					}),
 				)
 				.catch(
-					ofClass(restError.TooManyRequestsError, () => {
+					ofClass(PayloadTooLargeError, () => {
 						template.subject = oldSubject
 						template.body = oldBody
 						template.language = oldLanguage

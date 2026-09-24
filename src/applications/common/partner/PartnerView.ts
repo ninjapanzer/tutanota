@@ -1,5 +1,5 @@
 import m, { Children, Vnode, VnodeDOM } from "mithril"
-import { assertMainOrNode } from "../../../platform-kit/app-env"
+import { EnvProvider } from "../../../platform-kit/app-env"
 import { ColumnType, ViewColumn } from "../../../ui/base/ViewColumn"
 import { ViewSlider } from "../../../ui/nav/ViewSlider.js"
 import { SettingsFolder } from "../settings/SettingsFolder.js"
@@ -17,17 +17,17 @@ import { BaseTopLevelView } from "../../../ui/BaseTopLevelView.js"
 import { TopLevelAttrs, TopLevelView } from "../../../ui/base/TopLevelView.js"
 import { LoginController } from "../api/main/LoginController.js"
 import { BackgroundColumnLayout } from "../../../ui/BackgroundColumnLayout.js"
-import { styles } from "../../../ui/styles.js"
+import { Styles } from "../../../ui/styles.js"
 import { MobileHeader } from "../../../ui/MobileHeader.js"
 import { SettingsViewAttrs, UpdatableSettingsDetailsViewer, UpdatableSettingsViewer } from "../settings/Interfaces.js"
 import { DrawerMenuAttrs } from "../gui/nav/DrawerMenu"
 import { ManagedCustomerListView } from "./ManagedCustomersListView"
 import { Icons } from "../../../ui/base/icons/Icons"
-import { EntityEventsListener, EntityUpdateData, OnEntityUpdateReceivedPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { windowFacade } from "../misc/WindowFacade"
 import { renderHeaderButtons } from "../../calendar-app/gui/HeaderButtons"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface PartnerViewAttrs extends TopLevelAttrs {
 	drawerAttrs: DrawerMenuAttrs
@@ -109,7 +109,7 @@ export class PartnerView extends BaseTopLevelView implements TopLevelView<Partne
 						columnLayout: m(
 							".mlr-safe-inset.fill-absolute.content-bg",
 							{
-								class: styles.isUsingBottomNavigation() ? "" : "border-radius-top-left-12",
+								class: Styles.get().isUsingBottomNavigation() ? "" : "border-radius-top-left-12",
 							},
 							m(this._getCurrentViewer()!),
 						),
@@ -168,18 +168,19 @@ export class PartnerView extends BaseTopLevelView implements TopLevelView<Partne
 	}
 
 	oncreate(vnode: Vnode<SettingsViewAttrs>) {
-		locator.eventController.addEntityListener(this.entityListener)
+		locator.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	onremove(vnode: VnodeDOM<SettingsViewAttrs>) {
-		locator.eventController.removeEntityListener(this.entityListener)
+		locator.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
-	private entityListener: EntityEventsListener = {
+	private entityUpdatesListener: EntityUpdatesListener = {
+		id: "PartnerView",
 		onEntityUpdatesReceived: (updates: EntityUpdateData[]) => {
-			return this.entityEventsReceived(updates)
+			return this.onEntityUpdatesReceived(updates)
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	view({ attrs }: Vnode<SettingsViewAttrs>): Children {
@@ -236,10 +237,10 @@ export class PartnerView extends BaseTopLevelView implements TopLevelView<Partne
 		void this.viewSlider.focus(this._settingsDetailsColumn)
 	}
 
-	async entityEventsReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
-		await this._currentViewer?.entityEventsReceived(updates)
+	async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+		await this._currentViewer?.onEntityUpdatesReceived(updates)
 
-		await this.detailsViewer?.entityEventsReceived(updates)
+		await this.detailsViewer?.onEntityUpdatesReceived(updates)
 	}
 
 	getViewSlider(): ViewSlider | null {

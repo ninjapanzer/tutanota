@@ -2,11 +2,11 @@
  * @file color/theme definitions for default themes.
  */
 import type { Theme, ThemeId } from "./theme"
-import { assertMainOrNodeBoot } from "../platform-kit/app-env"
+import { EnvProvider } from "../platform-kit/app-env"
 import { getAppLogo } from "./base/Logo.js"
-import { client } from "../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../platform-kit/app-env/boot/ClientDetector"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 
 type Themes = Record<ThemeId, Theme>
 
@@ -51,8 +51,8 @@ const semanticColorsDark = {
  * https://m3.material.io/styles/color/advanced/define-new-colors#baed14ce-4be8-46aa-8223-ace5d45af005
  */
 export const themes = (): Themes => {
-	const isCalendarApp = client.isCalendarApp()
-	const isDriveApp = client.isDriveApp()
+	const isCalendarApp = ClientDetector.get().isCalendarApp()
+	const isDriveApp = ClientDetector.get().isDriveApp()
 	const lightRed = Object.freeze<Theme>({
 		...semanticColorsLight,
 		themeId: isCalendarApp ? "light_secondary" : "light",
@@ -461,3 +461,5 @@ export const themes = (): Themes => {
 // Fixed campaign colors
 export const goEuropeanBlue = "#003E85"
 export const goEuropeanLightBlue = "#ACC7FF"
+export const sovereignYellowDark = "#FEE06A"
+export const sovereignYellowLight = "#FEF9C3"

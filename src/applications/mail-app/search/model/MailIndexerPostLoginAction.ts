@@ -1,8 +1,11 @@
-import { OfflineStorageSettingsModel } from "../../../common/offline/OfflineStorageSettingsModel"
 import { Indexer } from "../../workerUtils/index/Indexer"
-import { SessionType } from "../../../../platform-kit/app-env"
-import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SessionType } from "@tutao/app-env"
+import { SyncTracker } from "../../../common/api/main/SyncTracker"
 import { LoggedInEvent, PostLoginAction } from "../../../../app-kit/native-bridge/common/PostLoginAction.js"
+import { CacheSyncStatus, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { getDayShifted } from "@tutao/utils"
+import { getOfflineStorageDefaultIndexRangeDays } from "../../mail/MailUtils"
+import { LoginController } from "../../../common/api/main/LoginController"
 
 /**
  * The search range is tied to the offline storage settings.
@@ -10,19 +13,22 @@ import { LoggedInEvent, PostLoginAction } from "../../../../app-kit/native-bridg
  */
 export class MailIndexerPostLoginAction implements PostLoginAction {
 	constructor(
-		private readonly offlineStorageSettings: OfflineStorageSettingsModel,
 		private readonly indexer: Indexer,
 		private readonly syncTracker: SyncTracker,
+		private readonly login: LoginController,
 	) {}
 
 	async onPartialLoginSuccess(event: LoggedInEvent): Promise<void> {
 		if (event.sessionType === SessionType.Persistent) {
-			this.syncTracker.addSyncDoneListener({
-				onSyncDone: async () => {
-					await this.offlineStorageSettings.init()
-					await this.indexer.resizeMailIndex(this.offlineStorageSettings.getTimeRange().getTime())
+			this.syncTracker.addSyncListener({
+				id: "MailIndexerPostLoginAction",
+				priority: ListenerPriority.HIGH,
+				targetStatus: CacheSyncStatus.OnlineSyncDone,
+				onSyncStatusChange: async () => {
+					await this.indexer.extendMailIndex(
+						getDayShifted(new Date(), -getOfflineStorageDefaultIndexRangeDays(this.login.getUserController().getUserAccountType())).getTime(),
+					)
 				},
-				priority: SyncDonePriority.HIGH,
 			})
 		}
 	}

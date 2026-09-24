@@ -2,7 +2,7 @@ import { component_size, font_size, px } from "../../../../ui/size"
 import m, { Children, Component, Vnode } from "mithril"
 import stream from "mithril/stream"
 import { windowFacade } from "../../../common/misc/WindowFacade"
-import { assertMainOrNode, CancelledError, FeatureType, Keys } from "../../../../platform-kit/app-env"
+import { CancelledError, EnvProvider, FeatureType } from "../../../../platform-kit/app-env"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { assertNonNull, assertNotNull, createResizeObserver, defer, DeferredObject, memoized, noOp, ofClass } from "../../../../platform-kit/utils"
 import { IconMessageBox } from "../../../../ui/base/ColumnEmptyMessageBox"
@@ -11,17 +11,17 @@ import { keyManager } from "../../../../ui/utils/KeyManager"
 import { Icon, progressIcon } from "../../../../ui/base/Icon"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { isDarkTheme, theme } from "../../../../ui/theme"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
-import { styles } from "../../../../ui/styles"
-import { DropdownButtonAttrs, showDropdownAtPosition } from "../../../../ui/base/Dropdown.js"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { Styles } from "../../../../ui/styles"
+import { DropdownButtonAttrs, DropdownChildAttrs, showDropdownAtPosition } from "../../../../ui/base/Dropdown.js"
 import { applyDarkThemeFix, replaceCidsWithInlineImages } from "./MailGuiUtils"
-import { getCoordsOfMouseOrTouchEvent } from "../../../../ui/base/GuiUtils"
+import { contextDropdown, getCoordsOfMouseOrTouchEvent } from "../../../../ui/base/GuiUtils"
 import { copyToClipboard } from "../../../../ui/utils/ClipboardUtils"
 import { ContentBlockingStatus, MailViewerViewModel } from "./MailViewerViewModel"
 import { UserError } from "../../../common/api/main/UserError"
 import { isNewMailActionAvailable } from "../../../common/gui/nav/NavFunctions"
-import { MailHeaderActions, MailViewerHeader } from "./MailViewerHeader.js"
-import { editDraft, MailViewerMoreActions, showHeaderDialog, showSourceDialog } from "./MailViewerUtils.js"
+import { MailViewerHeader } from "./MailViewerHeader.js"
+import { editDraft, getMailActionAttrs, MailViewerMoreActions, showHeaderDialog, showSourceDialog } from "./MailViewerUtils.js"
 import { ToggleButton } from "../../../../ui/base/buttons/ToggleButton.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
 import { PinchZoom } from "../../../../ui/PinchZoom.js"
@@ -35,8 +35,10 @@ import { WindowSizeListener } from "../../../../ui/utils/WindowUtils"
 import { File, Mail } from "@tutao/entities/tutanota"
 import { InboxRuleType, MailSetKind, SpamRuleFieldType, SpamRuleType } from "../../../../entities/tutanota/Utils"
 import { createEmailSenderListElement } from "@tutao/entities/sys"
+import { DownloadPostProcessing } from "../../../common/file/FileController"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 type MailAddressAndName = {
 	name: string
@@ -52,7 +54,8 @@ export type MailViewerAttrs = {
 	 *
 	 */
 	defaultQuoteBehavior: "collapse" | "expand"
-	actions: MailHeaderActions
+	deleteAction: (() => unknown) | null
+	trash: (() => unknown) | null
 	moreActions: MailViewerMoreActions
 }
 
@@ -158,21 +161,32 @@ export class MailViewer implements Component<MailViewerAttrs> {
 		const forceWhiteBackground = isDarkTheme() && !this.shouldViewInDarkMode()
 
 		return [
-			m(".mail-viewer.overflow-x-hidden", [
-				this.renderMailHeader(vnode.attrs),
-				this.renderMailSubject(vnode.attrs),
-				m(
-					".flex-grow.scroll-x.pt-16.pb-16.border-radius-12" + (forceWhiteBackground ? ".bg-white.content-black" : ""),
-					{
-						class: responsiveCardHPadding(),
-						oncreate: (vnode) => {
-							this.scrollDom = vnode.dom as HTMLElement
-						},
+			m(
+				".mail-viewer.overflow-x-hidden",
+				{
+					oncontextmenu: (e: MouseEvent) => {
+						// If text is selected show typical right click menu, so text can be copied
+						if (window.getSelection()?.toString() === "") {
+							contextDropdown(e, getMailActionAttrs(this.viewModel.getMailActions(vnode.attrs.deleteAction, vnode.attrs.trash)))
+						}
 					},
-					this.renderMailBodySection(vnode.attrs),
-				),
-				this.renderQuoteExpanderButton(),
-			]),
+				},
+				[
+					this.renderMailHeader(vnode.attrs),
+					this.renderMailSubject(vnode.attrs),
+					m(
+						".flex-grow.scroll-x.pt-16.pb-16.border-radius-12" + (forceWhiteBackground ? ".bg-white.content-black" : ""),
+						{
+							class: responsiveCardHPadding(),
+							oncreate: (vnode) => {
+								this.scrollDom = vnode.dom as HTMLElement
+							},
+						},
+						this.renderMailBodySection(vnode.attrs),
+					),
+					this.renderQuoteExpanderButton(),
+				],
+			),
 		]
 	}
 
@@ -218,7 +232,7 @@ export class MailViewer implements Component<MailViewerAttrs> {
 					},
 				},
 				m(ToggleButton, {
-					icon: Icons.More,
+					icon: this.shouldDisplayCollapsedQuotes() ? Icons.ChevronUp : Icons.More,
 					title: "showText_action",
 					toggled: this.shouldDisplayCollapsedQuotes(),
 					onToggled: () => {
@@ -226,8 +240,8 @@ export class MailViewer implements Component<MailViewerAttrs> {
 						if (this.shadowDomRoot) this.updateCollapsedQuotes(this.shadowDomRoot, this.shouldDisplayCollapsedQuotes())
 					},
 					style: {
-						height: "24px",
-						width: px(component_size.button_height_compact),
+						height: px(component_size.button_height_sm),
+						width: px(component_size.button_height_sm),
 					},
 				}),
 			),
@@ -253,7 +267,8 @@ export class MailViewer implements Component<MailViewerAttrs> {
 			isPrimary: attrs.isPrimary,
 			importFile: (file: File) => this.handleAttachmentImport(file),
 			moreActions: attrs.moreActions,
-			actions: attrs.actions,
+			deleteAction: attrs.deleteAction,
+			trash: attrs.trash,
 		})
 	}
 
@@ -312,7 +327,7 @@ export class MailViewer implements Component<MailViewerAttrs> {
 				this.setDomBody(dom)
 				this.updateLineHeight(dom)
 				this.renderShadowMailBody(sanitizedMailBody, attrs, vnode.dom as HTMLElement)
-				if (client.isMobileDevice()) {
+				if (ClientDetector.get().isMobileDevice()) {
 					this.resizeObserverViewport?.disconnect()
 					this.resizeObserverViewport = createResizeObserver(() => {
 						if (this.pinchZoomable) {
@@ -342,7 +357,7 @@ export class MailViewer implements Component<MailViewerAttrs> {
 				}
 				this.currentQuoteBehavior = attrs.defaultQuoteBehavior
 
-				if (client.isMobileDevice() && !this.pinchZoomable && this.shadowDomMailContent) {
+				if (ClientDetector.get().isMobileDevice() && !this.pinchZoomable && this.shadowDomMailContent) {
 					this.createPinchZoom(this.shadowDomMailContent, vnode.dom as HTMLElement)
 				}
 			},
@@ -410,7 +425,7 @@ export class MailViewer implements Component<MailViewerAttrs> {
 		}
 		const wrapNode = document.createElement("div")
 		wrapNode.id = "shadow-mail-body"
-		wrapNode.className = "drag selectable touch-callout break-word-links" + (client.isMobileDevice() ? " break-pre" : "")
+		wrapNode.className = "drag selectable touch-callout break-word-links" + (ClientDetector.get().isMobileDevice() ? " break-pre" : "")
 		wrapNode.setAttribute("data-testid", "mailBody_label")
 		wrapNode.style.lineHeight = String(this.bodyLineHeight ? this.bodyLineHeight.toString() : font_size.line_height)
 		wrapNode.style.transformOrigin = "0px 0px"
@@ -436,10 +451,10 @@ export class MailViewer implements Component<MailViewerAttrs> {
 			this.createCollapsedBlockQuote(quote, this.shouldDisplayCollapsedQuotes())
 		}
 
-		this.shadowDomRoot.appendChild(styles.getStyleSheetElement("main"))
+		this.shadowDomRoot.appendChild(Styles.get().getStyleSheetElement("main"))
 		this.shadowDomRoot.appendChild(wrapNode)
 
-		if (client.isMobileDevice()) {
+		if (ClientDetector.get().isMobileDevice()) {
 			this.pinchZoomable = null
 			this.resizeObserverZoomable?.disconnect()
 			this.resizeObserverZoomable = createResizeObserver(() => {
@@ -526,22 +541,22 @@ export class MailViewer implements Component<MailViewerAttrs> {
 		const domBody = await this.domBodyDeferred.promise
 		replaceCidsWithInlineImages(domBody, loadedInlineImages, (cid, event) => {
 			const inlineAttachment = this.viewModel.getAttachments().find((attachment) => attachment.cid === cid)
-			if (inlineAttachment && (!client.isMobileDevice() || !this.pinchZoomable || !this.pinchZoomable.isDraggingOrZooming())) {
+			if (inlineAttachment && (!this.pinchZoomable || !this.pinchZoomable.isDraggingOrZooming())) {
+				let dropdownOptions: DropdownChildAttrs[] = []
+				if (this.viewModel.attachmentDownloader.canOpenAttachment(inlineAttachment)) {
+					dropdownOptions.push({
+						label: "open_action",
+						click: () => this.viewModel.downloadAndOpenAttachment(inlineAttachment, DownloadPostProcessing.Open),
+					})
+				}
+				if (this.viewModel.attachmentDownloader.canDownloadAttachment(inlineAttachment)) {
+					dropdownOptions.push({
+						label: "download_action",
+						click: () => this.viewModel.downloadAndOpenAttachment(inlineAttachment, DownloadPostProcessing.Write),
+					})
+				}
 				const coords = getCoordsOfMouseOrTouchEvent(event)
-				showDropdownAtPosition(
-					[
-						{
-							label: "download_action",
-							click: () => this.viewModel.downloadAndOpenAttachment(inlineAttachment, false),
-						},
-						{
-							label: "open_action",
-							click: () => this.viewModel.downloadAndOpenAttachment(inlineAttachment, true),
-						},
-					],
-					coords.x,
-					coords.y,
-				)
+				showDropdownAtPosition(dropdownOptions, coords.x, coords.y)
 			}
 		})
 	}
@@ -659,7 +674,7 @@ export class MailViewer implements Component<MailViewerAttrs> {
 								return
 							}
 							const { show, createInboxRuleTemplate } = await import("../../settings/AddInboxRuleDialog")
-							const newRule = rule ?? createInboxRuleTemplate(defaultInboxRuleField, mailAddress.address.trim().toLowerCase())
+							const newRule = rule ?? createInboxRuleTemplate(defaultInboxRuleField, mailAddress.address)
 
 							show(mailboxDetails, newRule)
 						},

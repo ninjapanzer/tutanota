@@ -1,5 +1,5 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { LazyLoaded } from "../../../../platform-kit/utils"
+import { LazyLoaded } from "@tutao/utils"
 import { ParsedIcalFileContent, ReplyResult } from "../../../calendar-app/calendar/view/CalendarInvites.js"
 import { mailLocator } from "../../mailLocator.js"
 import { CalendarEventsRepository } from "../../../common/calendar/date/CalendarEventsRepository.js"
@@ -9,9 +9,9 @@ import { Dialog } from "../../../../ui/base/Dialog"
 import { locator } from "../../../common/api/main/CommonLocator"
 import type { EventBannerImpl, EventBannerImplAttrs } from "../../gui/date/EventBannerImpl"
 import { EventBannerSkeleton } from "../../gui/EventBannerSkeleton"
-import { type IcsCalendarEvent } from "../../../common/calendar/gui/ImportExportUtils"
 import { Mail } from "@tutao/entities/tutanota"
 import { CalendarAttendeeStatus } from "../../../../entities/tutanota/Utils"
+import { IcsCalendarEvent } from "../../../calendar-app/calendar/export/CalendarParser"
 
 export type EventBannerAttrs = {
 	iCalContents: ParsedIcalFileContent
@@ -23,9 +23,13 @@ export type EventBannerAttrs = {
 }
 
 /**
- * displayed above a mail that contains a calendar invite.
- * Its main function is to make it possible to inspect the event with the CalendarEventPopup, to quick respond
- * your attendance with Accept/Decline/Tentative while adding the event to your personal calendar
+ * Banner with Calendar Invitation information and reply actions
+ *
+ * Displayed above a mail that contains a calendar invite.
+ * Its main function is to make it possible to inspect the event and the users agenda for the day, to quick respond with
+ * your attendance (Accept/Decline/Tentative) while adding the event to your personal calendar
+ *
+ * @See TimeOverview
  */
 export class EventBanner implements Component<EventBannerAttrs> {
 	private impl: LazyLoaded<{
@@ -64,8 +68,8 @@ export function sendResponse(
 ): Promise<boolean> {
 	return showProgressDialog(
 		"pleaseWait_msg",
-		import("../../../calendar-app/calendar/view/CalendarInvites.js").then(async ({ getLatestEvent }) => {
-			const latestEvent = await getLatestEvent(event)
+		import("../../../calendar-app/calendar/view/CalendarInvites.js").then(async ({ getLatestEventInPrivateCalendars }) => {
+			const latestEvent = await getLatestEventInPrivateCalendars(event)
 			const ownAttendee = findAttendeeInAddresses(latestEvent.attendees, [recipient])
 			const calendarInviteHandler = await locator.calendarInviteHandler()
 

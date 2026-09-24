@@ -3,28 +3,30 @@ import { PowSolution } from "../../api/common/pow-worker"
 import { NewAccountData, type UpgradeSubscriptionData } from "../UpgradeSubscriptionWizard"
 import { locator } from "../../api/main/CommonLocator"
 import { runCaptchaFlow } from "../captcha/Captcha"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { getPreconditionFailedPaymentMsg, PaymentData, PaymentErrorCode, SubscriptionApp } from "./SubscriptionUtils"
 import { SessionType } from "../../../../platform-kit/app-env/SessionType"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
-import * as restError from "@tutao/rest-client/error"
+import { InvalidDataError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { assertNotNull, neverNull, newPromise, noOp, ofClass, promiseMap } from "@tutao/utils"
 import { Dialog, DialogType } from "../../../../ui/base/Dialog"
 import { SignupViewModel } from "../../signup/SignupView"
-import { PaymentInterval } from "./PriceUtils"
+import { getPaymentMethodName, PaymentInterval } from "./PriceUtils"
 import { DefaultAnimationTime } from "../../../../ui/animation/Animations"
 import m from "mithril"
 import { Button, ButtonType } from "../../../../ui/base/Button"
 import { AccountingInfo, AccountingInfoTypeRef, Braintree3ds2Request, InvoiceInfoTypeRef } from "@tutao/entities/sys"
 import { PaymentMethodType, PlanType } from "../../../../entities/sys/Utils"
 import {
-	EntityEventsListener,
 	EntityUpdateData,
+	EntityUpdatesListener,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { Country, getClientType, InvoiceData, Keys, PaymentDataResultType } from "@tutao/app-env"
-import { CountryType } from "../../gui/CountryList"
+import { getClientType, PaymentDataResultType } from "@tutao/app-env"
+import { Country, CountryType } from "../../gui/CountryList"
+import { idToElementId } from "@tutao/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export function isOnAccountAllowed(country: Country | null, accountingInfo: AccountingInfo, isBusiness: boolean): boolean {
 	if (!country) {
@@ -40,7 +42,7 @@ export function isOnAccountAllowed(country: Country | null, accountingInfo: Acco
  * Displays a progress dialog that allows to cancel the verification and opens a new window to do the actual verification with the bank.
  */
 function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintree3ds2Request, price: string): Promise<boolean> {
-	return locator.entityClient.load(InvoiceInfoTypeRef, neverNull(accountingInfo.invoiceInfo)).then((invoiceInfo) => {
+	return locator.entityClient.load(InvoiceInfoTypeRef, idToElementId(neverNull(accountingInfo.invoiceInfo))).then((invoiceInfo) => {
 		let invoiceInfoWrapper = {
 			invoiceInfo,
 		}
@@ -80,11 +82,12 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 				exec: closeAction,
 				help: "close_alt",
 			})
-		let entityEventListener: EntityEventsListener = {
+		let entityUpdatesListener: EntityUpdatesListener = {
+			id: "PaymentUtils",
 			onEntityUpdatesReceived: (updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id) => {
 				return promiseMap(updates, (update) => {
 					if (isUpdateForTypeRef(InvoiceInfoTypeRef, update)) {
-						return locator.entityClient.load(InvoiceInfoTypeRef, update.instanceId).then((invoiceInfo) => {
+						return locator.entityClient.load(InvoiceInfoTypeRef, idToElementId(update.instanceId)).then((invoiceInfo) => {
 							invoiceInfoWrapper.invoiceInfo = invoiceInfo
 							if (!invoiceInfo.paymentErrorInfo) {
 								// user successfully verified the card
@@ -126,13 +129,14 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 							m.redraw()
 						})
 					}
+					return Promise.resolve()
 				}).then(noOp)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		}
 
-		locator.eventController.addEntityListener(entityEventListener)
-		const app = client.isCalendarApp() ? "calendar" : "mail"
+		locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
+		const app = ClientDetector.get().isCalendarApp() ? "calendar" : "mail"
 		let params = `clientToken=${encodeURIComponent(braintree3ds.clientToken)}&nonce=${encodeURIComponent(braintree3ds.nonce)}&bin=${encodeURIComponent(
 			braintree3ds.bin,
 		)}&price=${encodeURIComponent(price)}&message=${encodeURIComponent(lang.get("creditCardVerification_msg"))}&clientType=${getClientType()}&app=${app}`
@@ -143,8 +147,14 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 			window.open(paymentUrl)
 			progressDialog.show()
 		})
-		return progressDialogPromise.finally(() => locator.eventController.removeEntityListener(entityEventListener))
+		return progressDialogPromise.finally(() => locator.eventController.removeEntityUpdatesListener(entityUpdatesListener))
 	})
+}
+
+export type InvoiceData = {
+	invoiceAddress: string
+	country: Country | null
+	vatNumber: string // only for EU countries otherwise empty
 }
 
 export async function updatePaymentData(
@@ -289,7 +299,7 @@ export function getVisiblePaymentMethods({
 	// show bank transfer in case of business use, even if it is not available for the selected country
 	if ((isBusiness && isBankTransferAllowed) || accountingInfo?.paymentMethod === PaymentMethodType.Invoice) {
 		availablePaymentMethods.push({
-			name: lang.get("invoice_label"),
+			name: getPaymentMethodName(PaymentMethodType.Invoice),
 			value: PaymentMethodType.Invoice,
 		})
 	}
@@ -369,7 +379,7 @@ export async function signup(
 			powChallengeSolution,
 		})
 		if (regDataId) {
-			const app = client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
+			const app = ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
 			const recoverCode = await customerFacade.signup(keyPairs, regDataId, mailAddress, password, registrationCode, lang.code, app)
 			let userGroupId
 			if (!logins.isUserLoggedIn()) {
@@ -412,7 +422,7 @@ export async function signup(
 	return showProgressDialog("createAccountRunning_msg", signupActionPromise, operation.progress)
 		.catch(
 			ofClass(
-				restError.TooManyRequestsError,
+				InvalidDataError,
 				() =>
 					({
 						variant: "fatalFailure",
@@ -421,7 +431,7 @@ export async function signup(
 			),
 		)
 		.catch(
-			ofClass(restError.PreconditionFailedError, (e) =>
+			ofClass(PreconditionFailedError, (e) =>
 				e.data === "registration-mail-address-unavailable"
 					? ({
 							variant: "recoverableFailure",
@@ -464,7 +474,7 @@ export async function createAccount(data: UpgradeSubscriptionData | SignupViewMo
 		const userController = locator.logins.getUserController()
 		data.customer = await userController.reloadCustomer()
 		const customerInfo = await userController.loadCustomerInfo()
-		data.accountingInfo = await locator.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
+		data.accountingInfo = await locator.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 	}
 
 	// If the user has selected a paid plan we want to prevent them from selecting a free plan at this point,

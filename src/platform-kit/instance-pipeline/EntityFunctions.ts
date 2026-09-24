@@ -1,15 +1,27 @@
-import { assertNotNull, lazyAsync } from "@tutao/utils"
-import { type AppName, AppNameEnum, TypeRef } from "../meta/TypeRef.js"
-import type { AttributeId, ClientTypeModel, ModelAssociation, ModelValue, ServerTypeModel } from "../meta/EntityTypes"
-import { AssociationType, Cardinality, Type, ValueType } from "../meta/EntityConstants.js"
-import { isTest, ProgrammingError } from "@tutao/app-env"
+import { assert, assertNotNull, downcast, isNotNull, lazyAsync } from "@tutao/utils"
+import {
+	type AppName,
+	AppNameEnum,
+	AssociationTypeEnum,
+	AttributeId,
+	CardinalityEnum,
+	ClientTypeModel,
+	EntityTypeEnum,
+	ModelAssociation,
+	ModelValue,
+	ServerTypeModel,
+	TypeRef,
+	ValueTypeEnum,
+} from "@tutao/meta"
+import { EnvProvider, InvalidModelError, ProgrammingError } from "@tutao/app-env"
 import { ApplicationTypesGetOut } from "./ApplicationTypesFacade"
+import { TypeChecks } from "../app-env/TsTypeChecks"
 
 export type ApplicationTypesHash = string
 export type ApplicationVersionSum = number
 export type ApplicationVersion = number
-export type ServerTypeReferenceResolver = (typeref: TypeRef<any>) => Promise<ServerTypeModel>
-export type ClientTypeReferenceResolver = (typeref: TypeRef<any>) => Promise<ClientTypeModel>
+export type ServerTypeReferenceResolver = (typeRef: TypeRef<any>) => Promise<ServerTypeModel>
+export type ClientTypeReferenceResolver = (typeRef: TypeRef<any>) => Promise<ClientTypeModel>
 export type ServerTypeFetcher = (expectedHash: string | null) => Promise<ApplicationTypesGetOut>
 export type NamedClientModel = { app: AppName; clientModel: Record<string, ClientTypeModel>; modelInfo: ModelInfo }
 
@@ -17,14 +29,12 @@ export type ModelInfo = { version: ApplicationVersion }
 export type ModelInfos = {
 	[knownApps in AppName]: ModelInfo
 }
-export type ServerModels = Record<
-	AppName,
-	{
-		name: AppName
-		version: ApplicationVersion
-		types: Record<string, ServerTypeModel>
-	}
->
+export type JsApp = {
+	name: AppName
+	version: ApplicationVersion
+	types: Record<string, ServerTypeModel>
+}
+export type ServerModels = Record<AppName, JsApp>
 export type ClientModels = Record<AppName, Record<string, ClientTypeModel>>
 
 export class ClientModelInfo {
@@ -44,9 +54,7 @@ export class ClientModelInfo {
 	 * corrupted state so better be safe and use a fresh one.
 	 */
 	public static getNewInstanceForTestsOnly(): ClientModelInfo {
-		if (!isTest()) {
-			throw new ProgrammingError()
-		}
+		assert(EnvProvider.isTest(), "This method is only meant for testing")
 		return new ClientModelInfo()
 	}
 
@@ -78,7 +86,7 @@ export class ClientModelInfo {
 	public async resolveClientTypeReference(typeRef: TypeRef<any>): Promise<ClientTypeModel> {
 		const typeModel = this.typeModels[typeRef.app][typeRef.typeId]
 		if (typeModel == null) {
-			throw new Error("Cannot find TypeRef: " + JSON.stringify(typeRef))
+			throw new Error("Cannot find TypeRef: " + typeRef.toString())
 		} else {
 			for (const association of Object.values(typeModel.associations)) {
 				if (association.dependency != null) {
@@ -97,9 +105,14 @@ export class ClientModelInfo {
 		return this.typeModels[application as AppName][typeId] != null
 	}
 
-	private resolveDependsOnVersion(dependency: AppName) {
+	private resolveDependsOnVersion(dependency: AppName): ApplicationVersion {
 		return this.modelInfos[dependency].version
 	}
+}
+
+type ParsedModel = {
+	types: Record<string, ServerTypeModel>
+	version: number
 }
 
 export class ServerModelInfo {
@@ -136,7 +149,7 @@ export class ServerModelInfo {
 				applicationTypesJson: JSON.stringify(clientModelInfo.typeModels),
 			}),
 	): ServerModelInfo {
-		if (!isTest()) {
+		if (!EnvProvider.isTest()) {
 			throw new ProgrammingError()
 		}
 		const serverModelInfo = new ServerModelInfo(clientModelInfo, fetcher)
@@ -144,7 +157,7 @@ export class ServerModelInfo {
 		return serverModelInfo
 	}
 
-	public setCurrentHash(newHash: string) {
+	public setCurrentHash(newHash: string): void {
 		if (this.applicationTypesHash === newHash) {
 			return
 		}
@@ -169,7 +182,7 @@ export class ServerModelInfo {
 		}
 	}
 
-	private init({ applicationTypesHash, applicationTypesJson }: ApplicationTypesGetOut) {
+	private init({ applicationTypesHash, applicationTypesJson }: ApplicationTypesGetOut): void {
 		const parsedApplicationTypesJson = JSON.parse(applicationTypesJson)
 		let newTypeModels = {} as ServerModels
 		for (const appName of this.getAppNames()) {
@@ -181,10 +194,7 @@ export class ServerModelInfo {
 		this.applicationTypesHash = applicationTypesHash
 	}
 
-	private parseAllTypesForModel(modelInfo: Record<string, unknown>): {
-		types: Record<string, ServerTypeModel>
-		version: number
-	} {
+	private parseAllTypesForModel(modelInfo: Record<string, unknown>): ParsedModel {
 		const appName = this.ensureVariantOfList(this.getAppNames(), String(modelInfo.name))
 		const version: ApplicationVersion = this.asNumber(modelInfo.version)
 		const modelTypeInfoRecord = assertNotNull(modelInfo.types) as Record<string, unknown>
@@ -212,13 +222,13 @@ export class ServerModelInfo {
 			id: typeId,
 			since: this.asNumber(typeInfoRecord.since),
 			name: this.asString(typeInfoRecord.name),
-			type: this.ensureVariantOf(Type, String(typeInfoRecord.type)),
+			type: this.ensureVariantOf(EntityTypeEnum, String(typeInfoRecord.type)),
 			versioned: this.asBoolean(typeInfoRecord.versioned),
 			encrypted: this.asBoolean(typeInfoRecord.encrypted),
 			isPublic: this.asBoolean(typeInfoRecord.isPublic),
 			rootId: this.asString(typeInfoRecord.rootId),
 			values: this.parseModelValues(valuesRecord, this.getClientModelType(app, String(typeId))),
-			associations: this.parseModelAssociations(associationsRecord),
+			associations: this.parseModelAssociations(associationsRecord, this.getClientModelType(app, String(typeId))),
 		} as ServerTypeModel
 	}
 
@@ -229,22 +239,45 @@ export class ServerModelInfo {
 			const modelValueInfoRecord = modelValueInfo as Record<string, unknown>
 			const attrId = this.asNumber(modelValueInfoRecord.id)
 			const serverEncrypted = this.asBoolean(modelValueInfoRecord.encrypted)
-			const clientModelValue = clientModelType?.values[attrId]
-			if (clientModelValue) {
+			const serverValueType = this.ensureVariantOf(ValueTypeEnum, String(modelValueInfoRecord.type)) as ValueTypeEnum
+			const serverName = this.asString(modelValueInfoRecord.name)
+			const serverFinal = this.asBoolean(modelValueInfoRecord.final)
+			const serverCardinality = this.ensureVariantOf(CardinalityEnum, String(modelValueInfoRecord.cardinality))
+
+			const clientModelValue = clientModelType?.values[attrId] ?? null
+
+			if (isNotNull(clientModelValue) && isNotNull(clientModelType)) {
 				const isEncrypted = this.asBoolean(clientModelValue.encrypted)
 				if (isEncrypted && !serverEncrypted) {
-					throw new ProgrammingError(
+					throw new InvalidModelError(
 						`Trying to parse encrypted value as unencrypted for: ${clientModelType?.app}:${clientModelType.id}:${clientModelValue.id}`,
+					)
+				}
+
+				const clientValueType = clientModelValue.type
+				const isValidValueTypeChange =
+					clientValueType === serverValueType || // value type is same
+					(serverValueType === ValueTypeEnum.Number && clientValueType === ValueTypeEnum.Boolean) || // Boolean -> Number is allowed
+					(serverValueType === ValueTypeEnum.String && clientValueType === ValueTypeEnum.Number) // Number -> String is allowed
+
+				if (!isValidValueTypeChange) {
+					/*
+					 * check that the types on the server model and client model are compatible. if this doesn't pass for a pair of
+					 * type models, it's likely that the old client version needs to be disabled to roll out that change. We need to
+					 * have different functions for different directions of transformations such as BooleanToNumber or NumberToString.
+					 */
+					throw new InvalidModelError(
+						`Cannot map from server to client type: types of field ${attrId} on type ${serverName} are incompatible. This client is not compatible with the current server model.`,
 					)
 				}
 			}
 			const modelValue: ModelValue = {
 				id: attrId,
-				name: this.asString(modelValueInfoRecord.name),
-				final: this.asBoolean(modelValueInfoRecord.final),
-				type: this.ensureVariantOf(ValueType, String(modelValueInfoRecord.type)),
+				name: serverName,
+				final: serverFinal,
+				type: serverValueType,
 				encrypted: serverEncrypted,
-				cardinality: this.ensureVariantOf(Cardinality, String(modelValueInfoRecord.cardinality)),
+				cardinality: serverCardinality,
 			}
 
 			Object.assign(values, { [modelValue.id]: modelValue })
@@ -253,7 +286,10 @@ export class ServerModelInfo {
 		return values
 	}
 
-	private parseModelAssociations(modelAssociations: Record<number, unknown>): Record<AttributeId, ModelAssociation> {
+	private parseModelAssociations(
+		modelAssociations: Record<number, unknown>,
+		clientModelAssociation: ClientTypeModel | null,
+	): Record<AttributeId, ModelAssociation> {
 		let associations = {}
 
 		for (const associationInfo of Object.values(modelAssociations)) {
@@ -262,23 +298,36 @@ export class ServerModelInfo {
 				id: this.asNumber(associationInfoRecord.id),
 				name: this.asString(associationInfoRecord.name),
 				final: this.asBoolean(associationInfoRecord.final),
-				type: this.ensureVariantOf(AssociationType, String(associationInfoRecord.type)),
-				cardinality: this.ensureVariantOf(Cardinality, String(associationInfoRecord.cardinality)),
+				type: this.ensureVariantOf(AssociationTypeEnum, String(associationInfoRecord.type)),
+				cardinality: this.ensureVariantOf(CardinalityEnum, String(associationInfoRecord.cardinality)),
 				refTypeId: this.asNumber(associationInfoRecord.refTypeId),
+				dependency: TypeChecks.isString(associationInfoRecord.dependency)
+					? this.ensureVariantOf(AppNameEnum, associationInfoRecord.dependency as string)
+					: null,
 			}
 
-			// dependency can be null, so assign it after above `verifyNoNullValueInRecord` check. and check here instead
-			Object.assign(modelAssociation, {
-				dependency: typeof associationInfoRecord.dependency === "string" ? this.ensureVariantOf(AppNameEnum, associationInfoRecord.dependency) : null,
-			})
-
 			Object.assign(associations, { [modelAssociation.id]: modelAssociation })
+		}
+
+		if (isNotNull(clientModelAssociation)) {
+			for (const clientAssociation of Object.values(clientModelAssociation.associations)) {
+				const isRemovedByServer = !Object.keys(associations).some((serverAssocId) => clientAssociation.id.toString() === serverAssocId)
+
+				if (isRemovedByServer && clientAssociation.cardinality === CardinalityEnum.One) {
+					// INFRA-NOTE:
+					// we should do more of these verification here. example: ( Adding an association with cardinality one )
+					// so when we fetch a new server model json, we can already show a client too old error.
+					throw new InvalidModelError(
+						`Server has removed an association: "${clientAssociation.name}" with a cardinality of One. The client version is probably too old.`,
+					)
+				}
+			}
 		}
 
 		return associations
 	}
 
-	private ensureVariantOf<T extends string>(obj: Record<any, T>, inputStr: string): Values<typeof obj> {
+	private ensureVariantOf<T extends string>(obj: Record<any, T>, inputStr: string): T {
 		const knownVariants = Object.values(obj)
 		return assertNotNull(
 			knownVariants.find((a) => a === inputStr),
@@ -286,7 +335,7 @@ export class ServerModelInfo {
 		)
 	}
 
-	private ensureVariantOfList<T extends string>(knownVariants: string[], inputStr: string): string {
+	private ensureVariantOfList(knownVariants: string[], inputStr: string): string {
 		return assertNotNull(
 			knownVariants.find((a) => a === inputStr),
 			`Unknown value ${inputStr}. Could be one of: ${knownVariants}`,
@@ -298,35 +347,32 @@ export class ServerModelInfo {
 	}
 
 	private asString(value: any): string {
-		if (value != null && typeof value !== "object") return value.toString()
+		if (value != null && !TypeChecks.isObject(value)) return value.toString()
 		else throw new Error(`value ${value} is not string compatible`)
 	}
 
 	private asNumber(value: any): number {
-		if (value != null && (typeof value === "string" || typeof value === "number")) return parseInt(value.toString())
+		if (value != null && (TypeChecks.isString(value) || TypeChecks.isNumber(value))) return parseInt(value.toString())
 		else throw new Error(`value ${value} is not number compatible`)
 	}
 
 	private asBoolean(value: any): boolean {
-		if (typeof value === "boolean") return value
-		else if (typeof value === "string") return value === "true"
+		if (TypeChecks.isBoolean(value)) return value
+		else if (TypeChecks.isString(value)) return value === "true"
 		else throw new Error(`value: ${value} is not boolean compatible`)
 	}
 
 	private getClientModelType(appName: AppName, typeId: string): ClientTypeModel | null {
-		const clientApp = this.clientModelInfo.typeModels[appName]
-		if (clientApp) {
-			const clientType = clientApp[typeId]
-			if (clientType) {
-				return clientType
-			}
+		const clientApp = this.clientModelInfo.typeModels[appName] ?? null
+		if (isNotNull(clientApp)) {
+			return clientApp[typeId] ?? null
 		}
 		return null
 	}
 }
 
-export function _verifyType(typeModel: ClientTypeModel) {
-	if (typeModel.type !== Type.Element && typeModel.type !== Type.ListElement && typeModel.type !== Type.BlobElement) {
+export function ensureIsPersistentType(typeModel: ClientTypeModel): void {
+	if (typeModel.type !== EntityTypeEnum.Element && typeModel.type !== EntityTypeEnum.ListElement && typeModel.type !== EntityTypeEnum.BlobElement) {
 		throw new Error("only Element, ListElement and BlobElement types are permitted, was: " + typeModel.type)
 	}
 }
@@ -367,5 +413,19 @@ export class TypeModelResolver implements ClientTypeModelResolver, ServerTypeMod
 
 	setServerApplicationTypesModelHash(hash: string): void {
 		this.serverModelInfo.setCurrentHash(hash)
+	}
+}
+
+export class ClientOnlyTypeModelResolver extends TypeModelResolver {
+	constructor(clientModelInfo: ClientModelInfo) {
+		const throwingFetcher: ServerTypeFetcher = () => {
+			throw new ProgrammingError("Not implemented for ClientOnlyTypeModelResolver")
+		}
+		super(clientModelInfo, ServerModelInfo.getPossiblyUninitializedInstance(clientModelInfo, throwingFetcher))
+	}
+
+	async resolveServerTypeReference(typeRef: TypeRef<any>): Promise<ServerTypeModel> {
+		const clientTypeModel = await this.resolveClientTypeReference(typeRef)
+		return downcast<ServerTypeModel>(clientTypeModel)
 	}
 }

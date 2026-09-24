@@ -5,13 +5,15 @@ import { theme } from "../theme"
 import { lazy } from "../../platform-kit/utils"
 import { component_size, px, size } from "../size"
 import { ExpanderPanel } from "./Expander"
-import { Keys, TabIndex } from "../../platform-kit/app-env"
+import { TabIndex } from "../../platform-kit/app-env"
 import { isKeyPressed } from "../utils/KeyManager"
-import { styles } from "../styles"
+import { Styles } from "../styles"
+import { Keys } from "../utils/KeyboardKeys"
 
 export type RadioSelectorOption<T> = {
 	readonly name: MaybeTranslation
 	readonly value: T
+	readonly icon?: Children
 	readonly renderChild?: lazy<Children>
 }
 export interface RadioSelectorItemAttrs<T> {
@@ -53,7 +55,7 @@ export class RadioSelectorItem<T> implements Component<RadioSelectorItemAttrs<T>
 						if (!isSelected) onOptionSelected(option.value)
 					}
 				},
-				role: "button",
+				role: isSelected ? "region" : "button",
 				tabindex: TabIndex.Default,
 				...(option.renderChild && { "aria-expanded": String(isSelected) }),
 			},
@@ -74,11 +76,16 @@ export class RadioSelectorItem<T> implements Component<RadioSelectorItemAttrs<T>
 						id: optionId,
 						style: { cursor },
 					}),
+					option.icon ? option.icon : null,
 					m("label.left.pt-4.pb-4", { for: optionId, style: { cursor } }, lang.getTranslationText(option.name)),
 				],
 			),
 			option.renderChild &&
-				m(ExpanderPanel, { expanded: isSelected }, m(`${styles.isMobileLayout() ? ".pt-16.pb-16" : ".plr-16.pt-32.pb-32"}`, option.renderChild?.())),
+				m(
+					ExpanderPanel,
+					{ expanded: isSelected },
+					m(`${Styles.get().isMobileLayout() ? ".pt-16.pb-16" : ".plr-16.pt-32.pb-32"}`, option.renderChild?.()),
+				),
 		)
 	}
 }

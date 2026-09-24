@@ -9,9 +9,9 @@ import { ButtonSize } from "../../../../../ui/base/ButtonSize.js"
 import { Icons } from "../../../../../ui/base/icons/Icons.js"
 import { UserController } from "../../../api/main/UserController.js"
 import { MoreInfoLink } from "../MoreInfoLink.js"
-import { isApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { ifAllowedTutaLinks } from "../../../gui/base/TutaLinkUtils"
-import { createReferralCodePostIn, ReferralCodeService } from "@tutao/entities/sys"
+import { createReferralCodePostIn, ReferralCodeService_POST } from "@tutao/entities/sys"
 
 export type ReferralLinkAttrs = {
 	referralLink: string
@@ -23,9 +23,26 @@ export type ReferralLinkAttrs = {
 export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 	view(vnode: Vnode<ReferralLinkAttrs>): Children {
 		return m(".scroll", [
-			m(".h4", lang.get("referralSettings_label")),
-			m("", lang.get("referralLinkLong_msg")),
+			this.renderTitle(),
+			this.renderSubTitle(),
+			this.renderBodyText(),
 			m(LegacyTextField, this.getReferralLinkTextFieldAttrs(vnode.attrs.referralLink)),
+		])
+	}
+
+	private renderTitle() {
+		return m("h4.mb-16", {}, lang.get("referAFriendTitle_label"))
+	}
+
+	private renderSubTitle() {
+		return m("div", lang.get("referAFriendSubTitle_label"))
+	}
+
+	private renderBodyText() {
+		return m("ul", [
+			m("li", m("span.b.mr-4", lang.get("referAFriendFriendBenefit_title")), m("span", lang.get("referAFriendFriendBenefit_label"))),
+			m("li", m("span.b.mr-4", lang.get("referAFriendOwnBenefit_title")), m("span", lang.get("referAFriendOwnBenefit_label"))),
+			m("li", m("span.b.mr-4", lang.get("referAFriendBothBenefit_title")), m("span", lang.get("referAFriendBothBenefit_label"))),
 		])
 	}
 
@@ -35,7 +52,8 @@ export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 			label: "referralLink_label",
 			value: referralLink,
 			injectionsRight: () => this.renderButtons(referralLink),
-			helpLabel: () => ifAllowedTutaLinks(locator.logins, InfoLink.ReferralLink, (link) => [m(MoreInfoLink, { link: link })]),
+			helpLabel: () =>
+				ifAllowedTutaLinks(locator.logins, InfoLink.ReferralLink, (link) => [m(MoreInfoLink, { label: "referAFriendMoreInfo_label", link: link })]),
 		}
 	}
 
@@ -46,13 +64,13 @@ export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 
 		return [
 			m(IconButton, {
-				title: "copy_action",
+				label: "copy_action",
 				click: () => this.copyAction(referralLink),
 				icon: Icons.CopyFilled,
 				size: ButtonSize.Compact,
 			}),
 			m(IconButton, {
-				title: "share_action",
+				label: "share_action",
 				click: () => this.shareAction(referralLink),
 				icon: Icons.ShareFilled,
 				size: ButtonSize.Compact,
@@ -66,7 +84,7 @@ export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 	}
 
 	private async shareAction(referralLink: string): Promise<void> {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			// open native share dialog on mobile
 			const shareMessage = this.getReferralLinkMessage(referralLink)
 			return locator.systemFacade.shareText(shareMessage, lang.get("referralSettings_label")).then()
@@ -97,6 +115,6 @@ export async function getReferralLink(userController: UserController, isCalledBy
 }
 
 async function requestNewReferralCode(): Promise<string> {
-	const { referralCode } = await locator.serviceExecutor.post(ReferralCodeService, createReferralCodePostIn({}))
+	const { referralCode } = await locator.serviceExecutor.execute(ReferralCodeService_POST, createReferralCodePostIn({}), null)
 	return referralCode
 }

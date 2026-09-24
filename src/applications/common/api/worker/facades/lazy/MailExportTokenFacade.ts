@@ -1,7 +1,9 @@
 import { AccessExpiredError } from "@tutao/rest-client/error"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { SuspensionBehavior } from "../../../../../../platform-kit/rest-client/types"
-import { MailExportTokenService } from "@tutao/entities/tutanota"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { MailExportTokenService_POST } from "@tutao/entities/tutanota"
+import { NULL_ENTITY } from "@tutao/meta"
 
 const TAG = "[MailExportTokenFacade]"
 
@@ -66,18 +68,23 @@ export class MailExportTokenFacade {
 		}
 
 		this.currentExportToken = null
-		this.currentExportTokenRequest = this.serviceExecutor.post(MailExportTokenService, null, { suspensionBehavior: SuspensionBehavior.Throw }).then(
-			(result) => {
-				this.currentExportToken = result.mailExportToken as MailExportToken
-				this.currentExportTokenRequest = null
-				return this.currentExportToken
-			},
-			(error) => {
-				// Re-initialize in case MailExportTokenService won't fail on a future request
-				this.currentExportTokenRequest = null
-				throw error
-			},
-		)
+		this.currentExportTokenRequest = this.serviceExecutor
+			.execute(MailExportTokenService_POST, NULL_ENTITY, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
+				suspensionBehavior: SuspensionBehavior.Throw,
+			})
+			.then(
+				(result) => {
+					this.currentExportToken = result.mailExportToken as MailExportToken
+					this.currentExportTokenRequest = null
+					return this.currentExportToken
+				},
+				(error) => {
+					// Re-initialize in case MailExportTokenService won't fail on a future request
+					this.currentExportTokenRequest = null
+					throw error
+				},
+			)
 		return this.currentExportTokenRequest
 	}
 

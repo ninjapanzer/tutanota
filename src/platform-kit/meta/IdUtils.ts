@@ -1,49 +1,23 @@
-import { Type } from "./EntityConstants.js"
-import { TypeModel } from "./EntityTypes.js"
+import { idToElementId } from "./EntityUtils"
 
-export function getIdOfInstance(
-	instance: any,
-	typeModel: TypeModel,
-): {
-	listId: string | null
-	id: string
-} {
-	if (!instance._id) throw new Error("Id must be defined")
-	let listId = null
-	let id
+import { AnyEntityId } from "./EntityTypes"
+import { Nullable } from "@tutao/utils"
 
-	if (typeModel.type === Type.ListElement) {
-		listId = instance._id[0]
-		id = instance._id[1]
-	} else {
-		id = instance._id
-	}
-
-	return {
-		listId,
-		id,
-	}
-}
-
-export function collapseId(listId: Id | null, elementId: Id): Id | IdTuple {
+export function collapseId(listId: Id | null, elementId: Id): AnyEntityId {
 	if (listId != null) {
 		return [listId, elementId]
 	} else {
-		return elementId
+		return idToElementId(elementId)
 	}
 }
 
-export function expandId(id: Id | IdTuple): { listId: Id | null; elementId: Id } {
-	if (typeof id === "string") {
-		return {
-			listId: null,
-			elementId: id,
-		}
-	} else {
-		const [listId, elementId] = id
-		return {
-			listId,
-			elementId,
-		}
+export type ExpandedId = {
+	listId: Nullable<Id>
+	elementId: Id
+}
+export function expandId(id: AnyEntityId): ExpandedId {
+	return {
+		listId: id[0],
+		elementId: id[1],
 	}
 }

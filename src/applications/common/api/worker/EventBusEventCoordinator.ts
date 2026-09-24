@@ -1,18 +1,17 @@
-import { EventBusListener } from "../../../../platform-kit/network/EventBusClient.js"
+import { EventBusListener } from "../../../../app-kit/local-store/event/EventBusClient.js"
 import { MailFacade } from "./facades/lazy/MailFacade.js"
 import { UserFacade } from "../../../../platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
-import { isAdminClient, isTest, RolloutType } from "@tutao/app-env"
-import { assertNotNull, lazyAsync, Nullable } from "@tutao/utils"
+import { EnvProvider, RolloutType } from "@tutao/app-env"
+import { assertNotNull, lazyAsync } from "@tutao/utils"
 import { ExposedEventController } from "../main/EventController.js"
 import { ConfigurationDatabase } from "./facades/lazy/ConfigurationDatabase.js"
-import { KeyRotationFacade } from "../../../../platform-kit/base/crypto/KeyRotationFacade.js"
+import { KeyRotationFacade } from "../../../../platform-kit/base/base-crypto/KeyRotationFacade.js"
 import { CacheManagementFacade } from "./facades/lazy/CacheManagementFacade.js"
 import { RolloutFacade } from "../../../../platform-kit/base/facades/RolloutFacade"
 import { GroupManagementFacade } from "../../../../platform-kit/base/facades/lazy/GroupManagementFacade"
 import { SyncTracker } from "../main/SyncTracker"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
-import { ProgressMonitorId } from "../../../../platform-kit/network/ProgressMonitorInterface.js"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
 import { ReportedMailFieldMarker } from "@tutao/entities/tutanota"
 import {
 	GroupKeyUpdateTypeRef,
@@ -22,13 +21,15 @@ import {
 	UserTypeRef,
 	WebsocketCounterData,
 } from "@tutao/entities/sys"
-import { isSameId, OperationType } from "@tutao/meta"
-import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { idToElementId, isSameId, isSameSingleId, OperationType } from "@tutao/meta"
+import { CacheSyncStatus, EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { ImapImporter } from "../../../mail-app/workerUtils/imapimport/ImapImporter"
 
 /** A bit of glue to distribute event bus events across the app. */
 export class EventBusEventCoordinator implements EventBusListener {
 	constructor(
 		private readonly mailFacade: lazyAsync<MailFacade> | null,
+		private readonly imapImporter: lazyAsync<ImapImporter> | null,
 		private readonly userFacade: UserFacade,
 		private readonly entityClient: EntityClient,
 		private readonly eventController: ExposedEventController,
@@ -43,21 +44,16 @@ export class EventBusEventCoordinator implements EventBusListener {
 		private readonly syncTracker: SyncTracker,
 	) {}
 
-	async onEntityEventsReceived(
-		events: readonly EntityUpdateData[],
-		batchId: Id,
-		groupId: Id,
-		progressMonitorId: Nullable<ProgressMonitorId>,
-		isInitialSyncDone: boolean,
-	): Promise<void> {
-		await this.entityEventsReceived(events)
-		await (await this.mailFacade?.())?.entityEventsReceived(events)
-		await this.eventController.onEntityUpdateReceived(events, groupId, progressMonitorId, isInitialSyncDone)
+	async onEntityUpdatesReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void> {
+		await this.entityUpdatesReceived(events)
+		await (await this.mailFacade?.())?.onEntityUpdatesReceived(events)
+		await (await this.imapImporter?.())?.onEntityUpdatesReceived(events, groupId)
+		await this.eventController.onEntityUpdatesReceived(events, groupId, isInitialSyncDone)
 		// Call the indexer in this last step because now the processed event is stored and the indexer has a separate event queue that
 		// shall not receive the event twice.
-		if (!isTest() && !isAdminClient()) {
+		if (!EnvProvider.isTest() && !EnvProvider.get().isAdminClient()) {
 			const configurationDatabase = await this.configurationDatabase()
-			await configurationDatabase.onEntityEventsReceived(events, batchId, groupId)
+			await configurationDatabase.onEntityUpdatesReceived(events, batchId, groupId)
 			this.appSpecificBatchHandling(events, batchId, groupId, isInitialSyncDone)
 		}
 	}
@@ -77,10 +73,41 @@ export class EventBusEventCoordinator implements EventBusListener {
 		this.eventController.onCountersUpdateReceived(counter)
 	}
 
-	async onSyncDone(): Promise<void> {
-		this.syncTracker.markSyncAsDone()
+	async onSyncStatusChanged(cacheSyncStatus: CacheSyncStatus): Promise<void> {
+		this.syncTracker.updateSyncStatus(cacheSyncStatus)
 
-		if (this.userFacade.isLeader() && !isAdminClient()) {
+		if (cacheSyncStatus === CacheSyncStatus.OnlineSyncDone) {
+			await this.onSyncDone()
+		}
+	}
+
+	onOperationStatusUpdate(update: OperationStatusUpdate) {
+		this.eventController.onOperationStatusUpdate(update)
+	}
+
+	private async entityUpdatesReceived(data: readonly EntityUpdateData[]): Promise<void> {
+		// This is a compromise to not add entityClient to UserFacade which would introduce a circular dep.
+		const groupKeyUpdates: IdTuple[] = [] // GroupKeyUpdates all in the same list
+		const user = this.userFacade.getUser()
+		if (user == null) return
+		for (const update of data) {
+			if (update.operation === OperationType.UPDATE && isUpdateForTypeRef(UserTypeRef, update) && isSameId(user._id, idToElementId(update.instanceId))) {
+				await this.userFacade.updateUser(await this.entityClient.load(UserTypeRef, user._id))
+			} else if (
+				(update.operation === OperationType.CREATE || update.operation === OperationType.UPDATE) &&
+				isUpdateForTypeRef(UserGroupKeyDistributionTypeRef, update) &&
+				isSameSingleId(user.userGroup.group, update.instanceId)
+			) {
+				await (await this.cacheManagementFacade()).tryUpdatingUserGroupKey()
+			} else if (update.operation === OperationType.CREATE && isUpdateForTypeRef(GroupKeyUpdateTypeRef, update)) {
+				groupKeyUpdates.push([assertNotNull(update.instanceListId), update.instanceId])
+			}
+		}
+		await this.keyRotationFacade.updateGroupMembershipsInOneList(groupKeyUpdates)
+	}
+
+	private async onSyncDone() {
+		if (this.userFacade.isLeader() && !EnvProvider.get().isAdminClient()) {
 			const userIdentityKeyCreationAction = {
 				execute: async () => {
 					const identityKeyCreator = await this.identityKeyCreator()
@@ -89,7 +116,7 @@ export class EventBusEventCoordinator implements EventBusListener {
 						await identityKeyCreator.createIdentityKeyPairForExistingUsers()
 					} catch (error) {
 						console.log("error when creating user identity key pair", error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -104,7 +131,7 @@ export class EventBusEventCoordinator implements EventBusListener {
 						await identityKeyCreator.createIdentityKeyPairForExistingTeamGroups(teamGroups)
 					} catch (error) {
 						console.log(`error when creating shared mailbox identity key pairs`, error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -113,12 +140,12 @@ export class EventBusEventCoordinator implements EventBusListener {
 			const processGroupKeyUpdates = {
 				execute: async () => {
 					try {
-						const userGroupRoot = await this.entityClient.load(UserGroupRootTypeRef, this.userFacade.getUserGroupId())
+						const userGroupRoot = await this.entityClient.load(UserGroupRootTypeRef, idToElementId(this.userFacade.getUserGroupId()))
 						const groupKeyUpdates = await this.entityClient.loadAll(GroupKeyUpdateTypeRef, assertNotNull(userGroupRoot.groupKeyUpdates).list)
 						await this.keyRotationFacade.updateGroupMemberships(groupKeyUpdates)
 					} catch (error) {
 						console.log("error when processing a pending group key update", error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -130,30 +157,13 @@ export class EventBusEventCoordinator implements EventBusListener {
 			await this.rolloutFacade.processRollout(RolloutType.AdminOrUserGroupKeyRotation)
 			await this.rolloutFacade.processRollout(RolloutType.OtherGroupKeyRotation)
 		}
-	}
 
-	onOperationStatusUpdate(update: OperationStatusUpdate) {
-		this.eventController.onOperationStatusUpdate(update)
-	}
-
-	private async entityEventsReceived(data: readonly EntityUpdateData[]): Promise<void> {
-		// This is a compromise to not add entityClient to UserFacade which would introduce a circular dep.
-		const groupKeyUpdates: IdTuple[] = [] // GroupKeyUpdates all in the same list
-		const user = this.userFacade.getUser()
-		if (user == null) return
-		for (const update of data) {
-			if (update.operation === OperationType.UPDATE && isUpdateForTypeRef(UserTypeRef, update) && isSameId(user._id, update.instanceId)) {
-				await this.userFacade.updateUser(await this.entityClient.load(UserTypeRef, user._id))
-			} else if (
-				(update.operation === OperationType.CREATE || update.operation === OperationType.UPDATE) &&
-				isUpdateForTypeRef(UserGroupKeyDistributionTypeRef, update) &&
-				isSameId(user.userGroup.group, update.instanceId)
-			) {
-				await (await this.cacheManagementFacade()).tryUpdatingUserGroupKey()
-			} else if (update.operation === OperationType.CREATE && isUpdateForTypeRef(GroupKeyUpdateTypeRef, update)) {
-				groupKeyUpdates.push([update.instanceListId, update.instanceId])
-			}
+		const useAead = {
+			execute: async () => {
+				this.userFacade.useAeadEncryption()
+			},
 		}
-		await this.keyRotationFacade.updateGroupMembershipsInOneList(groupKeyUpdates)
+		await this.rolloutFacade.configureRollout(RolloutType.EncryptionOfAttributesViaAead, useAead)
+		await this.rolloutFacade.processRollout(RolloutType.EncryptionOfAttributesViaAead)
 	}
 }

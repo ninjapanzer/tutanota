@@ -57,6 +57,7 @@
 import {
 	CalendarEvent,
 	CalendarEventAttendee,
+	CalendarEventParams,
 	createCalendarEvent,
 	createEncryptedMailAddress,
 	EncryptedMailAddress,
@@ -66,7 +67,6 @@ import {
 import { PartialRecipient } from "../../../../../entities/tutanota/Utils"
 import { User } from "@tutao/entities/sys"
 import { AccountType } from "../../../../../entities/sys/Utils"
-import { getStrippedClone, Stripped, StrippedEntity } from "../../../../../platform-kit/meta"
 import type { MailboxDetail } from "../../../../common/mailFunctionality/MailboxModel.js"
 import {
 	AlarmInterval,
@@ -77,10 +77,9 @@ import {
 	incrementSequence,
 	parseAlarmInterval,
 } from "../../../../common/calendar/date/CalendarUtils.js"
-import { arrayEqualsWithPredicate, assertNonNull, assertNotNull, cleanMailAddress, identity, lazy, Require } from "../../../../../platform-kit/utils"
+import { arrayEqualsWithPredicate, assertNotNull, cleanMailAddress, identity, lazy, Require } from "@tutao/utils"
 import { makeEmptyCalendarEvent } from "../../../../common/api/common/utils/CommonCalendarUtils.js"
-import { assertEventValidity, CalendarInfo, CalendarModel } from "../../model/CalendarModel.js"
-import * as restError from "../../../../../platform-kit/rest-client/error"
+import { CalendarInfo, CalendarModel } from "../../model/CalendarModel.js"
 import { CalendarNotificationSender } from "../../view/CalendarNotificationSender.js"
 import { SendMailModel } from "../../../../common/mailFunctionality/SendMailModel.js"
 import { UserError } from "../../../../common/api/main/UserError.js"
@@ -94,14 +93,15 @@ import { CalendarEventWhoModel } from "./CalendarEventWhoModel.js"
 import { CalendarEventAlarmModel } from "./CalendarEventAlarmModel.js"
 import { SanitizedTextViewModel } from "../../../../common/misc/SanitizedTextViewModel.js"
 import { UserController } from "../../../../common/api/main/UserController.js"
-import { CalendarNotificationModel, CalendarNotificationSendModels } from "./CalendarNotificationModel.js"
+import { CalendarNotificationModel } from "./CalendarNotificationModel.js"
 import { CalendarEventApplyStrategies, CalendarEventModelStrategy } from "./CalendarEventModelStrategy.js"
-import { ProgrammingError } from "../../../../../platform-kit/app-env"
+import { ProgrammingError } from "@tutao/app-env"
 import { SimpleTextViewModel } from "../../../../common/misc/SimpleTextViewModel.js"
-import { AlarmInfoTemplate } from "../../../../common/api/worker/facades/lazy/CalendarFacade.js"
 import { getEventType } from "../CalendarGuiUtils.js"
 import { getDefaultSender } from "../../../../common/mailFunctionality/SharedMailUtils.js"
 import { CalendarInviteHandler } from "../../view/CalendarInvites"
+import { NotFoundError, PayloadTooLargeError } from "@tutao/rest-client/error"
+import { clone, IDENTITY_FIELDS, TECHNICAL_FIELDS } from "@tutao/meta"
 
 /** the type of the event determines which edit operations are available to us. */
 export const enum EventType {
@@ -137,12 +137,12 @@ export const enum ReadonlyReason {
  * when the excluded fields are added, this type can be used to set up a series, update a series or reschedule an instance of a series
  * hashedUid is excluded separately since it's not really relevant to the client's logic.
  */
-export type CalendarEventValues = Omit<Stripped<CalendarEvent>, EventIdentityFieldNames | "hashedUid">
+export type CalendarEventValues = Omit<CalendarEventParams, EventIdentityFieldNames | "hashedUid">
 
 /**
  * the parts of a calendar event that define the identity of the event instance.
  */
-export type CalendarEventIdentity = Pick<Stripped<CalendarEvent>, EventIdentityFieldNames>
+export type CalendarEventIdentity = Pick<CalendarEventParams, EventIdentityFieldNames>
 
 /**
  * which parts of a calendar event series to apply an edit operation to.
@@ -165,6 +165,17 @@ export const enum CalendarOperation {
 }
 
 /**
+ * A function for making CalendarEventModel with only data dependencies
+ */
+export type CalendarEventModelFactory = (
+	editMode: CalendarOperation,
+	event: Partial<CalendarEvent>,
+	mailboxDetail: MailboxDetail,
+	mailboxProperties: MailboxProperties,
+	responseTo: Mail | null,
+) => Promise<CalendarEventModel | null>
+
+/**
  * get the models enabling consistent calendar event updates.
  */
 export async function makeCalendarEventModel(
@@ -180,42 +191,43 @@ export async function makeCalendarEventModel(
 	entityClient: EntityClient,
 	responseTo: Mail | null,
 	calendarInviteHandler: CalendarInviteHandler,
-	zone: string = getTimeZone(),
+	calendarTimeZone: string = getTimeZone(),
 	showProgress: ShowProgressCallback = identity,
 	uiUpdateCallback: () => void = m.redraw,
 ): Promise<CalendarEventModel | null> {
 	const { getHtmlSanitizer } = await import("../../../../common/misc/HtmlSanitizer.js")
 	const ownMailAddresses = getOwnMailAddressesWithDefaultSenderInFront(logins, mailboxDetail, mailboxProperties)
+
+	const calendarInfos = await calendarModel.getCalendarInfos()
+	const selectedCalendar = getPreselectedCalendar(calendarInfos, initialValues)
+
 	if (operation === CalendarOperation.DeleteAll || operation === CalendarOperation.EditAll) {
-		assertNonNull(initialValues.uid, "tried to edit/delete all with nonexistent uid")
-		const index = await calendarModel.getEventsByUid(initialValues.uid)
-		if (index != null && index.progenitor != null) {
-			initialValues = index.progenitor
+		const initialValueUid = assertNotNull(initialValues.uid, "tried to edit/delete all with nonexistent uid")
+		const indexEntry = await calendarModel.getEventsByUid(initialValueUid, selectedCalendar.id)
+		if (indexEntry != null && indexEntry.progenitor) {
+			initialValues = indexEntry.progenitor
 		}
 	}
 
-	const [alarms, calendars] = await Promise.all([
-		resolveAlarmsForEvent(initialValues.alarmInfos ?? [], calendarModel, logins.getUserController().user),
-		calendarModel.getCalendarInfos(),
-	])
-	const selectedCalendar = getPreselectedCalendar(calendars, initialValues)
+	const alarms = await resolveAlarmsForEvent(initialValues.alarmInfos ?? [], calendarModel, logins.getUserController().user)
+
 	const getPasswordStrength = (password: string, recipientInfo: PartialRecipient) =>
 		getPasswordStrengthForUser(password, recipientInfo, mailboxDetail, logins)
 
 	const eventType = getEventType(
 		initialValues,
-		calendars,
+		calendarInfos,
 		ownMailAddresses.map(({ address }) => address),
 		logins.getUserController(),
 	)
 
 	const makeEditModels = (initializationEvent: CalendarEvent) => ({
-		whenModel: new CalendarEventWhenModel(initializationEvent, zone, uiUpdateCallback),
+		whenModel: new CalendarEventWhenModel(initializationEvent, calendarTimeZone, uiUpdateCallback),
 		whoModel: new CalendarEventWhoModel(
 			initializationEvent,
 			eventType,
 			operation,
-			calendars,
+			calendarInfos,
 			selectedCalendar,
 			logins.getUserController(),
 			operation === CalendarOperation.Create,
@@ -233,40 +245,43 @@ export async function makeCalendarEventModel(
 		comment: new SimpleTextViewModel("", uiUpdateCallback),
 	})
 
-	const recurrenceIds = async (uid?: string) =>
-		uid == null ? [] : ((await calendarModel.getEventsByUid(uid))?.alteredInstances.map((i) => i.recurrenceId) ?? [])
+	const fetchRecurrenceIds = async (uid: string, groupId: Id) => {
+		const indexEntry = await calendarModel.getEventsByUid(uid, groupId)
+		return indexEntry?.alteredInstances.map((i) => i.recurrenceId) ?? []
+	}
+
 	const notificationModel = new CalendarNotificationModel(notificationSender, logins)
 	const applyStrategies = new CalendarEventApplyStrategies(
 		calendarModel,
 		logins,
 		notificationModel,
 		makeEditModels,
-		recurrenceIds,
+		fetchRecurrenceIds,
 		showProgress,
-		zone,
+		calendarTimeZone,
 		calendarInviteHandler,
 	)
 	const initialOrDefaultValues = Object.assign(makeEmptyCalendarEvent(), initialValues)
+	const resolveProgenitor = () => calendarModel.resolveCalendarEventProgenitor({ uid: initialOrDefaultValues.uid, _ownerGroup: selectedCalendar.id })
 	const cleanInitialValues = cleanupInitialValuesForEditing(initialOrDefaultValues)
-	const progenitor = () => calendarModel.resolveCalendarEventProgenitor(cleanInitialValues)
 	const strategy = await selectStrategy(
 		makeEditModels,
 		applyStrategies,
 		operation,
-		progenitor,
+		resolveProgenitor,
 		createCalendarEvent(initialOrDefaultValues),
 		cleanInitialValues,
 	)
-	return strategy && new CalendarEventModel(strategy, eventType, operation, logins.getUserController(), notificationSender, entityClient, calendars)
+	return strategy && new CalendarEventModel(strategy, eventType, operation, logins.getUserController(), notificationSender, entityClient, calendarInfos)
 }
 
 async function selectStrategy(
-	makeEditModels: (i: StrippedEntity<CalendarEvent>) => CalendarEventEditModels,
+	makeEditModels: (i: CalendarEventParams) => CalendarEventEditModels,
 	applyStrategies: CalendarEventApplyStrategies,
 	operation: CalendarOperation,
 	resolveProgenitor: () => Promise<CalendarEvent | null>,
 	existingInstanceIdentity: CalendarEvent,
-	cleanInitialValues: StrippedEntity<CalendarEvent>,
+	cleanInitialValues: CalendarEventParams,
 ): Promise<CalendarEventModelStrategy | null> {
 	let editModels: CalendarEventEditModels
 	let apply: () => Promise<void>
@@ -383,9 +398,9 @@ export class CalendarEventModel {
 			await this.strategy.apply()
 			return EventSaveResult.Saved
 		} catch (e) {
-			if (e instanceof restError.PayloadTooLargeError) {
+			if (e instanceof PayloadTooLargeError) {
 				throw new UserError("requestTooLarge_msg")
-			} else if (e instanceof restError.NotFoundError) {
+			} else if (e instanceof NotFoundError) {
 				return EventSaveResult.NotFound
 			} else {
 				throw e
@@ -474,49 +489,48 @@ export function eventHasChanged(now: CalendarEvent, previous: Partial<CalendarEv
 }
 
 /**
- * construct a usable calendar event from the result of one or more edit operations.
- * returns the new alarms separately so they can be set up
- * on the server before assigning the ids.
+ * Construct a usable calendar event from the result of one or more edit operations.
+ * Combine event values from the edit results with the fields required to identify a particular instance of the event.
  * @param models
+ * @param identity sequence (default "0") and recurrenceId (default null) are optional, but the uid must be specified.
+ * @throws UserError
  */
-export function assembleCalendarEventEditResult(models: CalendarEventEditModels): {
-	eventValues: CalendarEventValues
-	newAlarms: ReadonlyArray<AlarmInfoTemplate>
-	sendModels: CalendarNotificationSendModels
-	calendar: CalendarInfo
-} {
+export function createCalendarEventFromEditResult(models: CalendarEventEditModels, identity: Require<"uid", Partial<CalendarEventIdentity>>) {
+	if (!models.whenModel.hasValidStartBeforeEnd()) {
+		throw new UserError("fromAfterToError_msg")
+	}
 	const whenResult = models.whenModel.result
 	const whoResult = models.whoModel.result
-	const alarmResult = models.alarmModel.result
 	const summary = models.summary.content
 	const description = models.description.content
 	const location = models.location.content
 
-	return {
-		eventValues: {
-			// when?
-			startTime: whenResult.startTime,
-			endTime: whenResult.endTime,
-			repeatRule: whenResult.repeatRule,
-			// what?
-			summary,
-			description,
-			// where?
-			location,
-			// who?
-			invitedConfidentially: whoResult.isConfidential,
-			organizer: whoResult.organizer,
-			attendees: whoResult.attendees,
-			// fields related to the event instance's identity are excluded.
-			// reminders. will be set up separately.
-			alarmInfos: [],
-			pendingInvitation: null,
-			sender: null,
-		},
-		newAlarms: alarmResult.alarms,
-		sendModels: whoResult,
-		calendar: whoResult.calendar,
-	}
+	return createCalendarEvent({
+		sequence: "0",
+		recurrenceId: null,
+		hashedUid: null,
+
+		// when?
+		startTime: whenResult.startTime,
+		endTime: whenResult.endTime,
+		repeatRule: whenResult.repeatRule,
+		startTimeZone: whenResult.startTimeZone,
+		endTimeZone: whenResult.endTimeZone,
+		// what?
+		summary,
+		description,
+		// where?
+		location,
+		// who?
+		invitedConfidentially: whoResult.isConfidential,
+		organizer: whoResult.organizer,
+		attendees: whoResult.attendees,
+		alarmInfos: [],
+		pendingInvitation: null,
+		sender: null,
+
+		...identity,
+	})
 }
 
 /** assemble the edit result from an existing event edit operation and apply some fields from the original event
@@ -525,9 +539,8 @@ export function assembleCalendarEventEditResult(models: CalendarEventEditModels)
  * @param operation determines the source of the recurrenceId - in the case of EditThis it's the start time of the original event, otherwise existingEvents' recurrenceId is used.
  */
 export function assembleEditResultAndAssignFromExisting(existingEvent: CalendarEvent, editModels: CalendarEventEditModels, operation: CalendarOperation) {
-	const assembleResult = assembleCalendarEventEditResult(editModels)
 	const { uid: oldUid, sequence: oldSequence, recurrenceId } = existingEvent
-	const newEvent = assignEventIdentity(assembleResult.eventValues, {
+	const newEvent = createCalendarEventFromEditResult(editModels, {
 		uid: oldUid!,
 		sequence: incrementSequence(oldSequence),
 		recurrenceId: operation === CalendarOperation.EditThis && recurrenceId == null ? existingEvent.startTime : recurrenceId,
@@ -537,44 +550,29 @@ export function assembleEditResultAndAssignFromExisting(existingEvent: CalendarE
 		editModels.whoModel.resetGuestsStatus()
 	}
 
-	assertEventValidity(newEvent)
-
 	newEvent._id = existingEvent._id
 	newEvent._ownerGroup = existingEvent._ownerGroup
 	newEvent._permissions = existingEvent._permissions
 	newEvent._original = existingEvent._original
+
+	const whoResult = editModels.whoModel.result
 	return {
 		hasUpdateWorthyChanges: eventHasChanged(newEvent, existingEvent),
 		newEvent,
-		calendar: assembleResult.calendar,
-		newAlarms: assembleResult.newAlarms,
-		sendModels: assembleResult.sendModels,
+		calendar: whoResult.calendar,
+		newAlarms: editModels.alarmModel.result.alarms,
+		sendModels: whoResult,
 	}
 }
 
-/**
- * combine event values with the fields required to identify a particular instance of the event.
- * @param values
- * @param identity sequence (default "0") and recurrenceId (default null) are optional, but the uid must be specified.
- */
-export function assignEventIdentity(values: CalendarEventValues, identity: Require<"uid", Partial<CalendarEventIdentity>>): CalendarEvent {
-	return createCalendarEvent({
-		sequence: "0",
-		recurrenceId: null,
-		hashedUid: null,
-		...values,
-		...identity,
-	})
-}
-
-async function resolveAlarmsForEvent(alarms: CalendarEvent["alarmInfos"], calendarModel: CalendarModel, user: User): Promise<Array<AlarmInterval>> {
+export async function resolveAlarmsForEvent(alarms: CalendarEvent["alarmInfos"], calendarModel: CalendarModel, user: User): Promise<Array<AlarmInterval>> {
 	const alarmInfos = await calendarModel.loadAlarms(alarms, user)
 	return alarmInfos.map(({ alarmInfo }) => parseAlarmInterval(alarmInfo.trigger))
 }
 
-function cleanupInitialValuesForEditing(initialValues: StrippedEntity<CalendarEvent>): CalendarEvent {
+function cleanupInitialValuesForEditing(initialValues: CalendarEventParams): CalendarEvent {
 	// the event we got passed may already have some technical fields assigned, so we remove them.
-	const stripped = getStrippedClone<CalendarEvent>(initialValues)
+	const stripped = getStrippedClone(initialValues)
 	const result = createCalendarEvent(stripped)
 
 	// remove the alarm infos from the result, they don't contain any useful information for the editing operation.
@@ -646,4 +644,59 @@ function getOwnMailAddressesWithDefaultSenderInFront(
 	}
 	const defaultEncryptedMailAddress = ownMailAddresses.splice(defaultIndex, 1)
 	return [...defaultEncryptedMailAddress, ...ownMailAddresses]
+}
+
+/**
+ * Remove some hidden technical fields from the entity.
+ *
+ * Only use for new entities, the {@param entity} won't be usable for updates anymore after this.
+ */
+export function removeTechnicalFields(entity: CalendarEventParams) {
+	// we want to restrict outer function to entity types, but internally we also want to handle aggregates
+	function _removeTechnicalFields(erased: Record<string, any>) {
+		for (const key of Object.keys(erased)) {
+			if (TECHNICAL_FIELDS.includes(key)) {
+				delete erased[key]
+			} else {
+				const value = erased[key]
+				if (value instanceof Object) {
+					_removeTechnicalFields(value)
+				}
+			}
+		}
+	}
+
+	_removeTechnicalFields(entity)
+	return entity
+}
+
+/**
+ * get a clone of a (partial) entity that does not contain any fields that would indicate that it was ever persisted anywhere.
+ * @param entity the entity to strip
+ */
+export function getStrippedClone(entity: CalendarEventParams): CalendarEventParams {
+	const cloned = clone(entity)
+	removeTechnicalFields(cloned)
+	removeIdentityFields(cloned)
+	return cloned
+}
+
+/**
+ * remove fields that do not contain user defined data but are related to finding/accessing the entity on the server
+ */
+function removeIdentityFields(entity: CalendarEventParams) {
+	function _removeIdentityFields(erased: Record<string, any>) {
+		for (const key of Object.keys(erased)) {
+			if (IDENTITY_FIELDS.includes(key)) {
+				delete erased[key]
+			} else {
+				const value = erased[key]
+				if (value instanceof Object) {
+					_removeIdentityFields(value)
+				}
+			}
+		}
+	}
+
+	_removeIdentityFields(entity)
 }

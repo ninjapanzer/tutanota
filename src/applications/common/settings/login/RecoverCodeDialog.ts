@@ -3,9 +3,9 @@ import { InfoLink, lang, TranslationKey } from "../../../../ui/utils/LanguageVie
 import { Dialog, DialogType } from "../../../../ui/base/Dialog.js"
 import { assertNotNull, newPromise, noOp, ofClass } from "@tutao/utils"
 import m, { Child, Children, Component, Vnode } from "mithril"
-import { assertMainOrNode, isApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { copyToClipboard } from "../../../../ui/utils/ClipboardUtils.js"
-import * as restError from "@tutao/rest-client/error"
+import { AccessBlockedError, NotAuthenticatedError } from "@tutao/rest-client/error"
 import { locator } from "../../api/main/CommonLocator.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
@@ -18,17 +18,17 @@ import { MonospaceTextDisplay } from "../../../../ui/base/MonospaceTextDisplay"
 import { getCleanedMailAddress } from "../../misc/parsing/MailAddressParser"
 import { RecoverCodeDisplay } from "../../subscription/RecoverCodeDisplay"
 import { getDefaultSenderFromUser } from "../../mailFunctionality/SharedMailUtils"
-import { getEtId, isSameId } from "@tutao/meta"
+import { getEtId, isSameSingleId } from "@tutao/meta"
 import { User } from "@tutao/entities/sys"
 import { GroupType } from "../../../../entities/sys/Utils"
 import { getHtmlSanitizer } from "../../misc/HtmlSanitizer"
 
 type Action = "get" | "create"
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export function showRecoverCodeDialogAfterPasswordVerificationAndInfoDialog(user: User) {
 	// We only show the recovery code if it is for the current user and it is a global admin
-	if (!isSameId(getEtId(locator.logins.getUserController().user), getEtId(user)) || !user.memberships.some((gm) => gm.groupType === GroupType.Admin)) {
+	if (!isSameSingleId(getEtId(locator.logins.getUserController().user), getEtId(user)) || !user.memberships.some((gm) => gm.groupType === GroupType.Admin)) {
 		return
 	}
 
@@ -56,8 +56,8 @@ export function showRecoverCodeDialogAfterPasswordVerification(action: Action) {
 					showRecoverCodeDialog(recoverCode)
 					return ""
 				})
-				.catch(ofClass(restError.NotAuthenticatedError, () => lang.get("invalidPassword_msg")))
-				.catch(ofClass(restError.TooManyRequestsError, () => lang.get("tooManyAttempts_msg")))
+				.catch(ofClass(NotAuthenticatedError, () => lang.get("invalidPassword_msg")))
+				.catch(ofClass(AccessBlockedError, () => lang.get("tooManyAttempts_msg")))
 		},
 		cancel: {
 			textId: "cancel_action",
@@ -130,14 +130,14 @@ export class RecoverCodeField {
 			showButtons
 				? m(".flex.flex-end.mt-12", [
 						m(IconButton, {
-							title: "copy_action",
+							label: "copy_action",
 							icon: Icons.ClipboardFilled,
 							click: () => copyToClipboard(splitRecoverCode),
 						}),
-						isApp() || typeof window.print !== "function"
+						EnvProvider.get().isApp() || typeof window.print !== "function"
 							? null
 							: m(IconButton, {
-									title: "print_action",
+									label: "print_action",
 									icon: Icons.PrinterFilled,
 									click: () => window.print(),
 								}),

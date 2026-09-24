@@ -14,7 +14,7 @@ import {
 	SelectedSubscriptionOptions,
 	UpgradePriceType,
 } from "./FeatureListProvider"
-import { isIOSApp, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { Button, ButtonType } from "../../../ui/base/Button.js"
 import { assertNotNull, downcast, lazy, NBSP } from "@tutao/utils"
 import { px, size } from "../../../ui/size.js"
@@ -30,15 +30,7 @@ import {
 	UpgradeType,
 } from "./utils/SubscriptionUtils.js"
 import { AccountingInfo } from "@tutao/entities/sys"
-import {
-	AvailablePlanType,
-	LegacyPlans,
-	LegacyPrivatePlans,
-	NewBusinessPlans,
-	NewPersonalPlans,
-	PaymentMethodType,
-	PlanType,
-} from "../../../entities/sys/Utils"
+import { AvailablePlanType, HighlightedPlans, LegacyPlans, NewBusinessPlans, NewPersonalPlans, PaymentMethodType, PlanType } from "../../../entities/sys/Utils"
 import { PrimaryButton, PrimaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
 
 const BusinessUseItems: SegmentControlItem<boolean>[] = [
@@ -127,12 +119,15 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		}
 
 		if (isFirstMonthForFree) {
-			return wrapInDiv(lang.get("firstMonthForFree_msg"), { marginTop: px(size.spacing_16), marginBottom: px(size.spacing_16) })
+			return wrapInDiv(lang.get("firstMonthForFree_msg"), {
+				marginTop: px(size.spacing_16),
+				marginBottom: px(size.spacing_16),
+			})
 		}
 
-		if (isCampaign && !isBusiness && (isIOSApp() ? priceAndConfigProvider.getIosIntroOfferEligibility() : true)) {
+		if (isCampaign && !isBusiness && (EnvProvider.get().isIOSApp() ? priceAndConfigProvider.getIosIntroOfferEligibility() : true)) {
 			// The headline text for the Go European campaign should be always English
-			const text = isIOSApp() ? "One-time offer: Save now!" : "One-time offer: Save 50% now!"
+			const text = EnvProvider.get().isIOSApp() ? "One-time offer: Save now!" : "One-time offer: Save 50% now!"
 			return wrapInDiv(text, { margin: "1em auto 0 auto" })
 		}
 	}
@@ -367,7 +362,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		// If we are on a campaign, we want to let the user know the discount is just for the first year.
 		const isYearly = interval === PaymentInterval.Yearly
 		const paymentMethod = selectorAttrs.accountingInfo?.paymentMethod ?? null
-		const isHighlighted = hasFirstYearDiscount || (upgradingToPaidAccount && LegacyPrivatePlans.includes(targetSubscription))
+		const isHighlighted = hasFirstYearDiscount || (upgradingToPaidAccount && HighlightedPlans.includes(targetSubscription))
 
 		const multiuser = NewBusinessPlans.includes(targetSubscription) || LegacyPlans.includes(targetSubscription) || selectorAttrs.multipleUsersAllowed
 
@@ -376,7 +371,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		let priceStr: string
 		let referencePriceStr: string | undefined = undefined
 		let priceType: PriceType
-		if (isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
+		if (EnvProvider.get().isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
 			const prices = priceAndConfigProvider.getMobilePrices().get(PlanTypeToName[targetSubscription].toLowerCase())
 			if (prices != null) {
 				switch (interval) {

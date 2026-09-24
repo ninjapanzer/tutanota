@@ -14,7 +14,7 @@ import { UserError } from "../../api/main/UserError"
 import { showUserError } from "../../misc/ErrorHandlerImpl"
 import { locator } from "../../api/main/CommonLocator"
 import { getTokenFromUrl, renderAcceptGiftCardTermsCheckbox, renderGiftCardSvg } from "./GiftCardUtils"
-import { CancelledError, Country } from "@tutao/app-env"
+import { CancelledError } from "@tutao/app-env"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { getLoginErrorMessage, handleExpectedLoginError } from "../../misc/LoginUtils"
 import { RecoverCodeField } from "../../settings/login/RecoverCodeDialog.js"
@@ -23,7 +23,7 @@ import { formatPrice, getPaymentMethodName, PaymentInterval, PriceAndConfigProvi
 import { LegacyTextField } from "../../../../ui/base/LegacyTextField.js"
 import { CredentialsProvider } from "../../misc/credentials/CredentialsProvider.js"
 import { SessionType } from "../../../../platform-kit/app-env/SessionType.js"
-import * as restError from "@tutao/rest-client/error"
+import { NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 import { GiftCardFacade } from "../../api/worker/facades/lazy/GiftCardFacade.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { UpgradePriceType } from "../FeatureListProvider"
@@ -35,8 +35,8 @@ import { MessageBanner } from "../../../../ui/base/MessageBanner"
 import { AccountingInfo, AccountingInfoTypeRef, CustomerInfoTypeRef, GiftCardRedeemGetReturn } from "@tutao/entities/sys"
 import { PaymentMethodType, PlanType } from "../../../../entities/sys/Utils"
 import { renderCountryDropdown } from "../../gui/CountryDropdown"
-import { elementIdPart, isSameId } from "@tutao/meta"
-import { getByAbbreviation } from "../../gui/CountryList"
+import { elementIdPart, idToElementId, isSameId } from "@tutao/meta"
+import { Country, getByAbbreviation } from "../../gui/CountryList"
 import { windowFacade } from "../../misc/WindowFacade"
 
 const enum GetCredentialsMethod {
@@ -104,7 +104,7 @@ class RedeemGiftCardModel {
 	}
 
 	async loginWithStoredCredentials(encryptedCredentials: CredentialsInfo) {
-		if (this.logins.isUserLoggedIn() && isSameId(this.logins.getUserController().user._id, encryptedCredentials.userId)) {
+		if (this.logins.isUserLoggedIn() && isSameId(this.logins.getUserController().user._id, idToElementId(encryptedCredentials.userId))) {
 			// If the user is logged in already (because they selected credentials and then went back) we dont have to do
 			// anything, so just move on
 			await this.postLogin()
@@ -113,7 +113,7 @@ class RedeemGiftCardModel {
 			const credentials = await this.credentialsProvider.getDecryptedCredentialsByUserId(encryptedCredentials.userId)
 
 			if (credentials) {
-				await this.logins.resumeSession(credentials, null, null)
+				await this.logins.resumeSession(credentials, null)
 				await this.postLogin()
 			}
 		}
@@ -152,12 +152,12 @@ class RedeemGiftCardModel {
 		return this.giftCardFacade
 			.redeemGiftCard(this.giftCardId, this.key, country?.a ?? null)
 			.catch(
-				ofClass(restError.NotFoundError, () => {
+				ofClass(NotFoundError, () => {
 					throw new UserError("invalidGiftCard_msg")
 				}),
 			)
 			.catch(
-				ofClass(restError.NotAuthorizedError, (e) => {
+				ofClass(NotAuthorizedError, (e) => {
 					throw new UserError(lang.makeTranslation("error_msg", e.message))
 				}),
 			)
@@ -171,7 +171,7 @@ class RedeemGiftCardModel {
 		await this.secondFactorHandler.closeWaitingForSecondFactorDialog()
 		const customer = await this.logins.getUserController().reloadCustomer()
 		const customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
-		this.accountingInfo = await this.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
+		this.accountingInfo = await this.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 
 		if (PaymentMethodType.AppStore === this.accountingInfo.paymentMethod) {
 			throw new UserError("redeemGiftCardWithAppStoreSubscription_msg")

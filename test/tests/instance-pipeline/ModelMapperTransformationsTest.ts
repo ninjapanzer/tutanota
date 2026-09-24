@@ -1,889 +1,855 @@
 import o, { assertThrows } from "@tutao/otest"
-import { ClientTypeReferenceResolver, ModelMapper, ServerTypeReferenceResolver } from "../../../src/platform-kit/instance-pipeline"
+import { DecryptedParsedInstance, ModelMapper } from "../../../src/platform-kit/instance-pipeline"
 import {
-	AssociationType,
-	Cardinality,
-	ClientModelParsedInstance,
+	AssociationTypeEnum,
+	CardinalityEnum,
 	ClientTypeModel,
-	ServerModelParsedInstance,
+	DEFAULT_ENTITY_FIELDS,
+	EntityTypeEnum,
 	ServerTypeModel,
-	Type,
 	TypeRef,
-	ValueType,
+	ValueTypeEnum,
 } from "../../../src/platform-kit/meta"
-import { TestAggregateRef, TestEntity } from "./InstancePipelineTestUtils"
-import { InvalidModelError, ProgrammingError } from "../../../src/platform-kit/app-env"
+import { changeInstanceDirection, DummyTypeModelResolver, TestAggregateRef, TestEntity, TestTypeRef } from "./InstancePipelineTestUtils"
 import { removeOriginals } from "../TestUtils"
+import { InstanceDirection, ParsedValue } from "../../../src/platform-kit/instance-pipeline/ParsedValue"
+import { InvalidModelError, ProgrammingError } from "../../../src/platform-kit/app-env"
 
 o.spec("ModelMapperTransformations", function () {
 	o.spec("AddAssociation", function () {
 		o("add One aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.One,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testAssociation",
+							type: AssociationTypeEnum.Aggregation,
+							cardinality: CardinalityEnum.One,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.One,
-								final: false,
-								encrypted: false,
-							},
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestAggregate",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.Aggregated,
+					isPublic: true,
+					values: {
+						"2": {
+							id: 2,
+							name: "testNumber",
+							type: ValueTypeEnum.Number,
+							cardinality: CardinalityEnum.One,
+							final: false,
+							encrypted: false,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([DecryptedParsedInstance.incomingFromServer(serverModel["43"]).addAttributeById(2, ParsedValue.fromString("123"))]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{ 2: "123" } as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 		})
-		o("add ZeroOrOne aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+
+		o("server adds ZeroOrOne aggregation", async function () {
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
+			}
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testAssociation",
+							type: AssociationTypeEnum.Aggregation,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: false,
-								encrypted: false,
-							},
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestAggregate",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.Aggregated,
+					isPublic: true,
+					values: {
+						"2": {
+							id: 2,
+							name: "testNumber",
+							type: ValueTypeEnum.Number,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: false,
+							encrypted: false,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+				return serverModel[typeRef.typeId]
+			}
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, serverModelResolver))
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([DecryptedParsedInstance.incomingFromServer(serverModel["43"]).addAttributeById(2, ParsedValue.fromString("123"))]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{ 2: "123" } as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
+
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add ZeroOrOne aggregation
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			const expectedDecryptedInstance = DecryptedParsedInstance.outgoingToServer(clientModel["42"])
+			o.check(newParsedInstance.deepEquals(expectedDecryptedInstance)).equals(true)
 		})
-		o("add Any aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+
+		o("server adds Any aggregation", async function () {
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testAssociation",
+							type: AssociationTypeEnum.Aggregation,
+							cardinality: CardinalityEnum.Any,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: false,
-								encrypted: false,
-							},
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestAggregate",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.Aggregated,
+					isPublic: true,
+					values: {
+						"2": {
+							id: 2,
+							name: "testNumber",
+							type: ValueTypeEnum.Number,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: false,
+							encrypted: false,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+				return serverModel[typeRef.typeId]
+			}
+			const serverTypeModel = await serverModelResolver(TestTypeRef)
+			const serverAggregateModel = await serverModelResolver(TestAggregateRef)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, serverModelResolver))
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverTypeModel).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([
+					DecryptedParsedInstance.incomingFromServer(serverAggregateModel).addAttributeById(2, ParsedValue.fromString("123")),
+				]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{ 2: "123" } as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add Any aggregation
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			const expectedDecryptedInstance = DecryptedParsedInstance.outgoingToServer(clientModel["42"])
+			o.check(newParsedInstance.deepEquals(expectedDecryptedInstance)).equals(true)
 		})
 
-		o("add One list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.One,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+		o("server adds One list element association", async function () {
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testListElementAssociation",
+							type: AssociationTypeEnum.ListElementAssociationGenerated,
+							cardinality: CardinalityEnum.One,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestRef",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestRef",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+				return serverModel[typeRef.typeId]
+			}
+			const typeRef = new TypeRef<TestEntity>("tutanota", 42)
+
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, serverModelResolver))
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([["listId", "listElementId"]]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [["listId", "listElementId"]],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
+				_type: typeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 		})
-		o("add ZeroOrOne list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+
+		o("server adds ZeroOrOne list element association", async function () {
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testListElementAssociation",
+							type: AssociationTypeEnum.ListElementAssociationGenerated,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestRef",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestRef",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+				return serverModel[typeRef.typeId]
+			}
+
+			const clientTypeModel = clientModel["42"]
+			const serverTypeModel = serverModel["42"]
+
+			const typeRef = new TypeRef<TestEntity>("tutanota", 42)
+
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, serverModelResolver))
+
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverTypeModel).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([["listId", "listElementId"]]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [["listId", "listElementId"]],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
+				_type: typeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add ZeroOrOne association
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			const expectedDecryptedInstance = DecryptedParsedInstance.outgoingToServer(clientTypeModel)
+			o.check(newParsedInstance.deepEquals(expectedDecryptedInstance)).equals(true)
 		})
 		o("add Any list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {
+						"3": {
+							id: 3,
+							name: "testListElementAssociation",
+							type: AssociationTypeEnum.ListElementAssociationGenerated,
+							cardinality: CardinalityEnum.Any,
+							refTypeId: 43,
+							final: false,
+							dependency: "tutanota",
 						},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: false,
-								encrypted: false,
-							},
+					},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+				"43": {
+					app: "tutanota",
+					encrypted: true,
+					id: 43,
+					name: "TestAggregate",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.Aggregated,
+					isPublic: true,
+					values: {
+						"2": {
+							id: 2,
+							name: "testNumber",
+							type: ValueTypeEnum.Number,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: false,
+							encrypted: false,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
 			}
 
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
+			}
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([["listId", "listElementId"]]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [["listId", "listElementId"]],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add Any association
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			o(newParsedInstance).deepEquals(DecryptedParsedInstance.outgoingToServer(await clientModelResolver(TestTypeRef)))
 		})
 	})
+
 	o.spec("AddValue", function () {
-		o("add One Value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
-								final: true,
-								encrypted: true,
-							},
+		o("server adds One Value", async function () {
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.String,
+							cardinality: CardinalityEnum.One,
+							final: true,
+							encrypted: true,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				1: "example",
-			} as any as ServerModelParsedInstance
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(1, ParsedValue.fromString("example"))
+
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add One value
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			const expectedOutgoingInstance = DecryptedParsedInstance.outgoingToServer(clientModel["42"])
+			o(newParsedInstance.deepEquals(expectedOutgoingInstance)).equals(true)
 		})
 		o("add One Value with default supplier on server should also supply default on client", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
-								final: true,
-								encrypted: true,
-							},
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.String,
+							cardinality: CardinalityEnum.One,
+							final: true,
+							encrypted: true,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
 			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
-								final: true,
-								encrypted: true,
-							},
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.String,
+							cardinality: CardinalityEnum.One,
+							final: true,
+							encrypted: true,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
+			}
+			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+
 			// The instance in the local-store storage (written when the value was not there for the server & client models)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"])
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testValue: "",
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add One value
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: "",
-			} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			o(newParsedInstance.getAttributeById(1).asString()).equals("")
 		})
 		o("add ZeroOrOne Value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
+			}
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.String,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: true,
+							encrypted: true,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				1: "example",
-			} as any as ServerModelParsedInstance
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(1, ParsedValue.fromString("example"))
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
 			// request is prepared with the client model and does not add ZeroOrOne value
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			o(newParsedInstance).deepEquals(DecryptedParsedInstance.outgoingToServer(await clientModelResolver(TestTypeRef)))
 		})
 	})
 	o.spec("BooleanToNumberValue", function () {
 		o("convert boolean to number value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
+			const serverModel: Record<string, ServerTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.Number,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: true,
+							encrypted: true,
 						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ServerTypeModel,
+			}
+			const clientModel: Record<string, ClientTypeModel> = {
+				"42": {
+					app: "tutanota",
+					encrypted: true,
+					id: 42,
+					name: "TestType",
+					rootId: "SoMeId",
+					since: 0,
+					type: EntityTypeEnum.ListElement,
+					isPublic: true,
+					values: {
+						"1": {
+							id: 1,
+							name: "testValue",
+							type: ValueTypeEnum.Boolean,
+							cardinality: CardinalityEnum.ZeroOrOne,
+							final: true,
+							encrypted: true,
+						},
+					},
+					associations: {},
+					version: 0,
+					versioned: false,
+				} as unknown as ClientTypeModel,
 			}
 
 			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.Boolean,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
 
-			// false
-			const falseParsedInstance: ServerModelParsedInstance = {
-				1: "0",
-			} as any as ServerModelParsedInstance
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
 
-			const falseMappedInstance = (await modelMapper.mapToInstance(TestTypeRef, falseParsedInstance)) as any
-			removeOriginals(falseMappedInstance)
-			o(falseMappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testValue: false,
-			} as any)
-			o(typeof falseMappedInstance._errors).equals("undefined")
+			const falseParsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(1, ParsedValue.fromBoolean(false))
+			const trueParsedInstance = DecryptedParsedInstance.incomingFromServer(serverModel["42"]).addAttributeById(1, ParsedValue.fromString("anything"))
+			const falseMappedInstance = (await modelMapper.mapToInstance(falseParsedInstance)) as any
+			const trueMappedInstance = (await modelMapper.mapToInstance(trueParsedInstance)) as any
 
-			// request is prepared with the client model and does not add handle the boolean to number transformation
-			const newFalseParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, falseMappedInstance)
-			o(newFalseParsedInstance).deepEquals({
-				1: false,
-			} as any as ClientModelParsedInstance)
-
-			// true
-			const trueParsedInstance: ServerModelParsedInstance = {
-				1: "anything",
-			} as any as ServerModelParsedInstance
-
-			const trueMappedInstance = (await modelMapper.mapToInstance(TestTypeRef, trueParsedInstance)) as any
 			removeOriginals(trueMappedInstance)
+			removeOriginals(falseMappedInstance)
 			o(trueMappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testValue: true,
+				...DEFAULT_ENTITY_FIELDS,
+			} as any)
+			o(falseMappedInstance).deepEquals({
+				_type: TestTypeRef,
+				testValue: false,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
 			o(typeof trueMappedInstance._errors).equals("undefined")
+			o(typeof falseMappedInstance._errors).equals("undefined")
 
 			// request is prepared with the client model and does not add handle the boolean to number transformation
-			const newTrueParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, trueMappedInstance)
-			o(newTrueParsedInstance).deepEquals({
-				1: true,
-			} as any as ClientModelParsedInstance)
+			const newTrueParsedInstance = await modelMapper.mapToDecryptedInstance(trueMappedInstance)
+			const newFalseParsedInstance = await modelMapper.mapToDecryptedInstance(falseMappedInstance)
+			o(newTrueParsedInstance.getAttributeByName("testValue").asBoolean()).equals(true)
+			o(newFalseParsedInstance.getAttributeByName("testValue").asBoolean()).equals(false)
 		})
 	})
+
 	o.spec("ChangeAssociationCardinality", function () {
 		o("change aggregation from Any to One", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -895,15 +861,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.One,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.One,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -919,7 +885,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -939,15 +905,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -963,7 +929,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -974,30 +940,32 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			let serverTypeModel = await serverModelResolver(TestTypeRef)
+			const aggregateTypeModel = await serverModelResolver(TestAggregateRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(serverTypeModel).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([DecryptedParsedInstance.incomingFromServer(aggregateTypeModel)]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{} as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testAggregation: [
 					{
 						_type: TestAggregateRef,
+						...DEFAULT_ENTITY_FIELDS,
 					},
 				],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change aggregation from One to Any null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1009,15 +977,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1033,7 +1001,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1053,15 +1021,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.One,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.One,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1077,7 +1045,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1088,17 +1056,16 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
+			const typeModel = await serverModelResolver(TestTypeRef)
+
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
+			parsedInstance.addAttributeById(3, ParsedValue.emptyAssociation())
+
 			// can't convert an empty array to one
-			await assertThrows(InvalidModelError, async () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
+			const err = await assertThrows(InvalidModelError, async () => modelMapper.mapToInstance(parsedInstance))
+			o(err.message).equals("Cardinality One should have exactly one item. Found: 0. In tutanota/TestType::testAggregation")
 		})
 		o("change aggregation from ZeroOrOne to Any null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1110,15 +1077,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1134,7 +1101,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1154,15 +1121,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1178,7 +1145,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1189,24 +1156,21 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(3, ParsedValue.fromNestedItems([]))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
 			// can't convert an empty array to one
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testAggregation: null,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change aggregation from ZeroOrOne to Any multiple values", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1218,15 +1182,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1242,7 +1206,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1262,15 +1226,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1286,7 +1250,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1297,17 +1261,19 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const aggregateTypeModel = await serverModelResolver(TestAggregateRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([
+					DecryptedParsedInstance.incomingFromServer(aggregateTypeModel),
+					DecryptedParsedInstance.incomingFromServer(aggregateTypeModel),
+				]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{} as any as ServerModelParsedInstance, {} as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
+
 			// can't convert an array with multiple elements to ZeroOrOne
-			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
+			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(parsedInstance))
 		})
 		o("change aggregation from Any to ZeroOrOne null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1319,15 +1285,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1343,7 +1309,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1363,15 +1329,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1387,7 +1353,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1398,24 +1364,21 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(3, ParsedValue.fromNestedItems([]))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
 			// can convert an empty array to ZeroOrOne
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testAggregation: [],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change aggregation from Any to ZeroOrOne one value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1427,15 +1390,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1451,7 +1414,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1471,15 +1434,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testAggregation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.Aggregation,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1495,7 +1458,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestAggregate",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.Aggregated,
+						type: EntityTypeEnum.Aggregated,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1506,24 +1469,25 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const aggregateTypeModel = await serverModelResolver(TestAggregateRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(
+				3,
+				ParsedValue.fromNestedItems([DecryptedParsedInstance.incomingFromServer(aggregateTypeModel)]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [{} as any as ServerModelParsedInstance],
-			} as any as ServerModelParsedInstance
+
 			// can convert an array with one element to ZeroOrOne
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
-				testAggregation: [{ _type: TestAggregateRef } as any],
+				testAggregation: [{ _type: TestAggregateRef, ...DEFAULT_ENTITY_FIELDS } as any],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 
 		o("change list element association from Any to One", async function () {
@@ -1536,15 +1500,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.One,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.One,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1560,7 +1524,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1580,15 +1544,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1604,7 +1568,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1615,26 +1579,25 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([["listId", "listElementId"]]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [["listId", "listElementId"]],
-			} as any as ServerModelParsedInstance
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testListElementAssociation: [["listId", "listElementId"]],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change list element association from One to Any null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1646,15 +1609,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1670,7 +1633,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1690,15 +1653,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.One,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.One,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1714,7 +1677,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1725,17 +1688,13 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(3, ParsedValue.fromIdTupleList([]))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
 			// can't convert an empty array to one
-			await assertThrows(InvalidModelError, async () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
+			const err = await assertThrows(InvalidModelError, async () => modelMapper.mapToInstance(parsedInstance))
+			o(err.message).equals("Cardinality One should have exactly one item. Found: 0. In tutanota/TestType::testListElementAssociation")
 		})
 		o("change list element association from ZeroOrOne to Any null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1747,15 +1706,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1771,7 +1730,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1791,15 +1750,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1815,7 +1774,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1826,26 +1785,23 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(3, ParsedValue.fromIdTupleList([]))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
 			// can't convert an empty array to one
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testListElementAssociation: null,
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
 
 			// request is prepared with the client model and association is not changed
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change list element association from ZeroOrOne to Any multiple values", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1857,15 +1813,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1881,7 +1837,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1901,15 +1857,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1925,7 +1881,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -1936,20 +1892,18 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([
 					["listId", "listElementId1"],
 					["listId", "listElementId2"],
-				],
-			} as any as ServerModelParsedInstance
+				]),
+			)
+
 			// can't convert an array with multiple elements to ZeroOrOne
-			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
+			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(parsedInstance))
 		})
 		o("change list element association from Any to ZeroOrOne null value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -1961,15 +1915,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -1985,7 +1939,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -2005,15 +1959,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -2029,7 +1983,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -2040,24 +1994,21 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(3, ParsedValue.fromIdTupleList([]))
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [],
-			} as any as ServerModelParsedInstance
 			// can convert an empty array to ZeroOrOne
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testListElementAssociation: [],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 		o("change list element association from Any to ZeroOrOne one value", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -2069,15 +2020,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -2093,7 +2044,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -2113,15 +2064,15 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {
 							"3": {
 								id: 3,
 								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
+								type: AssociationTypeEnum.ListElementAssociationGenerated,
+								cardinality: CardinalityEnum.Any,
 								refTypeId: 43,
 								final: false,
 								dependency: "tutanota",
@@ -2137,7 +2088,7 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestRef",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {},
 						associations: {},
@@ -2148,24 +2099,23 @@ o.spec("ModelMapperTransformations", function () {
 				return clientModel[typeRef.typeId]
 			}
 
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(
+				3,
+				ParsedValue.fromIdTupleList([["listId", "listElementId"]]),
 			)
-			const parsedInstance: ServerModelParsedInstance = {
-				3: [["listId", "listElementId"]],
-			} as any as ServerModelParsedInstance
 			// can convert an array with one element to ZeroOrOne
-			const mappedInstance = await modelMapper.mapToInstance(TestTypeRef, parsedInstance)
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testListElementAssociation: [["listId", "listElementId"]],
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals(parsedInstance as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(newParsedInstance.deepEquals(parsedInstance)).equals(true)
 		})
 	})
 	o.spec("ChangeValueCardinality", function () {
@@ -2179,14 +2129,14 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {
 							"1": {
 								id: 1,
 								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
+								type: ValueTypeEnum.String,
+								cardinality: CardinalityEnum.One,
 								final: true,
 								encrypted: true,
 							},
@@ -2208,14 +2158,14 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {
 							"1": {
 								id: 1,
 								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
+								type: ValueTypeEnum.String,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								final: true,
 								encrypted: true,
 							},
@@ -2227,28 +2177,23 @@ o.spec("ModelMapperTransformations", function () {
 				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				1: "example",
-			} as any as ServerModelParsedInstance
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(1, ParsedValue.fromString("example"))
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testValue: "example",
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: "example",
-			} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o.check(parsedInstance.deepEquals(newParsedInstance)).equals(true)
 		})
 		o("change value from One to ZeroOrOne", async function () {
 			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
@@ -2260,14 +2205,14 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {
 							"1": {
 								id: 1,
 								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
+								type: ValueTypeEnum.String,
+								cardinality: CardinalityEnum.ZeroOrOne,
 								final: true,
 								encrypted: true,
 							},
@@ -2289,14 +2234,14 @@ o.spec("ModelMapperTransformations", function () {
 						name: "TestType",
 						rootId: "SoMeId",
 						since: 0,
-						type: Type.ListElement,
+						type: EntityTypeEnum.ListElement,
 						isPublic: true,
 						values: {
 							"1": {
 								id: 1,
 								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
+								type: ValueTypeEnum.String,
+								cardinality: CardinalityEnum.One,
 								final: true,
 								encrypted: true,
 							},
@@ -2308,931 +2253,713 @@ o.spec("ModelMapperTransformations", function () {
 				}
 				return clientModel[typeRef.typeId]
 			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				1: "example",
-			} as any as ServerModelParsedInstance
+			const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+			const typeModel = await serverModelResolver(TestTypeRef)
+			const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(1, ParsedValue.fromString("example"))
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
+			const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
 			removeOriginals(mappedInstance)
 			o(mappedInstance).deepEquals({
 				_type: TestTypeRef,
 				testValue: "example",
+				...DEFAULT_ENTITY_FIELDS,
 			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
+			o(typeof mappedInstance["_errors"]).equals("undefined")
 
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: "example",
-			} as any as ClientModelParsedInstance)
+			const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+			changeInstanceDirection(parsedInstance, InstanceDirection.OutgoingToServer)
+			o(newParsedInstance.deepEquals(parsedInstance)).equals(true)
+
+			o("change value from One to ZeroOrOne null value throws", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.String,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.String,
+									cardinality: CardinalityEnum.One,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(1, ParsedValue.fromNull())
+				await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(parsedInstance))
+			})
 		})
-		o("change value from One to ZeroOrOne null value throws", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
+		o.spec("NumberToStringValue", function () {
+			o("convert number to string value", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.String,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.Number,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(1, ParsedValue.fromString("42"))
+
+				const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+				removeOriginals(mappedInstance)
+				o(mappedInstance).deepEquals({ _type: TestTypeRef, testValue: "42", ...DEFAULT_ENTITY_FIELDS } as any)
+				o(parsedInstance.hasError()).equals(false)
+
+				// request is prepared with the client model and does not add handle the number to string transformation
+				const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+				o.check(newParsedInstance.getAttributeByName("testValue").asString()).equals("42")
+			})
+			o("convert number to string value throws when server sends non numeric", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.String,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {
+								"1": {
+									id: 1,
+									name: "testValue",
+									type: ValueTypeEnum.Number,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: true,
+									encrypted: true,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const wrongParsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel).addAttributeById(1, ParsedValue.fromString("example"))
+
+				const err = await assertThrows(ProgrammingError, () => modelMapper.mapToInstance(wrongParsedInstance))
+				o(err.message).equals("Non-numeric string for attribute: testValue(1)")
+			})
+		})
+		o.spec("RemoveAssociation", function () {
+			o("remove ZeroOrOne aggregation", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {
+								"3": {
+									id: 3,
+									name: "testAssociation",
+									type: AssociationTypeEnum.Aggregation,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									refTypeId: 43,
+									final: false,
+									dependency: "tutanota",
+								},
+							},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+						"43": {
+							app: "tutanota",
+							encrypted: true,
+							id: 43,
+							name: "TestAggregate",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.Aggregated,
+							isPublic: true,
+							values: {
+								"2": {
+									id: 2,
+									name: "testNumber",
+									type: ValueTypeEnum.Number,
+									cardinality: CardinalityEnum.One,
+									final: false,
+									encrypted: false,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
+
+				// can remove aggregation with ZeroOrOne cardinality and supply null
+				const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+				removeOriginals(mappedInstance)
+				o(mappedInstance).deepEquals({ _type: TestTypeRef, testAssociation: null, ...DEFAULT_ENTITY_FIELDS } as any)
+				o(typeof mappedInstance["_errors"]).equals("undefined")
+
+				// request is prepared with the client model and does NOT remove ZeroOrOne aggregation
+				const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+				o(newParsedInstance.getAttributeById(3).asNestedObjList()).deepEquals([])
+			})
+			o("remove Any aggregation", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {
+								"3": {
+									id: 3,
+									name: "testAssociation",
+									type: AssociationTypeEnum.Aggregation,
+									cardinality: CardinalityEnum.Any,
+									refTypeId: 43,
+									final: false,
+									dependency: "tutanota",
+								},
+							},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+						"43": {
+							app: "tutanota",
+							encrypted: true,
+							id: 43,
+							name: "TestAggregate",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.Aggregated,
+							isPublic: true,
+							values: {
+								"2": {
+									id: 2,
+									name: "testNumber",
+									type: ValueTypeEnum.Number,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: false,
+									encrypted: false,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
+
+				// can remove association with Any cardinality and supply []
+				const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+				removeOriginals(mappedInstance)
+				o(mappedInstance).deepEquals({
+					_type: TestTypeRef,
+					testAssociation: [],
+					...DEFAULT_ENTITY_FIELDS,
+				} as any)
+				o(typeof mappedInstance["_errors"]).equals("undefined")
+
+				// request is prepared with the client model and does NOT remove Any aggregation
+				const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+				o(newParsedInstance.getAttributeById(3).asIdList()).deepEquals([])
+			})
+			o("remove ZeroOrOne list element association", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {
+								"3": {
+									id: 3,
+									name: "testListElementAssociation",
+									type: AssociationTypeEnum.ListElementAssociationGenerated,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									refTypeId: 43,
+									final: false,
+									dependency: "tutanota",
+								},
+							},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+						"43": {
+							app: "tutanota",
+							encrypted: true,
+							id: 43,
+							name: "TestRef",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
+				// can remove association with ZeroOrOne and supply null
+				const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+				removeOriginals(mappedInstance)
+				o(mappedInstance).deepEquals({
+					_type: TestTypeRef,
+					testListElementAssociation: null,
+					...DEFAULT_ENTITY_FIELDS,
+				} as any)
+
+				o(typeof mappedInstance["_errors"]).equals("undefined")
+
+				// request is prepared with the client model and does NOT remove ZeroOrOne list element association
+				const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+				o.check(newParsedInstance.getAttributeById(3).asNestedObjList()).deepEquals([])
+			})
+			o("remove Any list element association", async function () {
+				const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+					const serverModel: Record<string, ServerTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ServerTypeModel,
+					}
+					return serverModel[typeRef.typeId]
+				}
+
+				const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+					const clientModel: Record<string, ClientTypeModel> = {
+						"42": {
+							app: "tutanota",
+							encrypted: true,
+							id: 42,
+							name: "TestType",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.ListElement,
+							isPublic: true,
+							values: {},
+							associations: {
+								"3": {
+									id: 3,
+									name: "testListElementAssociation",
+									type: AssociationTypeEnum.ListElementAssociationGenerated,
+									cardinality: CardinalityEnum.Any,
+									refTypeId: 43,
+									final: false,
+									dependency: "tutanota",
+								},
+							},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+						"43": {
+							app: "tutanota",
+							encrypted: true,
+							id: 43,
+							name: "TestAggregate",
+							rootId: "SoMeId",
+							since: 0,
+							type: EntityTypeEnum.Aggregated,
+							isPublic: true,
+							values: {
+								"2": {
+									id: 2,
+									name: "testNumber",
+									type: ValueTypeEnum.Number,
+									cardinality: CardinalityEnum.ZeroOrOne,
+									final: false,
+									encrypted: false,
+								},
+							},
+							associations: {},
+							version: 0,
+							versioned: false,
+						} as unknown as ClientTypeModel,
+					}
+					return clientModel[typeRef.typeId]
+				}
+
+				const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+				const typeModel = await serverModelResolver(TestTypeRef)
+				const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
+
+				// can remove association with Any cardinality and supply []
+				const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+				removeOriginals(mappedInstance)
+				o(mappedInstance).deepEquals({
+					_type: TestTypeRef,
+					testListElementAssociation: [],
+					...DEFAULT_ENTITY_FIELDS,
+				} as any)
+				o(typeof mappedInstance["_errors"]).equals("undefined")
+
+				// request is prepared with the client model and does NOT remove Any list element association
+				const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+				o.check(newParsedInstance.getAttributeById(3).asIdList()).deepEquals([])
+			})
+			o.spec("RemoveValue", function () {
+				o("Remove One Value", async function () {
+					const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+						const serverModel: Record<string, ServerTypeModel> = {
+							"42": {
+								app: "tutanota",
 								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
+								id: 42,
+								name: "TestType",
+								rootId: "SoMeId",
+								since: 0,
+								type: EntityTypeEnum.ListElement,
+								isPublic: true,
+								values: {},
+								associations: {},
+								version: 0,
+								versioned: false,
+							} as unknown as ServerTypeModel,
+						}
+						return serverModel[typeRef.typeId]
+					}
 
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
-								final: true,
+					const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+						const clientModel: Record<string, ClientTypeModel> = {
+							"42": {
+								app: "tutanota",
 								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
+								id: 42,
+								name: "TestType",
+								rootId: "SoMeId",
+								since: 0,
+								type: EntityTypeEnum.ListElement,
+								isPublic: true,
+								values: {
+									"1": {
+										id: 1,
+										name: "testValue",
+										type: ValueTypeEnum.String,
+										cardinality: CardinalityEnum.One,
+										final: true,
+										encrypted: true,
+									},
+								},
+								associations: {},
+								version: 0,
+								versioned: false,
+							} as unknown as ClientTypeModel,
+						}
+						return clientModel[typeRef.typeId]
+					}
 
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {
-				1: null,
-			} as any as ServerModelParsedInstance
+					const modelMapper: ModelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, null!))
+					const typeModel = await serverModelResolver(TestTypeRef)
+					const parsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
 
-			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
-		})
-	})
-	o.spec("NumberToStringValue", function () {
-		o("convert number to string value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
+					const mappedInstance = await modelMapper.mapToInstance(parsedInstance)
+					removeOriginals(mappedInstance)
+					o(mappedInstance).deepEquals({ _type: TestTypeRef, testValue: "", ...DEFAULT_ENTITY_FIELDS } as any)
+					o(typeof mappedInstance["_errors"]).equals("undefined")
+
+					// request is prepared with the client model and does NOT remove One value
+					const newParsedInstance = await modelMapper.mapToDecryptedInstance(mappedInstance)
+					o.check(newParsedInstance.getAttributeByName("testValue").asString()).equals("")
+				})
+				o("server removes ZeroOrOne Value", async function () {
+					const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
+						const serverModel: Record<string, ServerTypeModel> = {
+							"42": {
+								app: "tutanota",
 								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
+								id: 42,
+								name: "TestType",
+								rootId: "SoMeId",
+								since: 0,
+								type: EntityTypeEnum.ListElement,
+								isPublic: true,
+								values: {},
+								associations: {},
+								version: 0,
+								versioned: false,
+							} as unknown as ServerTypeModel,
+						}
+						return serverModel[typeRef.typeId]
+					}
+					const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
+						const clientModel: Record<string, ClientTypeModel> = {
+							"42": {
+								app: "tutanota",
 								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
+								id: 42,
+								name: "TestType",
+								rootId: "SoMeId",
+								since: 0,
+								type: EntityTypeEnum.ListElement,
+								isPublic: true,
+								values: {
+									"1": {
+										id: 1,
+										name: "testValue",
+										type: ValueTypeEnum.String,
+										cardinality: CardinalityEnum.ZeroOrOne,
+										final: true,
+										encrypted: true,
+									},
+								},
+								associations: {},
+								version: 0,
+								versioned: false,
+							} as unknown as ClientTypeModel,
+						}
+						return clientModel[typeRef.typeId]
+					}
+					const typeModel = await serverModelResolver(TestTypeRef)
 
-			const parsedInstance: ServerModelParsedInstance = {
-				1: "42",
-			} as any as ServerModelParsedInstance
+					const modelMapper = new ModelMapper(new DummyTypeModelResolver(clientModelResolver, serverModelResolver))
+					const serverDecryptedParsedInstance = DecryptedParsedInstance.incomingFromServer(typeModel)
 
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testValue: 42,
-			} as any)
-			o(typeof parsedInstance._errors).equals("undefined")
+					const entity = await modelMapper.mapToInstance(serverDecryptedParsedInstance)
+					removeOriginals(entity)
+					o(entity).deepEquals({ _type: TestTypeRef, testValue: null, ...DEFAULT_ENTITY_FIELDS } as any)
 
-			// request is prepared with the client model and does not add handle the number to string transformation
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: 42,
-			} as any as ClientModelParsedInstance)
-		})
-		o("convert number to string value throws when server sends non numeric", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
+					o(typeof entity["_errors"]).equals("undefined")
 
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-
-			const wrongParsedInstance: ServerModelParsedInstance = {
-				1: "example",
-			} as any as ServerModelParsedInstance
-
-			await assertThrows(ProgrammingError, () => modelMapper.mapToInstance(TestTypeRef, wrongParsedInstance))
-		})
-	})
-	o.spec("RemoveAssociation", function () {
-		o("remove One aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.One,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.One,
-								final: false,
-								encrypted: false,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-			// can't create the instance since One aggregation is removed
-			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
-		})
-		o("remove ZeroOrOne aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.ZeroOrOne,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.One,
-								final: false,
-								encrypted: false,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			// can remove aggregation with ZeroOrOne cardinality and supply null
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testAssociation: null,
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove ZeroOrOne aggregation
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				3: [],
-			} as any)
-		})
-		o("remove Any aggregation", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testAssociation",
-								type: AssociationType.Aggregation,
-								cardinality: Cardinality.Any,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: false,
-								encrypted: false,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			// can remove association with Any cardinality and supply []
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testAssociation: [],
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove Any aggregation
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				3: [],
-			} as any)
-		})
-
-		o("remove One list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.One,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestRef",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-			// can't create the instance since One association is removed
-			await assertThrows(InvalidModelError, () => modelMapper.mapToInstance(TestTypeRef, parsedInstance))
-		})
-		o("remove ZeroOrOne list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.ZeroOrOne,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestRef",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			// can remove association with ZeroOrOne and supply null
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testListElementAssociation: null,
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove ZeroOrOne list element association
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				3: [],
-			} as any)
-		})
-		o("remove Any list element association", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {
-							"3": {
-								id: 3,
-								name: "testListElementAssociation",
-								type: AssociationType.ListElementAssociationGenerated,
-								cardinality: Cardinality.Any,
-								refTypeId: 43,
-								final: false,
-								dependency: "tutanota",
-							},
-						},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-					"43": {
-						app: "tutanota",
-						encrypted: true,
-						id: 43,
-						name: "TestAggregate",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.Aggregated,
-						isPublic: true,
-						values: {
-							"2": {
-								id: 2,
-								name: "testNumber",
-								type: ValueType.Number,
-								cardinality: Cardinality.ZeroOrOne,
-								final: false,
-								encrypted: false,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			// can remove association with Any cardinality and supply []
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testListElementAssociation: [],
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove Any list element association
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				3: [],
-			} as any)
-		})
-	})
-	o.spec("RemoveValue", function () {
-		o("Remove One Value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.One,
-								final: true,
-								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testValue: "",
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove One value
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: "",
-			} as any as ClientModelParsedInstance)
-		})
-		o("remove ZeroOrOne Value", async function () {
-			const serverModelResolver = async (typeRef: TypeRef<any>): Promise<ServerTypeModel> => {
-				const serverModel: Record<string, ServerTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ServerTypeModel,
-				}
-				return serverModel[typeRef.typeId]
-			}
-
-			const clientModelResolver = async (typeRef: TypeRef<any>): Promise<ClientTypeModel> => {
-				const clientModel: Record<string, ClientTypeModel> = {
-					"42": {
-						app: "tutanota",
-						encrypted: true,
-						id: 42,
-						name: "TestType",
-						rootId: "SoMeId",
-						since: 0,
-						type: Type.ListElement,
-						isPublic: true,
-						values: {
-							"1": {
-								id: 1,
-								name: "testValue",
-								type: ValueType.String,
-								cardinality: Cardinality.ZeroOrOne,
-								final: true,
-								encrypted: true,
-							},
-						},
-						associations: {},
-						version: 0,
-						versioned: false,
-					} as unknown as ClientTypeModel,
-				}
-				return clientModel[typeRef.typeId]
-			}
-			const TestTypeRef = new TypeRef<TestEntity>("tutanota", 42)
-
-			const modelMapper: ModelMapper = new ModelMapper(
-				clientModelResolver as ClientTypeReferenceResolver,
-				serverModelResolver as ServerTypeReferenceResolver,
-			)
-			const parsedInstance: ServerModelParsedInstance = {} as any as ServerModelParsedInstance
-
-			const mappedInstance = (await modelMapper.mapToInstance(TestTypeRef, parsedInstance)) as any
-			removeOriginals(mappedInstance)
-			o(mappedInstance).deepEquals({
-				_type: TestTypeRef,
-				testValue: null,
-			} as any)
-			o(typeof mappedInstance._errors).equals("undefined")
-
-			// request is prepared with the client model and does NOT remove ZeroOrOne value
-			const newParsedInstance = await modelMapper.mapToClientModelParsedInstance(TestTypeRef, mappedInstance)
-			o(newParsedInstance).deepEquals({
-				1: null,
-			} as any)
+					// request is prepared with the client model and does NOT remove ZeroOrOne value
+					const newParsedInstance = await modelMapper.mapToDecryptedInstance(entity)
+					o(newParsedInstance.getAttributeByName("testValue")).deepEquals(ParsedValue.fromNull())
+				})
+			})
 		})
 	})
 })

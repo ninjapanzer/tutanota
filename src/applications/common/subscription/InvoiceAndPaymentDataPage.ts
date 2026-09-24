@@ -1,9 +1,4 @@
-import {
-	EntityEventsListener,
-	EntityUpdateData,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { AccountingInfo, Braintree3ds2Request, InvoiceInfoTypeRef } from "@tutao/entities/sys"
 import { AvailablePlanType, PaymentMethodType } from "../../../entities/sys/Utils"
 import m, { Children, Vnode, VnodeDOM } from "mithril"
@@ -13,7 +8,7 @@ import type { UpgradeSubscriptionData } from "./UpgradeSubscriptionWizard"
 import { InvoiceDataInput, InvoiceDataInputLocation } from "./InvoiceDataInput"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
-import { Country, getClientType, InvoiceData, Keys, PaymentDataResultType } from "@tutao/app-env"
+import { getClientType, PaymentDataResultType } from "@tutao/app-env"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import { assertNotNull, LazyLoaded, neverNull, newPromise, noOp, promiseMap } from "@tutao/utils"
 import { getLazyLoadedPayPalUrl, getPreconditionFailedPaymentMsg, PaymentData, PaymentErrorCode, UpgradeType } from "./utils/SubscriptionUtils"
@@ -25,12 +20,15 @@ import { DefaultAnimationTime } from "../../../ui/animation/Animations"
 import { locator } from "../api/main/CommonLocator"
 import { PaymentInterval } from "./utils/PriceUtils.js"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
-import { createAccount, getVisiblePaymentMethods, validateInvoiceData, validatePaymentData } from "./utils/PaymentUtils"
+import { createAccount, getVisiblePaymentMethods, InvoiceData, validateInvoiceData, validatePaymentData } from "./utils/PaymentUtils"
 import { SimplifiedCreditCardViewModel } from "./SimplifiedCreditCardInputModel"
 import { SimplifiedCreditCardInput } from "./SimplifiedCreditCardInput"
 import { PaypalButton } from "./PaypalButton"
+import { idToElementId } from "@tutao/meta"
+import { Country } from "../gui/CountryList"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 /**
  * Wizard page for editing invoice and payment data.
@@ -344,7 +342,7 @@ export async function updatePaymentData(
  * Displays a progress dialog that allows to cancel the verification and opens a new window to do the actual verification with the bank.
  */
 function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintree3ds2Request, price: string): Promise<boolean> {
-	return locator.entityClient.load(InvoiceInfoTypeRef, neverNull(accountingInfo.invoiceInfo)).then((invoiceInfo) => {
+	return locator.entityClient.load(InvoiceInfoTypeRef, idToElementId(neverNull(accountingInfo.invoiceInfo))).then((invoiceInfo) => {
 		let invoiceInfoWrapper = {
 			invoiceInfo,
 		}
@@ -384,11 +382,12 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 				exec: closeAction,
 				help: "close_alt",
 			})
-		let entityEventListener: EntityEventsListener = {
+		let entityUpdatesListener: EntityUpdatesListener = {
+			id: "InvoiceAndPaymentDataPage",
 			onEntityUpdatesReceived: (updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id) => {
 				return promiseMap(updates, (update) => {
 					if (isUpdateForTypeRef(InvoiceInfoTypeRef, update)) {
-						return locator.entityClient.load(InvoiceInfoTypeRef, update.instanceId).then((invoiceInfo) => {
+						return locator.entityClient.load(InvoiceInfoTypeRef, idToElementId(update.instanceId)).then((invoiceInfo) => {
 							invoiceInfoWrapper.invoiceInfo = invoiceInfo
 							if (!invoiceInfo.paymentErrorInfo) {
 								// user successfully verified the card
@@ -430,13 +429,14 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 							m.redraw()
 						})
 					}
+					return Promise.resolve()
 				}).then(noOp)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		}
 
-		locator.eventController.addEntityListener(entityEventListener)
-		const app = client.isCalendarApp() ? "calendar" : "mail"
+		locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
+		const app = ClientDetector.get().isCalendarApp() ? "calendar" : "mail"
 		let params = `clientToken=${encodeURIComponent(braintree3ds.clientToken)}&nonce=${encodeURIComponent(braintree3ds.nonce)}&bin=${encodeURIComponent(
 			braintree3ds.bin,
 		)}&price=${encodeURIComponent(price)}&message=${encodeURIComponent(lang.get("creditCardVerification_msg"))}&clientType=${getClientType()}&app=${app}`
@@ -447,6 +447,6 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 			window.open(paymentUrl)
 			progressDialog.show()
 		})
-		return progressDialogPromise.finally(() => locator.eventController.removeEntityListener(entityEventListener))
+		return progressDialogPromise.finally(() => locator.eventController.removeEntityUpdatesListener(entityUpdatesListener))
 	})
 }

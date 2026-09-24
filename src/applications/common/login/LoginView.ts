@@ -1,6 +1,6 @@
 import m, { Children, Vnode } from "mithril"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
-import { assertMainOrNode, isAndroidApp, isApp, isDesktop } from "@tutao/app-env"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { EnvProvider } from "@tutao/app-env"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { defer, DeferredObject } from "@tutao/utils"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
@@ -17,14 +17,15 @@ import { IconButton } from "../../../ui/base/IconButton.js"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView.js"
 import { TopLevelAttrs, TopLevelView } from "../../../ui/base/TopLevelView.js"
 import { LoginScreenHeader } from "../../../ui/LoginScreenHeader.js"
-import { styles } from "../../../ui/styles.js"
+import { Styles } from "../../../ui/styles.js"
 import { locator } from "../api/main/CommonLocator.js"
 import { renderInfoLinks } from "../gui/RenderLoginInfoLinks.js"
 import { showSnackBar } from "../../../ui/base/SnackBar.js"
 import { Icons } from "../../../ui/base/icons/Icons"
 import { px } from "../../../ui/size"
+import { isFreeSignupOnly } from "../misc/LoginUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface LoginViewAttrs extends TopLevelAttrs {
 	/** Default path to redirect to after the login. Can be overridden with query param `requestedPath`. */
@@ -90,7 +91,7 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 				oncreate: () => windowFacade.addKeyboardSizeListener(this.keyboardListener),
 				onremove: () => windowFacade.removeKeyboardSizeListener(this.keyboardListener),
 				style: {
-					marginBottom: isAndroidApp() ? `calc(var(--safe-area-inset-bottom) + ${this.keyboardHeight}px)` : px(this.keyboardHeight),
+					marginBottom: EnvProvider.get().isAndroidApp() ? `calc(var(--safe-area-inset-bottom) + ${this.keyboardHeight}px)` : px(this.keyboardHeight),
 				},
 			},
 			[
@@ -98,9 +99,12 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 				m(
 					".flex-grow.flex-center.scroll",
 					m(
-						".flex.col.flex-grow-shrink-auto.max-width-m.plr-24." + (styles.isSingleColumnLayout() ? "pt-16" : "pt-32"),
+						".flex.col.flex-grow-shrink-auto.max-width-m.plr-24." + (Styles.get().isSingleColumnLayout() ? "pt-16" : "pt-32"),
 						{
-							...landmarkAttrs(AriaLandmarks.Main, isApp() || isDesktop() ? lang.get("addAccount_action") : lang.get("login_label")),
+							...landmarkAttrs(
+								AriaLandmarks.Main,
+								EnvProvider.get().isApp() || EnvProvider.get().isDesktop() ? lang.get("addAccount_action") : lang.get("login_label"),
+							),
 							oncreate: (vnode) => {
 								;(vnode.dom as HTMLElement).focus()
 							},
@@ -109,13 +113,15 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 							m(
 								".content-bg.border-radius-12.pb-16",
 								{
-									class: styles.isSingleColumnLayout() ? "plr-24" : "plr-48",
+									class: Styles.get().isSingleColumnLayout() ? "plr-24" : "plr-48",
 								},
 								this._renderFormForDisplayMode(),
 								this.renderMoreOptions(),
 							),
 							m(".flex-grow"),
-							!(isApp() || isDesktop()) && this.viewModel.shouldShowAppButtons() ? this._renderAppButtons() : null,
+							!(EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && this.viewModel.shouldShowAppButtons()
+								? this._renderAppButtons()
+								: null,
 							renderInfoLinks(),
 						],
 					),
@@ -163,7 +169,14 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 				? m(Button, {
 						label: "register_label",
 						type: ButtonType.Secondary,
-						click: () => m.route.set("/signup"),
+						click: () => {
+							/* Temporarely restricting to free only to get accepted by Google Play Store */
+							if (isFreeSignupOnly()) {
+								m.route.set("/signup", { subscription: "free", type: "freeonly" })
+							} else {
+								m.route.set("/signup")
+							}
+						},
 					})
 				: null,
 			this._switchThemeLinkVisible()
@@ -202,11 +215,11 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 						click: () => locator.themeController.setThemePreference("dark"),
 					},
 					{
-						label: client.isCalendarApp() ? "light_red_label" : "light_blue_label",
+						label: ClientDetector.get().isCalendarApp() ? "light_red_label" : "light_blue_label",
 						click: () => locator.themeController.setThemePreference("light_secondary"),
 					},
 					{
-						label: client.isCalendarApp() ? "dark_red_label" : "dark_blue_label",
+						label: ClientDetector.get().isCalendarApp() ? "dark_red_label" : "dark_blue_label",
 						click: () => locator.themeController.setThemePreference("dark_secondary"),
 					},
 				]
@@ -288,7 +301,7 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 				".small.center.statusTextColor",
 				{
 					...liveDataAttrs(),
-					class: styles.isSingleColumnLayout() ? "" : "pt-4",
+					class: Styles.get().isSingleColumnLayout() ? "" : "pt-4",
 				},
 				lang.getTranslationText(this.viewModel.helpText),
 			),
@@ -321,9 +334,9 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 
 	_renderAppButtons(): Children {
 		return m(".flex-center.pt-32.ml-between-4", [
-			client.isDesktopDevice() || client.device === DeviceType.ANDROID
+			ClientDetector.get().isDesktopDevice() || ClientDetector.get().device === DeviceType.ANDROID
 				? m(IconButton, {
-						title: "appInfoAndroidImageAlt_alt",
+						label: "appInfoAndroidImageAlt_alt",
 						click: (e) => {
 							this._openUrl("https://play.google.com/store/apps/details?id=de.tutao.tutanota")
 
@@ -332,9 +345,9 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 						icon: Icons.LogoAndroid,
 					})
 				: null,
-			client.isDesktopDevice() || client.device === DeviceType.IPAD || client.device === DeviceType.IPHONE
+			ClientDetector.get().isDesktopDevice() || ClientDetector.get().device === DeviceType.IPAD || ClientDetector.get().device === DeviceType.IPHONE
 				? m(IconButton, {
-						title: "appInfoIosImageAlt_alt",
+						label: "appInfoIosImageAlt_alt",
 						click: (e) => {
 							this._openUrl("https://itunes.apple.com/app/tutanota/id922429609?mt=8&uo=4&at=10lSfb")
 
@@ -343,9 +356,9 @@ export class LoginView extends BaseTopLevelView implements TopLevelView<LoginVie
 						icon: Icons.LogoApple,
 					})
 				: null,
-			client.isDesktopDevice() || client.device === DeviceType.ANDROID
+			ClientDetector.get().isDesktopDevice() || ClientDetector.get().device === DeviceType.ANDROID
 				? m(IconButton, {
-						title: "appInfoFDroidImageAlt_alt",
+						label: "appInfoFDroidImageAlt_alt",
 						click: (e) => {
 							this._openUrl("https://f-droid.org/packages/de.tutao.tutanota/")
 

@@ -13,10 +13,10 @@ import {
 	isEmpty,
 	isNotNull,
 	last,
-	lastThrow,
 	mapWithout,
 	memoizedWithHiddenArgument,
-} from "../../../../platform-kit/utils"
+	settledThen,
+} from "@tutao/utils"
 import { ListFetchResult } from "../../../../ui/base/ListUtils"
 import { ProcessInboxHandler } from "./ProcessInboxHandler"
 import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
@@ -31,6 +31,7 @@ import {
 	EntityIdEncoding,
 	getElementId,
 	isSameId,
+	isSameSingleId,
 	listIdPart,
 	OperationType,
 } from "../../../../platform-kit/meta"
@@ -47,10 +48,6 @@ export class ConversationListModel implements MailSetListModel {
 	// Map conversation IDs (to ensure unique conversations)
 	private readonly conversationMap: Map<Id, LoadedConversation> = new Map()
 
-	// The last fetched mail set entry id; the list model does not track mailSets but conversations, thus we can't rely
-	// on it to give us the oldest retrieved mail.
-	private lastFetchedMailSetEntryId: Id | null = null
-
 	// keep a map for going from Mail element id -> conversation Id
 	private mailToConversationMap: ReadonlyMap<Id, Id> = new Map()
 
@@ -63,6 +60,8 @@ export class ConversationListModel implements MailSetListModel {
 	// this is cleared upon changing the selection
 	private olderDisplayedSelectedMailOverride: Id | null = null
 
+	private listReloadPromise: Promise<unknown> = Promise.resolve()
+
 	constructor(
 		private readonly mailSet: MailSet,
 		private readonly conversationPrefProvider: ConversationPrefProvider,
@@ -73,9 +72,9 @@ export class ConversationListModel implements MailSetListModel {
 		private readonly connectivityModel: WebsocketConnectivityModel,
 	) {
 		this.listModel = new ListModel({
-			fetch: async (_, count) => {
-				const lastFetchedId = this.lastFetchedMailSetEntryId ?? CUSTOM_MAX_ID
-				return this.loadMails([mailSet.entries, lastFetchedId], count)
+			fetch: async (lastFetchedConversation, count) => {
+				const lastFetchedMailSetEntryId: IdTuple = lastFetchedConversation?.getOldestMail()?.mailSetEntryId ?? [mailSet.entries, CUSTOM_MAX_ID]
+				return this.loadMails(lastFetchedMailSetEntryId, count)
 			},
 
 			sortCompare: (item1, item2) => this.reverseSortConversation(item1, item2),
@@ -124,20 +123,20 @@ export class ConversationListModel implements MailSetListModel {
 	async handleEntityUpdate(update: EntityUpdateData) {
 		if (isUpdateForTypeRef(MailSetTypeRef, update)) {
 			if (update.operation === OperationType.UPDATE) {
-				this.handleMailFolderUpdate([update.instanceListId, update.instanceId])
+				this.handleMailFolderUpdate([assertNotNull(update.instanceListId), update.instanceId])
 			}
-		} else if (isUpdateForTypeRef(MailSetEntryTypeRef, update) && isSameId(this.mailSet.entries, update.instanceListId)) {
+		} else if (isUpdateForTypeRef(MailSetEntryTypeRef, update) && isSameSingleId(this.mailSet.entries, update.instanceListId)) {
 			if (update.operation === OperationType.DELETE) {
 				await this.handleMailSetEntryDeletion(update)
 			} else if (update.operation === OperationType.CREATE) {
-				await this.handleMailSetEntryCreation([update.instanceListId, update.instanceId])
+				await this.handleMailSetEntryCreation([assertNotNull(update.instanceListId), update.instanceId])
 			}
 		} else if (isUpdateForTypeRef(MailTypeRef, update)) {
 			// We only need to handle updates for Mail.
 			// Mail deletion will also be handled in MailSetEntry delete/create.
 			const mailItem = this._getLoadedMail(update.instanceId)
 			if (mailItem != null && (update.operation === OperationType.UPDATE || update.operation === OperationType.CREATE)) {
-				await this.handleMailUpdate([update.instanceListId, update.instanceId], mailItem)
+				await this.handleMailUpdate([assertNotNull(update.instanceListId), update.instanceId], mailItem)
 			}
 		}
 	}
@@ -318,7 +317,7 @@ export class ConversationListModel implements MailSetListModel {
 
 			// The mail is not the latest in the conversation. This is a problem. To fix this, we use this fun override
 			// variable so that the conversation can be selected, but then the mail we wanted is actually displayed.
-			if (!isSameId(conversation.getMainMailId(), selectedMailId)) {
+			if (!isSameSingleId(conversation.getMainMailId(), selectedMailId)) {
 				this.olderDisplayedSelectedMailOverride = selectedMailId
 			}
 
@@ -360,10 +359,16 @@ export class ConversationListModel implements MailSetListModel {
 	}
 
 	async reload() {
-		this.conversationMap.clear()
-		this.mailToConversationMap = new Map()
-		this.lastFetchedMailSetEntryId = null
-		await this.listModel.reload()
+		// chain reloads to prevent race conditions, as list might get reloaded before an ongoing reload is settled
+		this.listReloadPromise = settledThen(this.listReloadPromise, async () => {
+			// await any pending loading before clearing mail and conversation maps, as they are used when fetching entities
+			await this.listModel.waitLoad()
+			this.conversationMap.clear()
+			this.mailToConversationMap = new Map()
+			await this.listModel.reload()
+		})
+
+		await this.listReloadPromise
 	}
 
 	selectAll(): void {
@@ -496,7 +501,6 @@ export class ConversationListModel implements MailSetListModel {
 			// Check for completeness before loading/filtering mails, as we may end up with even less mails than retrieved in either case
 			complete = mailSetEntries.length < count
 			if (mailSetEntries.length > 0) {
-				this.lastFetchedMailSetEntryId = getElementId(lastThrow(mailSetEntries))
 				items = await this.resolveMailSetEntries(mailSetEntries, this.defaultMailProvider)
 				items = await this.applyInboxRulesAndSpamPrediction(items)
 			}
@@ -510,9 +514,6 @@ export class ConversationListModel implements MailSetListModel {
 					items = await this.loadMailsFromCache(startingId, count)
 					if (items.length === 0) {
 						throw e // we couldn't get anything from the cache!
-					} else {
-						// set the last
-						this.lastFetchedMailSetEntryId = elementIdPart(lastThrow(items).mailSetEntryId)
 					}
 				}
 			} else {
@@ -528,7 +529,14 @@ export class ConversationListModel implements MailSetListModel {
 	}
 
 	private async applyInboxRulesAndSpamPrediction(entries: LoadedMail[]): Promise<LoadedMail[]> {
-		return applyInboxRulesAndSpamPrediction(entries, this.mailSet, this.mailModel, this.processInboxHandler, this.connectivityModel.isLeader())
+		return applyInboxRulesAndSpamPrediction(
+			entries,
+			this.mailSet,
+			this.mailModel,
+			this.processInboxHandler,
+			this.entityClient,
+			this.connectivityModel.isLeader(),
+		)
 	}
 
 	// @VisibleForTesting
@@ -695,6 +703,7 @@ function reverseCompareMailSetEntryId(id1: Id, id2: Id): number {
  * @VisibleForTesting
  */
 export class LoadedConversation {
+	/** conversationMails are sorted from new to old, and should not be mutated directly (use {@link insertOrUpdateMail} and {@link deleteMail} instead) */
 	readonly conversationMails: LoadedMail[] = []
 
 	// the mainMail is the mail this is shown in preview in the list, and is the mail shown when the list entry is clicked
@@ -779,6 +788,13 @@ export class LoadedConversation {
 	 */
 	getMainMail(): LoadedMail | null {
 		return this.mainMail
+	}
+
+	/**
+	 * Get the oldest mail of the conversation
+	 */
+	getOldestMail(): LoadedMail | null {
+		return last(this.conversationMails) ?? null
 	}
 
 	/**

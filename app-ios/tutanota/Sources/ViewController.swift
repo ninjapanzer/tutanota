@@ -9,7 +9,7 @@ public let OPEN_CONTACT_EDITOR_CONTACT_ID = "contactId"
 public let OPEN_SETTINGS = "settings"
 
 /// Main screen of the app.
-class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIScrollViewDelegate, MainPageLoader {
+class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UIScrollViewDelegate, MainPageLoader, ThemeApplier {
 	private let themeManager: ThemeManager
 	private let alarmManager: AlarmManager
 	private let notificationsHandler: NotificationsHandler
@@ -32,7 +32,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 		blobUtils: BlobUtil,
 		contactsSynchronization: IosMobileContactsFacade,
 		userPreferencesProvider: any UserPreferencesProvider,
-		urlSession: URLSession
+		urlSession: URLSession,
+		tempFs: TempFs,
 	) {
 
 		self.themeManager = themeManager
@@ -76,11 +77,17 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 				viewer: FileViewer(viewController: self),
 				schemeHandler: apiSchemeHandler,
 				urlSession: urlSession,
+				tempFs: tempFs,
 				downloadProgress: { [weak self] fileId, bytes in Task { try await self?.commonNativeFacade.downloadProgress(fileId, bytes) } },
 				uploadProgress: { [weak self] fileId, bytes in Task { try await self?.commonNativeFacade.uploadProgress(fileId, bytes) } }
 			),
 			mobileContactsFacade: IosMobileContactsFacade(userDefaults: userPreferencesProvider),
-			mobilePaymentsFacade: IosMobilePaymentsFacade(),
+			mobilePaymentsFacade: IosMobilePaymentsFacade(
+				mobilePaymentDomain: "de.tutao.tutanota.MobilePayment",
+				productIdToPlanName: productIdToPlanName,
+				formatPlanType: formatPlanType,
+				windowScene: self.windowScene
+			),
 			mobileSystemFacade: IosMobileSystemFacade(viewController: self, userPreferencesProvider: userPreferencesProvider, appLockHandler: AppLockHandler()),
 			nativeCredentialsFacade: credentialsEncryption,
 			nativeCryptoFacade: crypto,
@@ -92,8 +99,8 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 				invalidateAlarms: { [weak self] in try await self?.commonNativeFacade.invalidateAlarms() }
 			),
 			sqlCipherFacade: sqlCipherFacade,
-			themeFacade: IosThemeFacade(themeManager: themeManager, viewController: self),
-			webAuthnFacade: IosWebauthnFacade(viewController: self)
+			themeFacade: IosThemeFacade(themeManager: themeManager, themeApplier: self),
+			webAuthnFacade: IosWebauthnFacade(presentationContextProvider: self, callbackURLScheme: "tutanota")
 		)
 		self.bridge = RemoteBridge(webView: self.webView, commonSystemFacade: commonSystemFacade, globalDispatcher: globalDispatcher)
 		self.commonNativeFacade = CommonNativeFacadeSendDispatcher(transport: self.bridge)
@@ -319,6 +326,10 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 	}
 
 	override var preferredStatusBarStyle: UIStatusBarStyle { if self.isDarkTheme { return .lightContent } else { return .darkContent } }
+	@MainActor func windowScene() -> UIWindowScene {
+		let window = UIApplication.shared.connectedScenes.first
+		return window as! UIWindowScene
+	}
 }
 
 extension ViewController: ASWebAuthenticationPresentationContextProviding {

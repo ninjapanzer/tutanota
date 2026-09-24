@@ -215,6 +215,11 @@ function deepEqual(a: any, b: any): boolean {
 			return true
 		}
 
+		// See: DeepEquals interface
+		if (typeof a.deepEquals === "function" && typeof b.deepEquals === "function") {
+			return a.deepEquals(b)
+		}
+
 		if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
 
 		if (a instanceof Uint8Array && b instanceof Uint8Array) {

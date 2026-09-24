@@ -1,22 +1,23 @@
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { BulkMailLoader, MailWithMailDetails } from "../../../../../mail-app/workerUtils/index/BulkMailLoader.js"
 import { BlobFacade } from "./BlobFacade.js"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { MailExportTokenFacade } from "./MailExportTokenFacade.js"
 import { assertNotNull, isNotNull } from "@tutao/utils"
-import * as restError from "@tutao/rest-client/error"
-import { BlobAccessTokenFacade } from "../../../../../../platform-kit/network/BlobAccessTokenFacade"
+import { NotFoundError } from "@tutao/rest-client/error"
+import { BlobAccessTokenFacade, DEFAULT_BLOB_LOAD_OPTIONS } from "../../../../../../platform-kit/network/BlobAccessTokenFacade"
 import { SuspensionBehavior } from "../../../../../../platform-kit/rest-client/types"
 import { Group } from "@tutao/entities/sys"
 import { ArchiveDataType } from "../../../../../../entities/sys/Utils"
 import { File, Mail } from "@tutao/entities/tutanota"
 import { BlobServerUrl } from "@tutao/entities/storage"
-import { elementIdPart } from "@tutao/meta"
+import { elementIdPart, elementIdToId } from "@tutao/meta"
 import { convertToDataFile } from "../../utils/DataFile"
 import { DataFile } from "../../../../../../entities/tutanota/MailBundle"
 import { createReferencingInstance } from "../../../../../../entities/storage/BlobUtils"
+import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /**
  * Denotes the header that will have the mail export token.
@@ -41,22 +42,30 @@ export class MailExportFacade {
 	 * Returns a list of servers that can be used to request data from.
 	 */
 	async getExportServers(group: Group): Promise<BlobServerUrl[]> {
-		const blobServerAccessInfo = await this.blobAccessTokenFacade.requestWriteToken(ArchiveDataType.Attachments, group._id)
+		const blobServerAccessInfo = await this.blobAccessTokenFacade.requestWriteToken(ArchiveDataType.Attachments, elementIdToId(group._id))
 		return blobServerAccessInfo.servers
 	}
 
 	async loadFixedNumberOfMailsWithCache(mailListId: Id, startId: Id, baseUrl: string): Promise<Mail[]> {
 		return this.mailExportTokenFacade.loadWithToken((token) =>
-			this.bulkMailLoader.loadFixedNumberOfMailsWithCache(mailListId, startId, { baseUrl, ...this.options(token) }),
+			this.bulkMailLoader.loadFixedNumberOfMailsWithCache(mailListId, startId, {
+				...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+				baseUrl,
+				...this.options(token),
+			}),
 		)
 	}
 
 	async loadMailDetails(mails: readonly Mail[], baseUrl: string): Promise<MailWithMailDetails[]> {
-		return this.mailExportTokenFacade.loadWithToken((token) => this.bulkMailLoader.loadMailDetails(mails, { baseUrl, ...this.options(token) }))
+		return this.mailExportTokenFacade.loadWithToken((token) =>
+			this.bulkMailLoader.loadMailDetails(mails, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, baseUrl, ...this.options(token) }),
+		)
 	}
 
 	async loadAttachments(mails: readonly Mail[], baseUrl: string): Promise<File[]> {
-		return this.mailExportTokenFacade.loadWithToken((token) => this.bulkMailLoader.loadAttachments(mails, { baseUrl, ...this.options(token) }))
+		return this.mailExportTokenFacade.loadWithToken((token) =>
+			this.bulkMailLoader.loadAttachments(mails, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, baseUrl, ...this.options(token) }),
+		)
 	}
 
 	async loadAttachmentData(mail: Mail, attachments: readonly File[]): Promise<DataFile[]> {
@@ -65,6 +74,7 @@ export class MailExportFacade {
 		const downloads = await this.mailExportTokenFacade.loadWithToken((token) => {
 			const referencingInstances = attachmentsWithKeys.map(createReferencingInstance)
 			return this.blobFacade.downloadAndDecryptBlobsOfMultipleInstances(ArchiveDataType.Attachments, referencingInstances, {
+				...DEFAULT_BLOB_LOAD_OPTIONS,
 				...this.options(token),
 			})
 		})
@@ -78,7 +88,7 @@ export class MailExportFacade {
 					return convertToDataFile(attachment, bytes)
 				}
 			} catch (e) {
-				if (e instanceof restError.NotFoundError) {
+				if (e instanceof NotFoundError) {
 					return null
 				} else {
 					throw e

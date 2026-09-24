@@ -13,7 +13,7 @@ import {
 	getContactSocialTypeLabel,
 } from "./ContactGuiUtils"
 import { formatContactDate, getContactTitle, getMessengerHandleUrl, getSocialUrl, getWebsiteUrl } from "../../../common/contactsFunctionality/ContactUtils.js"
-import { assertMainOrNode } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { ButtonSize } from "../../../../ui/base/ButtonSize.js"
 import { attachDropdown } from "../../../../ui/base/Dropdown.js"
@@ -25,7 +25,7 @@ import { Contact, ContactAddress, ContactMessengerHandle, ContactPhoneNumber, Co
 import { ContactAddressType, ContactPhoneNumberType, PartialRecipient } from "../../../../entities/tutanota/Utils"
 import { getContactSocialType, getCustomDateType, getRelationshipType } from "../ContactUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface ContactViewerAttrs {
 	contact: Contact
@@ -110,7 +110,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 		}
 
 		return m(IconButton, {
-			title: "edit_action",
+			label: "edit_action",
 			icon: Icons.PenFilled,
 			click: () => assertNotNull(attrs.editAction, "Invalid Edit action in Contact Viewer")(contact),
 		})
@@ -122,7 +122,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 		}
 
 		return m(IconButton, {
-			title: "delete_action",
+			label: "delete_action",
 			icon: Icons.TrashFilled,
 			click: () => assertNotNull(attrs.deleteAction, "Invalid Delete action in Contact Viewer")([contact]),
 		})
@@ -161,10 +161,10 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 				IconButton,
 				attachDropdown({
 					mainButtonAttrs: {
-						title: "more_label",
+						label: "more_label",
 						icon: Icons.More,
 					},
-					childAttrs: () => actions,
+					childAttrs: async () => actions,
 				}),
 			),
 		)
@@ -300,7 +300,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 
 	private renderSocialId(contactSocialId: ContactSocialId): Children {
 		const showButton = m(IconButton, {
-			title: "showURL_alt",
+			label: "showURL_alt",
 			click: noOp,
 			icon: Icons.ChevronRight,
 			size: ButtonSize.Compact,
@@ -316,7 +316,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 
 	private renderWebsite(website: ContactWebsite): Children {
 		const showButton = m(IconButton, {
-			title: "showURL_alt",
+			label: "showURL_alt",
 			click: noOp,
 			icon: Icons.ChevronRight,
 			size: ButtonSize.Compact,
@@ -331,7 +331,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 
 	private renderMessengerHandle(messengerHandle: ContactMessengerHandle): Children {
 		const showButton = m(IconButton, {
-			title: "showURL_alt",
+			label: "showURL_alt",
 			click: noOp,
 			icon: Icons.ChevronRight,
 			size: ButtonSize.Compact,
@@ -347,7 +347,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 
 	private renderMailAddress(contact: Contact, address: ContactAddress, onWriteMail: ContactViewerAttrs["onWriteMail"]): Children {
 		const newMailButton = m(IconButton, {
-			title: "sendMail_alt",
+			label: "sendMail_alt",
 			click: () =>
 				onWriteMail({
 					name: `${contact.firstName} ${contact.lastName}`.trim(),
@@ -367,7 +367,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 
 	private renderPhoneNumber(phone: ContactPhoneNumber): Children {
 		const callButton = m(IconButton, {
-			title: "callNumber_alt",
+			label: "callNumber_alt",
 			click: () => null,
 			icon: Icons.PhoneFilled,
 			size: ButtonSize.Compact,
@@ -390,7 +390,7 @@ export class ContactViewer implements ClassComponent<ContactViewerAttrs> {
 		}
 
 		const showButton = m(IconButton, {
-			title: "showAddress_alt",
+			label: "showAddress_alt",
 			click: () => null,
 			icon: Icons.PlaceFilled,
 			size: ButtonSize.Compact,

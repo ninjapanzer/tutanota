@@ -9,6 +9,7 @@ import { InfoMessageHandler } from "../../../common/gui/InfoMessageHandler"
 import { ContactIndexer } from "./ContactIndexer"
 import { GroupType } from "../../../../entities/sys/Utils"
 import { EntityUpdateData } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { GENERATED_MAX_ID } from "@tutao/meta"
 
 export class OfflineStorageIndexer implements Indexer {
 	constructor(
@@ -22,17 +23,6 @@ export class OfflineStorageIndexer implements Indexer {
 	async partialLoginInit() {
 		const user = assertNotNull(this.userFacade.getUser())
 		await this.mailIndexer.init(user)
-		await this.mailIndexer.enableMailIndexing()
-
-		await this.infoMessageHandler.onSearchIndexStateUpdate({
-			initializing: false,
-			mailIndexEnabled: this.mailIndexer.mailIndexingEnabled,
-			progress: 0,
-			currentMailIndexTimestamp: this.mailIndexer.currentIndexTimestamp,
-			aimedMailIndexTimestamp: this.mailIndexer.currentIndexTimestamp,
-			indexedMailCount: 0,
-			failedIndexingUpTo: null,
-		})
 	}
 
 	async fullLoginInit(): Promise<void> {
@@ -48,7 +38,7 @@ export class OfflineStorageIndexer implements Indexer {
 		for (const addedGroup of addedGroups) {
 			const membership = this.userFacade.getMembership(addedGroup)
 			const groupType = assertNotNull(membership.groupType) as GroupType
-			await this.persistence.addIndexedGroup(addedGroup, groupType, NOTHING_INDEXED_TIMESTAMP)
+			await this.persistence.addIndexedGroup(addedGroup, groupType, NOTHING_INDEXED_TIMESTAMP, [GENERATED_MAX_ID, GENERATED_MAX_ID])
 		}
 
 		await this.contactIndexer.indexFullContactList()
@@ -62,20 +52,15 @@ export class OfflineStorageIndexer implements Indexer {
 		throw new ProgrammingError("Operation not supported for sqlite search index")
 	}
 
-	async processEntityEvents(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id) {
-		await this.mailIndexer.processEntityEvents(updates, groupId, batchId)
-		await this.contactIndexer.processEntityEvents(updates, groupId, batchId)
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id) {
+		await this.mailIndexer.onEntityUpdatesReceived(updates, groupId, batchId)
 	}
 
-	async extendMailIndex(time: number) {
-		await this.mailIndexer.indexMailboxes(assertNotNull(this.userFacade.getUser(), "extendMailIndex user"), time)
+	async extendMailIndex(aimedTimestamp: number) {
+		await this.mailIndexer.extendMailIndex(assertNotNull(this.userFacade.getUser()), aimedTimestamp)
 	}
 
-	async resizeMailIndex(time: number): Promise<void> {
-		await this.mailIndexer.resizeMailIndex(assertNotNull(this.userFacade.getUser(), "resizeMailIndex user"), time)
-	}
-
-	async deleteIndex(userId: string) {
+	async deleteIndex() {
 		/* no-op */
 	}
 

@@ -9,6 +9,7 @@ Puteți adăuga un mesaj pentru a ne ajuta să remediem eroarea.</string>
     <string name="unlockCredentials_action">Deblochează datele de autentificare</string>
     <string name="delete_action">Șterge</string>
     <string name="markRead_action">Marchează ca citit.</string>
+    <string name="archive_action">Arhivă</string>
     <string name="sendLogs_action">Trimite jurnale</string>
     <string name="account_label">Utilizator</string>
     <string name="calendars_label">Calendare</string>
@@ -17,6 +18,7 @@ Puteți adăuga un mesaj pentru a ne ajuta să remediem eroarea.</string>
     <string name="widgetCredentialsError_msg">Autentifică-te în aplicația Calendar</string>
     <string name="widgetOpenApp_action">Deschide aplicația</string>
     <string name="widgetNoEvents_msg">Niciun eveniment</string>
+    <string name="widgetNoEventsToday_msg">Astăzi nu sunt evenimente</string>
     <string name="widgetDescription_msg">Arată următoarele evenimente de azi</string>
     <string name="birthdayCalendar_label">Aniversări</string>
     <string name="birthdayEvent_title">Aniversarea lui {name}</string>

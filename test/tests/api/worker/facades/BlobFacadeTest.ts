@@ -1,60 +1,65 @@
 import o, { assertThrows } from "@tutao/otest"
 import {
-	BLOB_SERVICE_REST_PATH,
 	BlobFacade,
+	FileData,
+	KeyedNewBlobWrapper,
+	MAX_NUMBER_OF_BLOBS_IN_BINARY,
 	parseMultipleBlobsResponse,
 	pipelineEncryptAndUpload,
+	serializeNewBlobsInBinaryChunks,
 } from "../../../../../src/applications/common/api/worker/facades/lazy/BlobFacade.js"
 import { MAX_BLOB_SIZE_BYTES, RestClient, restSuspension } from "../../../../../src/platform-kit/rest-client"
-import { HttpMethod, RestClientOptions } from "../../../../../src/platform-kit/rest-client/types"
+import { HttpMethod, MediaType, RestBinaryBody, RestClientOptions, RestTextBody } from "../../../../../src/platform-kit/rest-client/types"
 import { NativeFileApp } from "../../../../../src/app-kit/native-bridge/common/FileApp.js"
 import { AesApp } from "../../../../../src/app-kit/native-bridge/worker/AesApp.js"
 import { Mode, ProgrammingError } from "../../../../../src/platform-kit/app-env"
-import { elementIdPart, getElementId, listIdPart } from "../../../../../src/platform-kit/meta"
+import { ClientTypeModel, elementIdPart, getElementId, listIdPart, ServerTypeModel } from "../../../../../src/platform-kit/meta"
 import { func, instance, matchers, object, verify, when } from "testdouble"
-import { aes256RandomKey, aesDecrypt, aesEncrypt } from "../../../../../src/platform-kit/crypto"
 import {
 	arrayEquals,
 	base64ExtToBase64,
 	base64ToUint8Array,
 	concat,
 	defer,
-	DeferredObject,
 	neverNull,
+	promiseMap,
 	stringToUtf8Uint8Array,
 } from "../../../../../src/platform-kit/utils"
-import { CryptoFacade } from "../../../../../src/platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/CryptoFacade.js"
 import { BlobAccessTokenFacade } from "../../../../../src/platform-kit/network/BlobAccessTokenFacade.js"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver, withOverriddenEnv } from "../../../TestUtils.js"
-import { InstancePipeline } from "../../../../../src/platform-kit/instance-pipeline"
 import { TransferId } from "../../../../../src/entities/drive/Utils"
 import {
-	BlobGetIn,
 	BlobGetInTypeRef,
+	BlobIdTypeRef,
+	BlobPostOut,
 	BlobPostOutTypeRef,
 	BlobServerAccessInfoTypeRef,
 	BlobServerUrlTypeRef,
+	BlobService_GET,
 	createBlobPostOut,
+	createBlobServerUrl,
 	storageTypeModels,
 } from "@tutao/entities/storage"
-
 import { BlobReferenceTokenWrapper, BlobReferenceTokenWrapperTypeRef, BlobTypeRef, createBlobReferenceTokenWrapper } from "@tutao/entities/sys"
 import { ArchiveDataType } from "../../../../../src/entities/sys/Utils"
-
-import { File, FileTypeRef } from "@tutao/entities/tutanota"
+import { File, FileTypeRef, MailDetailsBlobTypeRef } from "@tutao/entities/tutanota"
 import { FileReference } from "../../../../../src/entities/tutanota/Utils"
 import { BlobReferencingInstance } from "../../../../../src/entities/storage/BlobUtils"
+import { aesDecrypt, aesEncrypt } from "../../../../../src/platform-kit/crypto"
+import { IncomingServerJson, OutgoingServerJson } from "../../../../../src/platform-kit/instance-pipeline/TypeMapper"
+import { aes256RandomKey } from "@tutao/crypto/symmetric-cipher-utils"
+import { InstancePipeline, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
 
 const { anything, captor } = matchers
 
-o.spec("BlobFacade", function () {
+o.spec("BlobFacadeTest", function () {
 	let blobFacade: BlobFacade
 	let blobAccessTokenFacade: BlobAccessTokenFacade
 	let restClientMock: RestClient
 	let suspensionHandlerMock: restSuspension.SuspensionHandler
 	let fileAppMock: NativeFileApp
 	let aesAppMock: AesApp
-	let instancePipelineMock: InstancePipeline
 	const archiveId = "archiveId1"
 	const archive2Id = "archiveId2"
 	const blobId1 = "blobId1"
@@ -67,16 +72,18 @@ o.spec("BlobFacade", function () {
 	let cryptoFacadeMock: CryptoFacade
 	let file: File
 	let anotherFile: File
-	let previousNetworkDebugging
+	let typeModelResolver: TypeModelResolver
+	let realInstancePipeline: InstancePipeline
 
 	o.beforeEach(function () {
 		restClientMock = instance(RestClient)
 		suspensionHandlerMock = instance(restSuspension.SuspensionHandler)
 		fileAppMock = instance(NativeFileApp)
 		aesAppMock = instance(AesApp)
-		instancePipelineMock = instance(InstancePipeline)
 		cryptoFacadeMock = object<CryptoFacade>()
 		blobAccessTokenFacade = instance(BlobAccessTokenFacade)
+		typeModelResolver = clientInitializedTypeModelResolver()
+		realInstancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
 
 		const mimeType = "text/plain"
 		const name = "fileName"
@@ -88,24 +95,18 @@ o.spec("BlobFacade", function () {
 			suspensionHandlerMock,
 			fileAppMock,
 			aesAppMock,
-			instancePipelineMock,
+			realInstancePipeline,
 			cryptoFacadeMock,
 			blobAccessTokenFacade,
 			object(),
+			typeModelResolver,
 		)
-		previousNetworkDebugging = env.networkDebugging
-	})
-
-	o.afterEach(function () {
-		env.networkDebugging = previousNetworkDebugging
 	})
 
 	o.spec("upload", function () {
 		o("parseBlobPostOutResponse should remove network debugging info", async function () {
 			env.networkDebugging = true
 
-			const typeModelResolver = clientInitializedTypeModelResolver()
-			const realInstancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
 			const newBlobFacade = new BlobFacade(
 				restClientMock,
 				suspensionHandlerMock,
@@ -115,6 +116,7 @@ o.spec("BlobFacade", function () {
 				cryptoFacadeMock,
 				blobAccessTokenFacade,
 				object(),
+				typeModelResolver,
 			)
 
 			const expectedReferenceToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "blobRefToken" })
@@ -124,7 +126,7 @@ o.spec("BlobFacade", function () {
 			})
 			const blobServiceResponseWithDebug = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, blobServiceResponse, null)
 
-			const referenceTokens = await newBlobFacade.parseBlobPostOutResponse(JSON.stringify(blobServiceResponseWithDebug))
+			const referenceTokens = await newBlobFacade.parseBlobPostOutResponse(blobServiceResponseWithDebug.getJsonRepresentation())
 			o(referenceTokens).deepEquals(expectedReferenceToken)
 		})
 
@@ -144,18 +146,175 @@ o.spec("BlobFacade", function () {
 			const blobServiceResponse = createTestEntity(BlobPostOutTypeRef, {
 				blobReferenceToken: expectedReferenceTokens[0].blobReferenceToken,
 			})
-			when(instancePipelineMock.decryptAndMap(anything(), anything(), anything())).thenResolve(blobServiceResponse)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.POST, anything())).thenResolve(JSON.stringify(blobServiceResponse))
+			const blobServiceServerResponse = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, blobServiceResponse, sessionKey)
+
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything())).thenResolve(
+				blobServiceServerResponse.getJsonRepresentation(),
+			)
 
 			const referenceTokens = await blobFacade.encryptAndUpload(archiveDataType, blobData, ownerGroup, sessionKey, transferId)
 			o(referenceTokens).deepEquals(expectedReferenceTokens)
 
 			const optionsCaptor = captor()
-			verify(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.POST, optionsCaptor.capture()))
-			const encryptedData = optionsCaptor.value.body
+			verify(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, optionsCaptor.capture()))
+			const encryptedData = (optionsCaptor.value.body as RestBinaryBody).payload
 			const decryptedData = aesDecrypt(sessionKey, encryptedData)
 			o(arrayEquals(decryptedData, blobData)).equals(true)
 			o(optionsCaptor.value.baseUrl).equals("w1")
+		})
+
+		o.spec("encryptAndUploadMultiple tests", function () {
+			o("encryptAndUploadMultiple - multiple small attachments in single request", async function () {
+				const ownerGroup = "ownerGroupId"
+				const transferId = "t1" as TransferId
+
+				const fileData: FileData[] = [
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2048) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2048) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2048) },
+				]
+
+				const expectedTokens = [
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "first_attachment_token" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "second_attachment_token" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "third_attachment_token" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "fourth_attachment_token" }),
+				]
+
+				const blobAccessInfo = createTestEntity(BlobServerAccessInfoTypeRef, {
+					blobAccessToken: "123",
+					servers: [createTestEntity(BlobServerUrlTypeRef, { url: "w1.api.tuta.com" })],
+				})
+
+				when(blobAccessTokenFacade.requestWriteToken(anything(), anything())).thenResolve(blobAccessInfo)
+
+				let expectedBlobPostOutEntity = createTestEntity(BlobPostOutTypeRef, {
+					blobReferenceTokens: expectedTokens,
+				})
+				const expectedBlobPostOut = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, expectedBlobPostOutEntity, aes256RandomKey())
+				when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything())).thenResolve(
+					expectedBlobPostOut.getJsonRepresentation(),
+				)
+
+				const tokensArray = expectedTokens.map((t) => Array.of(t.blobReferenceToken))
+				const result = await blobFacade.encryptAndUploadMultiple(archiveDataType, ownerGroup, fileData, transferId)
+				o(result.map((r) => r.map((i) => i.blobReferenceToken))).deepEquals(tokensArray)
+				verify(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything()), { times: 1 })
+				verify(blobAccessTokenFacade.requestWriteToken(anything(), anything()), { times: 1 })
+			})
+
+			o("encryptAndUploadMultiple - multiple attachments including one large", async function () {
+				const ownerGroup = "ownerGroupId"
+				const transferId = "t2" as TransferId
+
+				const fileData: FileData[] = [
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(12 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(1024 * 1024) },
+				]
+
+				const firstPartToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "first_attachment_token1" })
+				const secondPartToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "first_attachment_token2" })
+				const secondAttachmentToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "second_attachment_token" })
+				const thirdAttachmentToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "third_attachment_token" })
+				const fourthAttachmentToken = createBlobReferenceTokenWrapper({ blobReferenceToken: "fourth_attachment_token" })
+
+				const firstExpectedBlobPostOut = createTestEntity(BlobPostOutTypeRef, {
+					blobReferenceTokens: [firstPartToken],
+				})
+				const secondExpectedBlobPostOut = createTestEntity(BlobPostOutTypeRef, {
+					blobReferenceTokens: [secondPartToken, secondAttachmentToken, thirdAttachmentToken, fourthAttachmentToken],
+				})
+				const firstServerResponse = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, firstExpectedBlobPostOut, aes256RandomKey())
+				const secondServerResponse = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, secondExpectedBlobPostOut, aes256RandomKey())
+
+				const blobAccessInfo = createTestEntity(BlobServerAccessInfoTypeRef, {
+					blobAccessToken: "123",
+					servers: [createTestEntity(BlobServerUrlTypeRef, { url: "w1.api.tuta.com" })],
+				})
+
+				when(blobAccessTokenFacade.requestWriteToken(anything(), anything())).thenResolve(blobAccessInfo)
+
+				let restClientCall = 0
+				when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything())).thenDo(() => {
+					restClientCall++
+					if (restClientCall === 1) {
+						return Promise.resolve(firstServerResponse.getJsonRepresentation())
+					} else if (restClientCall === 2) {
+						return Promise.resolve(secondServerResponse.getJsonRepresentation())
+					}
+				})
+
+				const firstAttachmentTokens = [firstPartToken, secondPartToken].map((t) => t.blobReferenceToken)
+				const restTokens = [secondAttachmentToken, thirdAttachmentToken, fourthAttachmentToken].map((t) => Array.of(t.blobReferenceToken))
+
+				const result = await blobFacade.encryptAndUploadMultiple(archiveDataType, ownerGroup, fileData, transferId)
+				o(result.map((r) => r.map((i) => i.blobReferenceToken))).deepEquals([firstAttachmentTokens, ...restTokens])
+				verify(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything()), { times: 2 })
+			})
+
+			o("encryptAndUploadMultiple - worst case", async function () {
+				const ownerGroup = "ownerGroupId"
+				const transferId = "t3" as TransferId
+
+				const fileData: FileData[] = [
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(14 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(9 * 1024 * 1024) },
+					{ sessionKey: aes256RandomKey(), data: new Uint8Array(2 * 1024 * 1024) },
+				]
+
+				const blobRefTokenWrappers = [
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "first_attachment_token1" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "first_attachment_token2" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "second_attachment_token" }),
+					createBlobReferenceTokenWrapper({ blobReferenceToken: "third_attachment_token" }),
+				]
+
+				let postOuts: Array<BlobPostOut> = []
+				for (const t of blobRefTokenWrappers) {
+					postOuts.push(
+						createTestEntity(BlobPostOutTypeRef, {
+							blobReferenceTokens: [t],
+						}),
+					)
+				}
+
+				const serverRespones: OutgoingServerJson[] = await promiseMap(postOuts, (p) =>
+					realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, p, aes256RandomKey()),
+				)
+
+				const blobAccessInfo = createTestEntity(BlobServerAccessInfoTypeRef, {
+					blobAccessToken: "123",
+					servers: [createTestEntity(BlobServerUrlTypeRef, { url: "w1.api.tuta.com" })],
+				})
+
+				when(blobAccessTokenFacade.requestWriteToken(anything(), anything())).thenResolve(blobAccessInfo)
+
+				let restClientCall = 0
+				when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything())).thenDo(() => {
+					restClientCall++
+					switch (restClientCall) {
+						case 1:
+							return Promise.resolve(serverRespones[0].getJsonRepresentation())
+						case 2:
+							return Promise.resolve(serverRespones[1].getJsonRepresentation())
+						case 3:
+							return Promise.resolve(serverRespones[2].getJsonRepresentation())
+						case 4:
+							return Promise.resolve(serverRespones[3].getJsonRepresentation())
+					}
+				})
+				const result = await blobFacade.encryptAndUploadMultiple(archiveDataType, ownerGroup, fileData, transferId)
+
+				const firstAttachmentTokens = blobRefTokenWrappers.slice(0, 2).map((t) => t.blobReferenceToken)
+				const secondAttachmentToken = blobRefTokenWrappers[2].blobReferenceToken
+				const thirdAttachmentToken = blobRefTokenWrappers[3].blobReferenceToken
+
+				o(result.map((r) => r.map((i) => i.blobReferenceToken))).deepEquals([firstAttachmentTokens, [secondAttachmentToken], [thirdAttachmentToken]])
+				verify(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.POST, anything()), { times: 4 })
+			})
 		})
 
 		o("encryptAndUploadNative", async function () {
@@ -166,30 +325,34 @@ o.spec("BlobFacade", function () {
 
 			const expectedReferenceTokens = [createBlobReferenceTokenWrapper({ blobReferenceToken: "blobRefToken" })]
 			const uploadedFileUri = "rawFileUri"
-			const chunkUris = ["uri1"]
+			const chunkUri = "tuta-tmp:chunky"
 
 			let blobAccessInfo = createTestEntity(BlobServerAccessInfoTypeRef, {
 				blobAccessToken: "123",
 				servers: [createTestEntity(BlobServerUrlTypeRef, { url: "http://w1.api.tuta.com" })],
 			})
 			when(blobAccessTokenFacade.requestWriteToken(anything(), anything())).thenResolve(blobAccessInfo)
+
 			let blobServiceResponse = createTestEntity(BlobPostOutTypeRef, {
 				blobReferenceToken: expectedReferenceTokens[0].blobReferenceToken,
 			})
+
+			const blobServiceServerResponse = await realInstancePipeline.mapAndEncrypt(BlobPostOutTypeRef, blobServiceResponse, sessionKey)
 			when(blobAccessTokenFacade.createQueryParams(blobAccessInfo, anything(), anything())).thenResolve({ test: "theseAreTheParamsIPromise" })
 
-			when(instancePipelineMock.decryptAndMap(anything(), anything(), anything())).thenResolve(blobServiceResponse)
-			when(fileAppMock.splitFile(uploadedFileUri, MAX_BLOB_SIZE_BYTES)).thenResolve(chunkUris)
+			const streamUri = "tuta-stream:whatever"
+			when(fileAppMock.openFileForReading(uploadedFileUri)).thenResolve(streamUri)
+			when(fileAppMock.readChunk(streamUri, MAX_BLOB_SIZE_BYTES)).thenResolve(chunkUri, null)
 			let encryptedFileInfo = {
 				uri: "encryptedChunkUri",
 				unencSize: 3,
 			}
-			when(aesAppMock.aesEncryptFile(sessionKey, chunkUris[0])).thenResolve(encryptedFileInfo)
+			when(aesAppMock.aesEncryptFile(sessionKey, chunkUri)).thenResolve(encryptedFileInfo)
 			const blobHash = "blobHash"
 			when(fileAppMock.hashFile(encryptedFileInfo.uri)).thenResolve(blobHash)
 			when(fileAppMock.upload(anything(), anything(), anything(), anything(), anything())).thenResolve({
 				statusCode: 201,
-				responseBody: stringToUtf8Uint8Array(JSON.stringify(blobServiceResponse)),
+				responseBody: stringToUtf8Uint8Array(blobServiceServerResponse.getJsonRepresentation()),
 			})
 			when(fileAppMock.getFilesMetaData([uploadedFileUri])).thenResolve([
 				{ size: 1024, location: uploadedFileUri, name: "file1", cid: "abc", _type: "FileReference", mimeType: "" },
@@ -203,7 +366,7 @@ o.spec("BlobFacade", function () {
 			verify(
 				fileAppMock.upload(
 					encryptedFileInfo.uri,
-					`http://w1.api.tuta.com${BLOB_SERVICE_REST_PATH}?test=theseAreTheParamsIPromise`,
+					`http://w1.api.tuta.com${BlobService_GET.serviceRestPath}?test=theseAreTheParamsIPromise`,
 					HttpMethod.POST,
 					{
 						v: String(storageTypeModels[BlobGetInTypeRef.typeId].version),
@@ -236,9 +399,12 @@ o.spec("BlobFacade", function () {
 				blobAccessToken: blobAccessInfo.blobAccessToken,
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// const requestBody = OutgoingServerJson.newFromRecord({ "request-body": "1" })
+			const blobGetIn = createTestEntity(BlobGetInTypeRef, { archiveId, blobIds: [createTestEntity(BlobIdTypeRef, { blobId })] })
+			// for the mock
+			const requestBody = await realInstancePipeline.mapAndEncrypt(BlobGetInTypeRef, blobGetIn, sessionKey)
+
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -252,16 +418,24 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const decryptedData = await blobFacade.downloadAndDecrypt(archiveDataType, wrapTutanotaFile(file), transferId)
 
 			o(decryptedData).deepEquals(blobData)("decrypted data is equal")
 			const optionsCaptor = captor()
-			verify(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, optionsCaptor.capture()))
+			verify(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, optionsCaptor.capture()))
 			o(optionsCaptor.value.baseUrl).equals("someBaseUrl")
 			o(optionsCaptor.value.queryParams.blobAccessToken).deepEquals(blobAccessInfo.blobAccessToken)
-			o(optionsCaptor.value.body).deepEquals(JSON.stringify(requestBody))
+
+			// The captured request body has a randomly generated id on the aggregate, which is expected but makes
+			// the assertion fail so we overwrite it manually here:
+			const capturedRequestBody = (optionsCaptor.value.body as RestTextBody).payload
+			const requestBodyParsedJson = JSON.parse(requestBody.getJsonRepresentation())
+			// 193 is blobIds aggregation, 145 is _id on each aggregate
+			requestBody.getInnerJson()["193"][0]["145"] = JSON.parse(capturedRequestBody)["193"][0]["145"]
+
+			o(capturedRequestBody).deepEquals(requestBody.getJsonRepresentation())
 		})
 
 		o("downloadAndDecrypt multiple", async function () {
@@ -288,9 +462,7 @@ o.spec("BlobFacade", function () {
 				blobAccessToken: blobAccessInfo.blobAccessToken,
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -312,7 +484,7 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData2,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const decryptedData = await blobFacade.downloadAndDecrypt(archiveDataType, wrapTutanotaFile(file), transferId)
 
@@ -351,9 +523,7 @@ o.spec("BlobFacade", function () {
 				blobAccessToken: blobAccessInfo.blobAccessToken,
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -375,7 +545,7 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData2,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const decryptedData = await blobFacade.downloadAndDecrypt(archiveDataType, wrapTutanotaFile(file), transferId)
 
@@ -398,13 +568,11 @@ o.spec("BlobFacade", function () {
 			when(blobAccessTokenFacade.createQueryParams(anything(), anything(), anything())).thenResolve({ test: "theseAreTheParamsIPromise" })
 
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
 			const encryptedFileUri = "encryptedUri"
 			const decryptedChunkUri = "decryptedChunkUri"
 			const decryptedUri = "decryptedUri"
 			const size = 3
 
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
 			when(fileAppMock.download(anything(), anything(), anything(), anything())).thenResolve({
 				statusCode: 200,
 				encryptedFileUri,
@@ -427,7 +595,7 @@ o.spec("BlobFacade", function () {
 			o(decryptedFileReference).deepEquals(expectedFileReference)
 			verify(
 				fileAppMock.download(
-					`http://w1.api.tuta.com${BLOB_SERVICE_REST_PATH}?test=theseAreTheParamsIPromise`,
+					`http://w1.api.tuta.com${BlobService_GET.serviceRestPath}?test=theseAreTheParamsIPromise`,
 					blobs[0].blobId + ".blob",
 					{
 						v: String(storageTypeModels[BlobGetInTypeRef.typeId].version),
@@ -467,7 +635,6 @@ o.spec("BlobFacade", function () {
 			when(blobAccessTokenFacade.createQueryParams(anything(), anything(), anything())).thenResolve({ test: "theseAreTheParamsIPromise" })
 
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
 			const encryptedFileUri = "encryptedUri"
 			const encryptedFileUri2 = "encryptedUri2"
 			const decryptedChunkUri = "decryptedChunkUri"
@@ -475,7 +642,6 @@ o.spec("BlobFacade", function () {
 			const decryptedUri = "decryptedUri"
 			const size = 3
 
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
 			when(fileAppMock.download(anything(), blobId1 + ".blob", anything(), anything())).thenResolve({
 				statusCode: 200,
 				encryptedFileUri,
@@ -504,7 +670,7 @@ o.spec("BlobFacade", function () {
 			o(decryptedFileReference).deepEquals(expectedFileReference)
 			verify(
 				fileAppMock.download(
-					`http://w1.api.tuta.com${BLOB_SERVICE_REST_PATH}?test=theseAreTheParamsIPromise`,
+					`http://w1.api.tuta.com${BlobService_GET.serviceRestPath}?test=theseAreTheParamsIPromise`,
 					blobId1 + ".blob",
 					{
 						v: String(storageTypeModels[BlobGetInTypeRef.typeId].version),
@@ -515,7 +681,7 @@ o.spec("BlobFacade", function () {
 			)
 			verify(
 				fileAppMock.download(
-					`http://w1.api.tuta.com${BLOB_SERVICE_REST_PATH}?test=theseAreTheParamsIPromise`,
+					`http://w1.api.tuta.com${BlobService_GET.serviceRestPath}?test=theseAreTheParamsIPromise`,
 					blobId2 + ".blob",
 					{
 						v: String(storageTypeModels[BlobGetInTypeRef.typeId].version),
@@ -541,13 +707,11 @@ o.spec("BlobFacade", function () {
 			const blobAccessInfos = new Map([[archiveId, blobAccessInfo]])
 			when(blobAccessTokenFacade.requestReadTokenBlobs(anything(), anything(), matchers.anything())).thenResolve(blobAccessInfos)
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
-			const requestBody = { "request-body": "1" }
 			const encryptedFileUri = "encryptedUri"
 			const decryptedChunkUri = "decryptedChunkUri"
 			const decryptedUri = "decryptedUri"
 			const size = 3
 
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
 			when(fileAppMock.download(anything(), blobs[0].blobId + ".blob", anything(), anything())).thenResolve({
 				statusCode: 200,
 				encryptedFileUri,
@@ -603,9 +767,7 @@ o.spec("BlobFacade", function () {
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -635,7 +797,7 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData3,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const result = await blobFacade.downloadAndDecryptBlobsOfMultipleInstances(archiveDataType, [wrapTutanotaFile(file), wrapTutanotaFile(anotherFile)])
 
@@ -697,25 +859,10 @@ o.spec("BlobFacade", function () {
 				baseUrl: "someBaseUrl",
 				blobAccessToken: blobAccessInfo.blobAccessToken,
 			})
+
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
-			const requestBody1 = { body: "1" }
-			when(
-				instancePipelineMock.mapAndEncrypt(
-					anything(),
-					matchers.argThat((inData: BlobGetIn) => inData.archiveId === "archiveId1" && inData.blobIds.length === 2),
-					anything(),
-				),
-			).thenResolve(requestBody1)
-			const requestBody2 = { body: "2" }
-			when(
-				instancePipelineMock.mapAndEncrypt(
-					anything(),
-					matchers.argThat((inData: BlobGetIn) => inData.archiveId === "archiveId2" && inData.blobIds.length === 1),
-					anything(),
-				),
-			).thenResolve(requestBody2)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse1 = concat(
 				// number of blobs
@@ -750,18 +897,34 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData3,
 			)
+			const blobGetInTypeModel = await typeModelResolver.resolveServerTypeReference(BlobGetInTypeRef)
+			const blobIdTypeModel = await typeModelResolver.resolveServerTypeReference(BlobIdTypeRef)
 			when(
 				restClientMock.request(
-					BLOB_SERVICE_REST_PATH,
+					BlobService_GET.serviceRestPath,
 					HttpMethod.GET,
-					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse(options.body as string).body === "1"),
+					matchers.argThat((options: RestClientOptions) => {
+						if (!options.body) {
+							return false
+						}
+						const serverJson = IncomingServerJson.expectSingleInstance((options.body as RestTextBody).payload, blobGetInTypeModel)
+						let blobId = serverJson.getAggregationList(193, blobIdTypeModel)[0]
+						return [blobId1, blobId2].includes(blobId.getValueByName("blobId").asId())
+					}),
 				),
 			).thenResolve(blobResponse1)
 			when(
 				restClientMock.request(
-					BLOB_SERVICE_REST_PATH,
+					BlobService_GET.serviceRestPath,
 					HttpMethod.GET,
-					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse(options.body as string).body === "2"),
+					matchers.argThat((options: RestClientOptions) => {
+						if (!options.body) {
+							return false
+						}
+						const serverJson = IncomingServerJson.expectSingleInstance((options.body as RestTextBody).payload, blobGetInTypeModel)
+						let blobId = serverJson.getAggregationList(193, blobIdTypeModel)[0]
+						return [blobId3].includes(blobId.getValueByName("blobId").asId())
+					}),
 				),
 			).thenResolve(blobResponse2)
 
@@ -808,9 +971,7 @@ o.spec("BlobFacade", function () {
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -832,7 +993,7 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData2,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const result = await blobFacade.downloadAndDecryptBlobsOfMultipleInstances(archiveDataType, [wrapTutanotaFile(file), wrapTutanotaFile(anotherFile)])
 
@@ -880,9 +1041,7 @@ o.spec("BlobFacade", function () {
 			})
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
-			const requestBody = { "request-body": "1" }
-			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -911,7 +1070,7 @@ o.spec("BlobFacade", function () {
 				// blob data
 				encryptedBlobData3,
 			)
-			when(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, anything())).thenResolve(blobResponse)
+			when(restClientMock.request(BlobService_GET.serviceRestPath, HttpMethod.GET, anything())).thenResolve(blobResponse)
 
 			const result = await blobFacade.downloadAndDecryptBlobsOfMultipleInstances(archiveDataType, [wrapTutanotaFile(file), wrapTutanotaFile(anotherFile)])
 
@@ -998,29 +1157,37 @@ o.spec("BlobFacade", function () {
 		})
 
 		o.test("parse empty blob response", function () {
-			const blobDataNumbers = Array(384).fill(1)
 			const binaryData = new Int8Array([
 				// number of blobs [0-3]
 				0, 0, 0, 0,
 			])
 
 			const result = parseMultipleBlobsResponse(new Uint8Array(binaryData))
-			o(result).deepEquals(new Map<Id, Uint8Array>())
+			o(result).deepEquals(new Map<Id, Uint8Array<ArrayBuffer>>())
 		})
 	})
 
 	o.spec("pipelineEncryptAndUpload", function () {
 		o.test("processes an even number of chunks completely", async function () {
 			const items = [1, 2, 3, 4]
-			const fetchNextChunk = () => items.shift()
+			const fetchNextChunk = async () => items.shift()
 			const encryptChunk = async (chunk): Promise<`encrypted-${number}`> => {
 				return `encrypted-${chunk}`
 			}
 			const uploadEncryptedChunk = async (encrypted: `encrypted-${number}`): Promise<BlobReferenceTokenWrapper> => {
 				return createTestEntity(BlobReferenceTokenWrapperTypeRef, { blobReferenceToken: `token for ${encrypted}` })
 			}
+			const disposeUnencryptedChunk = func() as (chunk: number) => Promise<void>
+			const disposeEncryptedChunk = func() as (chunk: `encrypted-${number}`) => Promise<void>
 
-			const generator = pipelineEncryptAndUpload(fetchNextChunk, encryptChunk, uploadEncryptedChunk, new AbortController().signal)
+			const generator = pipelineEncryptAndUpload(
+				fetchNextChunk,
+				encryptChunk,
+				uploadEncryptedChunk,
+				new AbortController().signal,
+				disposeUnencryptedChunk,
+				disposeEncryptedChunk,
+			)
 			const chunks: `encrypted-${number}`[] = []
 			const refTokens: string[] = []
 			for await (const [chunk, referenceToken] of generator) {
@@ -1030,18 +1197,35 @@ o.spec("BlobFacade", function () {
 
 			o.check(chunks).deepEquals(["encrypted-1", "encrypted-2", "encrypted-3", "encrypted-4"])
 			o.check(refTokens).deepEquals(["token for encrypted-1", "token for encrypted-2", "token for encrypted-3", "token for encrypted-4"])
+			verify(disposeUnencryptedChunk(1))
+			verify(disposeUnencryptedChunk(2))
+			verify(disposeUnencryptedChunk(3))
+			verify(disposeUnencryptedChunk(4))
+			verify(disposeEncryptedChunk("encrypted-1"))
+			verify(disposeEncryptedChunk("encrypted-2"))
+			verify(disposeEncryptedChunk("encrypted-3"))
+			verify(disposeEncryptedChunk("encrypted-4"))
 		})
 		o.test("processes an odd number of chunks completely", async function () {
 			const items = [1, 2, 3]
-			const fetchNextChunk = () => items.shift()
+			const fetchNextChunk = async () => items.shift()
 			const encryptChunk = async (chunk): Promise<`encrypted-${number}`> => {
 				return `encrypted-${chunk}`
 			}
 			const uploadEncryptedChunk = async (encrypted: `encrypted-${number}`): Promise<BlobReferenceTokenWrapper> => {
 				return createTestEntity(BlobReferenceTokenWrapperTypeRef, { blobReferenceToken: `token for ${encrypted}` })
 			}
+			const disposeUnencryptedChunk = func() as (chunk: number) => Promise<void>
+			const disposeEncryptedChunk = func() as (chunk: `encrypted-${number}`) => Promise<void>
 
-			const generator = pipelineEncryptAndUpload(fetchNextChunk, encryptChunk, uploadEncryptedChunk, new AbortController().signal)
+			const generator = pipelineEncryptAndUpload(
+				fetchNextChunk,
+				encryptChunk,
+				uploadEncryptedChunk,
+				new AbortController().signal,
+				disposeUnencryptedChunk,
+				disposeEncryptedChunk,
+			)
 			const chunks: `encrypted-${number}`[] = []
 			const refTokens: string[] = []
 			for await (const [chunk, referenceToken] of generator) {
@@ -1051,28 +1235,195 @@ o.spec("BlobFacade", function () {
 
 			o.check(chunks).deepEquals(["encrypted-1", "encrypted-2", "encrypted-3"])
 			o.check(refTokens).deepEquals(["token for encrypted-1", "token for encrypted-2", "token for encrypted-3"])
+			verify(disposeUnencryptedChunk(1))
+			verify(disposeUnencryptedChunk(2))
+			verify(disposeUnencryptedChunk(3))
+			verify(disposeEncryptedChunk("encrypted-1"))
+			verify(disposeEncryptedChunk("encrypted-2"))
+			verify(disposeEncryptedChunk("encrypted-3"))
 		})
 		o.test("encrypts next chunk before the previous one has finished uploading", async function () {
-			const item1 = defer<number>()
-			const item2 = defer<number>()
-			const item3 = defer<number>()
-			const items = [item1, item2, item3]
-			const fetchNextChunk = () => items.shift()
-			const encryptChunk = func() as (_: DeferredObject<number>) => Promise<any>
-			when(encryptChunk(matchers.anything())).thenDo((item) => item)
-			const uploadChunk = (item) => item.promise
+			// We are testing that encrypt and upload are running in parallel at every step (except the first where
+			// we encrypt one item ahead).
+			// +-------+-----+-----+-----+
+			// |step   |0    |1    |2    |
+			// +-------+-----+-----+-----+
+			// |encrypt|item1|item2|item3|
+			// +-------+-----+-----+-----+
+			// |upload |     |item1|item2|
+			// +-------+-----+-----+-----+
 
-			// resolve the first upload. The first step is kind of weird and will get stuck otherwise
-			item1.resolve(1)
-			const generator = pipelineEncryptAndUpload(fetchNextChunk, encryptChunk, uploadChunk, new AbortController().signal)
-			// the first step will encrypt the first chunk and then encrypt the second chunk and uploading the first chunk
+			type UnencryptedItem = { value: number }
+			type EncryptedItem = { value: string }
+			const item1 = { value: 1 }
+			const item2 = { value: 2 }
+			const item3 = { value: 3 }
+			const items = [item1, item2, item3]
+			const fetchNextChunk = async (): Promise<UnencryptedItem | null> => items.shift() ?? null
+			const encryptChunk = func() as (_: UnencryptedItem) => Promise<EncryptedItem>
+			when(encryptChunk(matchers.anything())).thenDo(({ value }: UnencryptedItem) => {
+				return { value: String(value) }
+			})
+
+			// we want to wait for item2 to be uploaded
+			const item2UploadFinished = defer<BlobReferenceTokenWrapper>()
+			const item2UploadStarted = defer<void>()
+			const uploadChunk = (item: EncryptedItem): Promise<BlobReferenceTokenWrapper> => {
+				if (item.value === "2") {
+					item2UploadStarted.resolve()
+					return item2UploadFinished.promise
+				} else {
+					return Promise.resolve(createTestEntity(BlobReferenceTokenWrapperTypeRef, { blobReferenceToken: item.value }))
+				}
+			}
+
+			const generator = pipelineEncryptAndUpload<UnencryptedItem, EncryptedItem>(
+				fetchNextChunk,
+				encryptChunk,
+				uploadChunk,
+				new AbortController().signal,
+				async () => {},
+				async () => {},
+			)
+			// the first step will encrypt item1, encrypt item2 chunk and upload item1
 			await generator.next()
-			// the second step will encrypt the third chunk and upload the second one, except we manually postpone the upload for the second one
+			// the second step will encrypt item3 and item2, except we manually postpone the upload for the second one
 			generator.next()
+			await item2UploadStarted.promise
 			// even though we never finished the upload for item2, item 3 is already being encrypted
 			verify(encryptChunk(item3))
+			item2UploadFinished.resolve(createTestEntity(BlobReferenceTokenWrapperTypeRef, { blobReferenceToken: "3" }))
+		})
+	})
+	o.spec("serializeNewBlobsInChunks", function () {
+		o.test("serializeNewBlobsInBinaryChunks splits blobs by max size", function () {
+			const sessionKey1 = aes256RandomKey()
+			const firstBlob: KeyedNewBlobWrapper = {
+				sessionKey: sessionKey1,
+				newBlobWrapper: {
+					hash: new Uint8Array([1, 2, 3, 4, 5, 6]),
+					data: new Uint8Array([1, 2, 3]),
+				},
+			}
 
-			item2.resolve(2)
+			const sessionKey2 = aes256RandomKey()
+			const secondBlob: KeyedNewBlobWrapper = {
+				sessionKey: sessionKey2,
+				newBlobWrapper: {
+					hash: new Uint8Array([4, 5, 6, 2, 3, 5]),
+					data: new Uint8Array([1, 2, 3, 4, 5, 6]),
+				},
+			}
+
+			const result = serializeNewBlobsInBinaryChunks(
+				[firstBlob, secondBlob],
+				13, // force chunk size to 13 bytes
+				MAX_NUMBER_OF_BLOBS_IN_BINARY,
+			)
+
+			o(result.length).deepEquals(2)
+
+			o(result[0].sessionKeys).deepEquals([sessionKey1])
+			o(result[1].sessionKeys).deepEquals([sessionKey2])
+
+			o(result[0].binary.length > 0).equals(true)
+			o(result[1].binary.length > 0).equals(true)
+		})
+		o.test("serializeNewBlobsInBinaryChunks does not exceed max blobs per chunk", function () {
+			const sessionKey1 = aes256RandomKey()
+			const firstBlob: KeyedNewBlobWrapper = {
+				sessionKey: sessionKey1,
+				newBlobWrapper: {
+					hash: new Uint8Array([1, 2, 3, 4, 5, 6]),
+					data: new Uint8Array([1, 2, 3]),
+				},
+			}
+
+			const sessionKey2 = aes256RandomKey()
+			const secondBlob: KeyedNewBlobWrapper = {
+				sessionKey: sessionKey2,
+				newBlobWrapper: {
+					hash: new Uint8Array([4, 5, 6, 2, 3, 5]),
+					data: new Uint8Array([1, 2, 3, 4, 5, 6]),
+				},
+			}
+
+			const result = serializeNewBlobsInBinaryChunks(
+				[firstBlob, secondBlob],
+				MAX_BLOB_SIZE_BYTES,
+				1, // force single blob per chunk
+			)
+
+			o(result.length).deepEquals(2)
+
+			o(result[0].sessionKeys).deepEquals([sessionKey1])
+			o(result[1].sessionKeys).deepEquals([sessionKey2])
+		})
+	})
+
+	o.spec("downloadFullEncryptedBlobElementEntityArchive", () => {
+		o.test("downloads all encrypted entities", async () => {
+			const archiveId = "some-archive"
+			const clientTypeModel = {
+				app: MailDetailsBlobTypeRef.app,
+				name: "MailDetailsBlob",
+				version: 123,
+				dependsOnVersion: 456,
+			} as ClientTypeModel
+			when(typeModelResolver.resolveClientTypeReference(MailDetailsBlobTypeRef)).thenResolve(clientTypeModel)
+
+			const blobServerAccessInfo = createTestEntity(BlobServerAccessInfoTypeRef, {
+				servers: [
+					createBlobServerUrl({
+						url: "https://blobworld.net",
+					}),
+				],
+			})
+			when(blobAccessTokenFacade.requestReadTokenArchive(archiveId)).thenResolve(blobServerAccessInfo)
+
+			const someQueryParams = {
+				"whoooo query params": "let's go!!!!",
+			}
+			when(blobAccessTokenFacade.createQueryParams(blobServerAccessInfo, {}, MailDetailsBlobTypeRef)).thenResolve(someQueryParams)
+
+			const serverTypeModel = {
+				app: MailDetailsBlobTypeRef.app,
+				name: "MailDetailsBlob",
+			} as ServerTypeModel
+			when(typeModelResolver.resolveServerTypeReference(MailDetailsBlobTypeRef)).thenResolve(serverTypeModel)
+
+			const mailDetailsBlobs = [
+				createTestEntity(MailDetailsBlobTypeRef, {}, { populateAggregates: true }),
+				createTestEntity(MailDetailsBlobTypeRef, {}, { populateAggregates: true }),
+				createTestEntity(MailDetailsBlobTypeRef, {}, { populateAggregates: true }),
+			]
+			const encryptedBlobsJson = await promiseMap(mailDetailsBlobs, (b) =>
+				realInstancePipeline.mapAndEncryptToParsedInstance(MailDetailsBlobTypeRef, b, aes256RandomKey()),
+			)
+			const serverResponse = OutgoingServerJson.getJsonRepresentationOfMultiple(
+				await Promise.all(
+					encryptedBlobsJson.map((i) => {
+						return realInstancePipeline.typeMapper.makeServerJson(i)
+					}),
+				),
+			)
+			when(
+				restClientMock.request(
+					`/rest/tutanota/maildetailsblob/${archiveId}`,
+					HttpMethod.GET,
+					matchers.argThat(
+						(arg) => arg.baseUrl === "https://blobworld.net" && arg.responseType === MediaType.Json && arg.queryParams === someQueryParams,
+					),
+				),
+			).thenResolve(serverResponse)
+
+			const downloadedBlobs = (await blobFacade.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, archiveId)).map((j) =>
+				j.getInnerJson(),
+			)
+			const expectedBlobs = (await Promise.all(encryptedBlobsJson.map((e) => realInstancePipeline.typeMapper.makeServerJson(e)))).map((j) =>
+				j.getInnerJson(),
+			)
+			o.check(downloadedBlobs).deepEquals(expectedBlobs)
 		})
 	})
 })

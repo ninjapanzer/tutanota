@@ -1,39 +1,40 @@
 import o, { assertThrows } from "@tutao/otest"
 import { matchers, object, verify, when } from "testdouble"
 import { getFirstOrThrow, hexToUint8Array, KeyVersion, uint8ArrayToHex, Versioned } from "../../../../../src/platform-kit/utils"
-import PublicEncryptionKeyProvider from "../../../../../src/platform-kit/base/crypto/PublicEncryptionKeyProvider.js"
+import PublicEncryptionKeyProvider from "../../../../../src/platform-kit/base/base-crypto/PublicEncryptionKeyProvider.js"
 
 import testData from "../../../api/worker/crypto/CompatibilityTestData.json"
 import {
 	bytesToKyberPublicKey,
-	EncryptedPqKeyPairs,
 	hexToRsaPublicKey,
-	KeyPairType,
 	PQPublicKeys,
 	PublicKeyIdentifier,
 	PublicKeyIdentifierType,
 	RsaPublicKey,
 } from "../../../../../src/platform-kit/crypto"
+import { RsaX25519PublicKey } from "../../../../../src/platform-kit/crypto/encryption/RsaKeyPair.js"
 import { CryptoError } from "../../../../../src/platform-kit/crypto/error"
-import * as restError from "../../../../../src/platform-kit/rest-client/error"
+import { InvalidDataError } from "../../../../../src/platform-kit/rest-client/error"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade"
 
 import { KeyVerificationFacade, VerifiedPublicEncryptionKey } from "../../../../../src/platform-kit/base/facades/lazy/KeyVerificationFacade"
 import { createTestEntity } from "../../../TestUtils"
-import { MaybeSignedPublicKey, PublicEncryptionKeyCache } from "../../../../../src/app-kit/local-store/PublicEncryptionKeyCache"
+import { PublicEncryptionKeyCache } from "../../../../../src/platform-kit/base/base-crypto/persistence/PublicEncryptionKeyCache"
 import {
 	createPublicKeyGetOut,
-	createSystemKeysReturn,
 	PubDistributionKey,
 	PublicKeyGetOut,
-	PublicKeyService,
+	PublicKeyService_GET,
 	PublicKeySignature,
 	PublicKeySignatureTypeRef,
 	SystemKeysReturn,
+	SystemKeysReturnTypeRef,
 } from "@tutao/entities/sys"
 import { ServiceExecutor } from "../../../../../src/platform-kit/network/ServiceExecutor"
 import { KeyAuthenticationFacade } from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
+import { MaybeSignedPublicKey } from "../../../../../src/platform-kit/base/base-crypto/MaybeSignedPublicKey"
+import { EncryptedPqKeyPairs } from "../../../../../src/platform-kit/crypto/encryption/EncryptedKeyPairs"
 
 const PUBLIC_KEY_IDENTIFIER_MAIL_ADDRESS = "alice@tuta.com"
 
@@ -44,9 +45,9 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 	let publicKeyIdentifier: PublicKeyIdentifier
 	let currentVersion: KeyVersion
 
-	let rsaPublicKey: Uint8Array
-	let x25519PublicKey: Uint8Array
-	let kyberPublicKey: Uint8Array
+	let rsaPublicKey: Uint8Array<ArrayBuffer>
+	let x25519PublicKey: Uint8Array<ArrayBuffer>
+	let kyberPublicKey: Uint8Array<ArrayBuffer>
 	let keyVerificationFacade: KeyVerificationFacade
 	let publicEncryptionKeyCache: PublicEncryptionKeyCache
 
@@ -82,17 +83,13 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 			})
 			const expectedPublicKey: Versioned<PQPublicKeys> = {
 				version: 2,
-				object: {
-					keyPairType: KeyPairType.TUTA_CRYPT,
-					x25519PublicKey: x25519PublicKey,
-					kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-				},
+				object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 			}
 			const expectedResult: VerifiedPublicEncryptionKey = {
 				verificationState: object(),
 				publicEncryptionKey: expectedPublicKey,
 			}
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(publicKeyGetOut)
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(publicKeyGetOut)
 			when(
 				keyVerificationFacade.verify(publicKeyIdentifier, {
 					publicKey: expectedPublicKey,
@@ -119,20 +116,14 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 			const decodedRsaPublicKey = hexToRsaPublicKey(uint8ArrayToHex(rsaPublicKey))
 			const expectedPublicKey: Versioned<RsaPublicKey> = {
 				version: 0,
-				object: {
-					keyPairType: KeyPairType.RSA,
-					version: 0,
-					keyLength: 2048,
-					modulus: decodedRsaPublicKey.modulus,
-					publicExponent: decodedRsaPublicKey.publicExponent,
-				},
+				object: new RsaPublicKey(0, 2048, decodedRsaPublicKey.modulus, decodedRsaPublicKey.publicExponent),
 			}
 			const expectedResult: VerifiedPublicEncryptionKey = {
 				verificationState: object(),
 				publicEncryptionKey: expectedPublicKey,
 			}
 
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(publicKeyGetOut)
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(publicKeyGetOut)
 			when(
 				keyVerificationFacade.verify(publicKeyIdentifier, {
 					publicKey: expectedPublicKey,
@@ -145,9 +136,9 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 		})
 
 		o("rsa key in version other than 0", async function () {
-			const pubRsaKey = object<Uint8Array>()
+			const pubRsaKey = object<Uint8Array<ArrayBuffer>>()
 			currentVersion = 1
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(
 				createPublicKeyGetOut({
 					pubKeyVersion: String(currentVersion),
 					pubRsaKey,
@@ -171,17 +162,13 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 				pubEccKey: x25519PublicKey,
 				signature: object(),
 			})
-			when(publicEncryptionKeyCache.get(matchers.anything(), matchers.anything())).thenReturn(undefined)
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(publicKeyGetOut)
+			when(publicEncryptionKeyCache.get(matchers.anything(), matchers.anything())).thenReturn(null)
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(publicKeyGetOut)
 
 			const expectedPublicKey: MaybeSignedPublicKey = {
 				publicKey: {
 					version: 1,
-					object: {
-						keyPairType: KeyPairType.TUTA_CRYPT,
-						x25519PublicKey: x25519PublicKey,
-						kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-					},
+					object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 				},
 				signature: publicKeyGetOut.signature,
 			}
@@ -202,16 +189,12 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 				pubEccKey: x25519PublicKey,
 				signature: object(),
 			})
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(publicKeyGetOut)
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(publicKeyGetOut)
 
 			const expectedPublicKey: MaybeSignedPublicKey = {
 				publicKey: {
 					version: 1,
-					object: {
-						keyPairType: KeyPairType.TUTA_CRYPT,
-						x25519PublicKey: x25519PublicKey,
-						kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-					},
+					object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 				},
 				signature: publicKeyGetOut.signature,
 			}
@@ -222,7 +205,7 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 			const pubKeys = await publicEncryptionKeyProvider.loadPublicEncryptionKey(publicKeyIdentifier, null)
 			o(pubKeys).deepEquals(expectedResult)
 			verify(publicEncryptionKeyCache.get(matchers.anything(), matchers.anything()), { times: 0 })
-			verify(serviceExecutor.get(PublicKeyService, matchers.anything()))
+			verify(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null))
 			verify(publicEncryptionKeyCache.put(publicKeyIdentifier, expectedPublicKey))
 		})
 
@@ -237,16 +220,12 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 			const expectedPublicKey: MaybeSignedPublicKey = {
 				publicKey: {
 					version: 1,
-					object: {
-						keyPairType: KeyPairType.TUTA_CRYPT,
-						x25519PublicKey: x25519PublicKey,
-						kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-					},
+					object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 				},
 				signature: publicKeyGetOut.signature,
 			}
 			when(publicEncryptionKeyCache.get(publicKeyIdentifier, requestedVersion)).thenReturn(expectedPublicKey)
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(publicKeyGetOut)
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(publicKeyGetOut)
 
 			let expectedResult: VerifiedPublicEncryptionKey = object()
 			when(keyVerificationFacade.verify(publicKeyIdentifier, expectedPublicKey)).thenResolve(expectedResult)
@@ -254,12 +233,12 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 			const pubKeys = await publicEncryptionKeyProvider.loadPublicEncryptionKey(publicKeyIdentifier, requestedVersion)
 			o(pubKeys).deepEquals(expectedResult)
 			verify(publicEncryptionKeyCache.get(publicKeyIdentifier, requestedVersion))
-			verify(serviceExecutor.get(PublicKeyService, matchers.anything()), { times: 0 })
+			verify(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null), { times: 0 })
 			verify(publicEncryptionKeyCache.put(publicKeyIdentifier, expectedPublicKey))
 		})
 
 		o("invalid version returned", async function () {
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(
 				createPublicKeyGetOut({
 					pubKeyVersion: String(currentVersion),
 					pubRsaKey: null,
@@ -269,15 +248,13 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 				}),
 			)
 			o(currentVersion).notEquals(requestedVersion)
-			await assertThrows(restError.TooManyRequestsError, async () =>
-				publicEncryptionKeyProvider.loadPublicEncryptionKey(publicKeyIdentifier, requestedVersion),
-			)
+			await assertThrows(InvalidDataError, async () => publicEncryptionKeyProvider.loadPublicEncryptionKey(publicKeyIdentifier, requestedVersion))
 		})
 
 		o("rsa key in version other than 0", async function () {
-			const pubRsaKey = object<Uint8Array>()
+			const pubRsaKey = object<Uint8Array<ArrayBuffer>>()
 			currentVersion = 1
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(
 				createPublicKeyGetOut({
 					pubKeyVersion: String(currentVersion),
 					pubRsaKey,
@@ -292,7 +269,7 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 
 	o.spec("version validation", function () {
 		o("throws if the version is negative", async function () {
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(
 				createPublicKeyGetOut({
 					pubKeyVersion: "-1",
 					pubRsaKey: object(),
@@ -307,7 +284,7 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 		})
 
 		o("throws if the version is not an integer", async function () {
-			when(serviceExecutor.get(PublicKeyService, matchers.anything())).thenResolve(
+			when(serviceExecutor.execute(PublicKeyService_GET, matchers.anything(), null)).thenResolve(
 				createPublicKeyGetOut({
 					pubKeyVersion: "1.5",
 					pubRsaKey: object(),
@@ -325,9 +302,9 @@ o.spec("PublicEncryptionKeyProviderTest", function () {
 
 o.spec("PublicEncryptionKeyProvider - convert keys", function () {
 	let publicKeyProvider: PublicEncryptionKeyProvider
-	let rsaPublicKey: Uint8Array
-	let x25519PublicKey: Uint8Array
-	let kyberPublicKey: Uint8Array
+	let rsaPublicKey: Uint8Array<ArrayBuffer>
+	let x25519PublicKey: Uint8Array<ArrayBuffer>
+	let kyberPublicKey: Uint8Array<ArrayBuffer>
 	let serviceExecutor: ServiceExecutor
 	let entityClient: EntityClient
 	let keyAuthenticationFacade: KeyAuthenticationFacade
@@ -367,11 +344,7 @@ o.spec("PublicEncryptionKeyProvider - convert keys", function () {
 		const expectedPublicKey: MaybeSignedPublicKey = {
 			publicKey: {
 				version: 1,
-				object: {
-					keyPairType: KeyPairType.TUTA_CRYPT,
-					kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-					x25519PublicKey: x25519PublicKey,
-				},
+				object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 			},
 			signature: publicKeyGetOut.signature,
 		}
@@ -393,13 +366,7 @@ o.spec("PublicEncryptionKeyProvider - convert keys", function () {
 		const expectedPublicKey: MaybeSignedPublicKey = {
 			publicKey: {
 				version: 1,
-				object: {
-					keyPairType: KeyPairType.RSA,
-					version: 0,
-					keyLength: 2048,
-					modulus: decodedRsaPublicKey.modulus,
-					publicExponent: decodedRsaPublicKey.publicExponent,
-				},
+				object: new RsaPublicKey(0, 2048, decodedRsaPublicKey.modulus, decodedRsaPublicKey.publicExponent),
 			},
 			signature: publicKeyGetOut.signature,
 		}
@@ -421,14 +388,7 @@ o.spec("PublicEncryptionKeyProvider - convert keys", function () {
 		const expectedPublicKey: MaybeSignedPublicKey = {
 			publicKey: {
 				version: 1,
-				object: {
-					keyPairType: KeyPairType.RSA_AND_X25519,
-					version: 0,
-					keyLength: 2048,
-					modulus: decodedRsaPublicKey.modulus,
-					publicExponent: decodedRsaPublicKey.publicExponent,
-					publicEccKey: x25519PublicKey,
-				},
+				object: new RsaX25519PublicKey(new RsaPublicKey(0, 2048, decodedRsaPublicKey.modulus, decodedRsaPublicKey.publicExponent), x25519PublicKey),
 			},
 			signature: publicKeyGetOut.signature,
 		}
@@ -489,40 +449,32 @@ o.spec("PublicEncryptionKeyProvider - convert keys", function () {
 		const fromDistributionKey = publicKeyProvider.convertFromPubDistributionKey(pubDistributionKey)
 		const expectedPublicKey: Versioned<PQPublicKeys> = {
 			version: 0, // always 0 for distribution keys.
-			object: {
-				keyPairType: KeyPairType.TUTA_CRYPT,
-				x25519PublicKey: x25519PublicKey,
-				kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-			},
+			object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 		}
 		o(fromDistributionKey).deepEquals(expectedPublicKey)
 	})
 
 	o("convert from encrypted pq key pairs", async function () {
 		const encryptedPqKeyPairs: EncryptedPqKeyPairs = object()
-		encryptedPqKeyPairs.pubKyberKey = kyberPublicKey
-		encryptedPqKeyPairs.pubEccKey = x25519PublicKey
+
+		;(encryptedPqKeyPairs as any).pubKyberKey = kyberPublicKey
+		;(encryptedPqKeyPairs as any).pubEccKey = x25519PublicKey
 
 		const fromEncryptedPqKeyPairs = publicKeyProvider.convertFromEncryptedPqKeyPairs(encryptedPqKeyPairs, 1)
 		const expectedPublicKey: Versioned<PQPublicKeys> = {
 			version: 1,
-			object: {
-				keyPairType: KeyPairType.TUTA_CRYPT,
-				x25519PublicKey: x25519PublicKey,
-				kyberPublicKey: bytesToKyberPublicKey(kyberPublicKey),
-			},
+			object: new PQPublicKeys(x25519PublicKey, bytesToKyberPublicKey(kyberPublicKey)),
 		}
 		o(fromEncryptedPqKeyPairs).deepEquals(expectedPublicKey)
 	})
 })
 
 function toSystemReturn(publicKeyGetOut: PublicKeyGetOut): SystemKeysReturn {
-	return createSystemKeysReturn({
+	return createTestEntity(SystemKeysReturnTypeRef, {
 		systemAdminPubKeyVersion: publicKeyGetOut.pubKeyVersion,
 		systemAdminPubRsaKey: publicKeyGetOut.pubRsaKey,
 		systemAdminPubKyberKey: publicKeyGetOut.pubKyberKey,
 		systemAdminPubEccKey: publicKeyGetOut.pubEccKey,
-		_type: object(),
 		_format: object(),
 		freeGroupKey: object(),
 		freeGroupKeyVersion: object(),

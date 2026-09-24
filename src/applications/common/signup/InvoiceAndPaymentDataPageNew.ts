@@ -10,27 +10,28 @@ import { RadioSelectorOption } from "../../../ui/base/RadioSelectorItem"
 import { RadioSelector, RadioSelectorAttrs } from "../../../ui/base/RadioSelector"
 import { getVisiblePaymentMethods, updatePaymentData, validateInvoiceData, validatePaymentData } from "../subscription/utils/PaymentUtils"
 import { WizardStepContext } from "../../../ui/base/wizard/WizardController"
-import { Country, ProgrammingError } from "@tutao/app-env"
+import { ProgrammingError } from "@tutao/app-env"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
 import { theme } from "../../../ui/theme"
+import { BannerType, InfoBanner, InfoBannerAttrs } from "../../../ui/base/InfoBanner.js"
 import { CreditCardInput } from "../subscription/CreditCardInput"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import { px, size } from "../../../ui/size"
 import { TextField } from "../../../ui/base/TextField"
 import { PaypalButtonNew } from "../subscription/PaypalButtonNew"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { LegacyTextFieldType } from "../../../ui/base/LegacyTextField"
 import { Icons } from "../../../ui/base/icons/Icons"
-
-import { LocationService, LocationServiceGetReturn } from "@tutao/entities/sys"
+import { LocationService_GET, LocationServiceGetReturn } from "@tutao/entities/sys"
 import { PaymentMethodType } from "../../../entities/sys/Utils"
 import { renderCountryDropdownNew } from "../gui/CountryDropdown"
-import { Countries, CountryType } from "../gui/CountryList"
+import { Countries, Country, CountryType } from "../gui/CountryList"
+import { NULL_ENTITY } from "@tutao/meta"
 
 class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponentAttrs<SignupViewModel>> {
 	private _hasClickedNext: boolean = false
 	private paypalRequestUrl: LazyLoaded<string>
-	private readonly formGap = styles.isMobileLayout() ? ".gap-16" : ".gap-24"
+	private readonly formGap = Styles.get().isMobileLayout() ? ".gap-16" : ".gap-24"
 
 	constructor({
 		attrs: {
@@ -41,7 +42,7 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 	}
 
 	oncreate(vnode: Vnode<WizardStepComponentAttrs<SignupViewModel>>) {
-		locator.serviceExecutor.get(LocationService, null).then((location: LocationServiceGetReturn) => {
+		locator.serviceExecutor.execute(LocationService_GET, NULL_ENTITY, null).then((location: LocationServiceGetReturn) => {
 			if (!vnode.attrs.ctx.viewModel.invoiceData.country) {
 				const country = Countries.find((c) => c.a === location.country)
 
@@ -68,9 +69,9 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 			renderChild: () => this.renderPaymentMethodForm(ctx, value),
 		}))
 
-		return m(`.flex.flex-column.full-width${styles.isMobileLayout() ? ".pt-16" : ""}`, [
+		return m(`.flex.flex-column.full-width${Styles.get().isMobileLayout() ? ".pt-16" : ""}`, [
 			m(
-				`h1.font-mdio${styles.isMobileLayout() ? ".h2" : ".h1"}`,
+				`h1.font-mdio${Styles.get().isMobileLayout() ? ".h2" : ".h1"}`,
 				{
 					style: {
 						position: "relative",
@@ -79,7 +80,7 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 				},
 				lang.get("payment_page_title"),
 			),
-			m(`p${styles.isMobileLayout() ? ".mb-32" : ""}`, { style: { color: theme.on_surface_variant } }, lang.get("payment_page_subtitle")),
+			m(`p${Styles.get().isMobileLayout() ? ".mb-32" : ""}`, { style: { color: theme.on_surface_variant } }, lang.get("payment_page_subtitle")),
 			m(".flex.gap-16", [
 				m(
 					".flex-grow",
@@ -150,7 +151,7 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 				m(PrimaryButton, {
 					label: "verifyCreditCard_action",
 					size: "md",
-					width: styles.isMobileLayout() ? "full" : "flex",
+					width: Styles.get().isMobileLayout() ? "full" : "flex",
 					onclick: () => {
 						this.onAddPaymentData(ctx)
 					},
@@ -230,7 +231,7 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 	private renderPaypalForm(ctx: WizardStepContext<SignupViewModel>): Children {
 		const isPaypalConnected = !!ctx.viewModel.accountingInfo?.paypalBillingAgreement
 		return m(`.flex.col${this.formGap}`, [
-			m(`.flex.col${styles.isMobileLayout() ? ".items-center" : ".items-end"}${this.formGap}`, [
+			m(`.flex.col${Styles.get().isMobileLayout() ? ".items-center" : ".items-end"}${this.formGap}`, [
 				renderCountryDropdownNew({
 					selectedCountry: ctx.viewModel.invoiceData.country,
 					onSelectionChanged: (country: Country | null) => {
@@ -262,7 +263,7 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 						),
 					m(
 						"",
-						{ style: isPaypalConnected || styles.isMobileLayout() ? { width: "100%" } : { "margin-left": "auto" } },
+						{ style: isPaypalConnected || Styles.get().isMobileLayout() ? { width: "100%" } : { "margin-left": "auto" } },
 						m(PaypalButtonNew, {
 							data: ctx.viewModel,
 							onclick: async () => {
@@ -290,9 +291,9 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 					m(PrimaryButton, {
 						label: "continue_action",
 						size: "md",
-						width: styles.isMobileLayout() ? "full" : "flex",
+						width: Styles.get().isMobileLayout() ? "full" : "flex",
 						onclick: () => {
-							ctx.goNext()
+							this.onAddPaymentData(ctx)
 						},
 						disabled: !ctx.viewModel.invoiceData.country,
 					}),
@@ -315,8 +316,9 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 				label: "billingCountry_label",
 			}),
 			ctx.viewModel.options.businessUse() && this.renderBusinessAddressFields(ctx),
+			this.renderBankTransferInfo(),
 			m(
-				`.flex-shrink${styles.isMobileLayout() ? ".align-self-center" : ".align-self-end"}`,
+				`.flex-shrink${Styles.get().isMobileLayout() ? ".align-self-center" : ".align-self-end"}`,
 				m(PrimaryButton, {
 					label: "continue_action",
 					size: "md",
@@ -328,6 +330,27 @@ class InvoiceAndPaymentDataPageNew implements ClassComponent<WizardStepComponent
 				}),
 			),
 		])
+	}
+
+	private renderBankTransferInfo(): Children {
+		const [title, ...steps] = lang.get("paymentMethodOnAccountHowItWorks_msg").split("\n")
+
+		return m(InfoBanner, {
+			message: () =>
+				m(".text-break.mb-4", [
+					m(".b.mb-8", title),
+					m(
+						"ol.mb-0",
+						{
+							style: { paddingLeft: px(size.spacing_16) },
+						},
+						steps.map((step, index) => m("li", { style: index < steps.length - 1 ? { marginBottom: px(size.spacing_8) } : undefined }, step)),
+					),
+				]),
+			icon: Icons.InfoFilled,
+			type: BannerType.Info,
+			buttons: [],
+		} satisfies InfoBannerAttrs)
 	}
 
 	private renderBusinessAddressFields(ctx: WizardStepContext<SignupViewModel>): Children {

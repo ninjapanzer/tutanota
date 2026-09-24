@@ -8,14 +8,16 @@ import { ButtonType } from "../../../../ui/base/Button.js"
 import { DefaultAnimationTime } from "../../../../ui/animation/Animations"
 import { copyToClipboard } from "../../../../ui/utils/ClipboardUtils"
 import { Checkbox } from "../../../../ui/base/Checkbox.js"
-import { isAndroidApp, isApp, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { CURRENT_GIFT_CARD_TERMS_VERSION, renderTermsAndConditionsButton, TermsSection } from "../TermsAndConditions"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { formatPrice } from "../utils/PriceUtils.js"
 import { getHtmlSanitizer } from "../../misc/HtmlSanitizer.js"
-import { urlEncodeHtmlTags } from "../../../../ui/utils/Formatter.js"
 import QRCode from "qrcode-svg"
 import { CustomerInfo, CustomerInfoTypeRef, CustomerTypeRef, GiftCard, GiftCardTypeRef } from "@tutao/entities/sys"
+import { urlEncodeHtmlTags } from "@tutao/utils"
+import { idToElementId } from "@tutao/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export const enum GiftCardStatus {
 	Deactivated = "0",
@@ -42,7 +44,7 @@ export async function getTokenFromUrl(url: string): Promise<{ id: Id; key: strin
 export function loadGiftCards(customerId: Id): Promise<GiftCard[]> {
 	const entityClient = locator.entityClient
 	return entityClient
-		.load(CustomerTypeRef, customerId)
+		.load(CustomerTypeRef, idToElementId(customerId))
 		.then((customer) => entityClient.load(CustomerInfoTypeRef, customer.customerInfo))
 		.then((customerInfo: CustomerInfo) => {
 			if (customerInfo.giftCards) {
@@ -98,10 +100,10 @@ export function showGiftCardToShare(giftCard: GiftCard) {
 									DefaultAnimationTime,
 								)
 							},
-							title: "shareViaEmail_action",
+							label: "shareViaEmail_action",
 							icon: Icons.MailFilled,
 						}),
-						isAndroidApp()
+						EnvProvider.get().isAndroidApp()
 							? m(IconButton, {
 									click: () => {
 										locator.systemFacade.shareText(
@@ -111,7 +113,7 @@ export function showGiftCardToShare(giftCard: GiftCard) {
 											lang.get("nativeShareGiftCard_label"),
 										)
 									},
-									title: "share_action",
+									label: "share_action",
 									icon: Icons.ShareFilled,
 								})
 							: m(IconButton, {
@@ -124,16 +126,16 @@ export function showGiftCardToShare(giftCard: GiftCard) {
 												infoMessage = "copyLinkError_msg"
 											})
 									},
-									title: "copyToClipboard_action",
+									label: "copyToClipboard_action",
 									icon: Icons.ClipboardFilled,
 								}),
-						!isApp()
+						!EnvProvider.get().isApp()
 							? m(IconButton, {
 									click: () => {
 										infoMessage = "emptyString_msg"
 										window.print()
 									},
-									title: "print_action",
+									label: "print_action",
 									icon: Icons.PrinterFilled,
 								})
 							: null,

@@ -15,10 +15,10 @@ import { LazyLoaded, neverNull, noOp, ofClass, promiseMap } from "@tutao/utils"
 import { ButtonSize } from "../../../ui/base/ButtonSize.js"
 import { formatDateTime, formatDateTimeFromYesterdayOn } from "../../../ui/utils/Formatter.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
-import * as restError from "@tutao/rest-client/error"
+import { NotAuthorizedError } from "@tutao/rest-client/error"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { locator } from "../api/main/CommonLocator.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import {
 	AuditLogEntry,
 	AuditLogEntryTypeRef,
@@ -32,7 +32,7 @@ import {
 	GroupInfoTypeRef,
 } from "@tutao/entities/sys"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { GENERATED_MAX_ID } from "@tutao/meta"
+import { GENERATED_MAX_ID, idToElementId } from "@tutao/meta"
 
 export type AccountMaintenanceUpdateNotifier = (updates: ReadonlyArray<EntityUpdateData>) => void
 
@@ -53,8 +53,8 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 	private readonly customerInfo = new LazyLoaded<CustomerInfo>(() => locator.logins.getUserController().loadCustomerInfo())
 	private readonly customerProperties = new LazyLoaded(() =>
 		locator.entityClient
-			.load(CustomerTypeRef, neverNull(locator.logins.getUserController().user.customer))
-			.then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties))),
+			.load(CustomerTypeRef, idToElementId(neverNull(locator.logins.getUserController().user.customer)))
+			.then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties)))),
 	)
 
 	constructor(vnode: Vnode<AccountMaintenanceSettingsAttrs>) {
@@ -76,7 +76,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 			showActionButtonColumn: true,
 			lines: this.auditLogLines,
 			addButtonAttrs: {
-				title: "refresh_action",
+				label: "refresh_action",
 				click: () => showProgressDialog("loading_msg", this.updateAuditLog()).then(() => m.redraw()),
 				icon: Icons.Sync,
 				size: ButtonSize.Compact,
@@ -163,7 +163,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 											reason: reason.reason,
 											version: SURVEY_VERSION_NUMBER,
 											clientVersion: env.versionNumber,
-											clientPlatform: client.getClientPlatform().valueOf().toString(),
+											clientPlatform: ClientDetector.get().getClientPlatform().valueOf().toString(),
 										})
 										showDeleteAccountDialog(surveyData)
 									} else {
@@ -295,7 +295,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 							return {
 								cells: [auditLogEntry.action, auditLogEntry.modifiedEntity, formatDateTimeFromYesterdayOn(auditLogEntry.date)],
 								actionButtonAttrs: {
-									title: "showMore_action",
+									label: "showMore_action",
 									icon: Icons.More,
 									click: () => this.showAuditLogDetails(auditLogEntry, customer),
 									size: ButtonSize.Compact,
@@ -320,7 +320,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 						modifiedGroupInfo(gi)
 					})
 					.catch(
-						ofClass(restError.NotAuthorizedError, () => {
+						ofClass(NotAuthorizedError, () => {
 							// If the admin is removed from the free group, he does not have the permission to access the groupinfo of that group anymore
 						}),
 					),
@@ -335,7 +335,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 						groupInfo(gi)
 					})
 					.catch(
-						ofClass(restError.NotAuthorizedError, () => {
+						ofClass(NotAuthorizedError, () => {
 							// If the admin is removed from the free group, he does not have the permission to access the groupinfo of that group anymore
 						}),
 					),
@@ -400,6 +400,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 				this.customerProperties.reset()
 				this.customerProperties.getAsync().then(m.redraw)
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

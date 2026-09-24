@@ -1,19 +1,18 @@
 import { aes256RandomKey, AesKey, CryptoWrapper, keyToBase64, VersionedKey } from "@tutao/crypto"
-import type { EventAlarmInfoTemplatesTuple } from "../../../../calendar/gui/ImportExportUtils"
-import { AttributeModel, ClientModelUntypedInstance, elementIdPart, listIdPart, OperationType } from "@tutao/meta"
-import * as restError from "@tutao/rest-client/error"
+import { elementIdPart, elementIdToId, listIdPart, OperationType } from "@tutao/meta"
+import { TooManyRequestsError } from "@tutao/rest-client/error"
 import { EventWithUserAlarmInfos } from "./CalendarFacade"
 import { flatMap, isNotNull, promiseMap } from "@tutao/utils"
 import { InstancePipeline } from "@tutao/instance-pipeline"
 import { InfoMessageHandler } from "../../../../gui/InfoMessageHandler"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade"
 import { AlarmNotification, NativePushFacade } from "@tutao/native-bridge/generatedIpc/types"
 import {
 	AlarmInfo,
 	AlarmNotificationTypeRef,
-	AlarmService,
+	AlarmService_POST,
 	AlarmServicePost,
 	createAlarmInfo,
 	createAlarmNotification,
@@ -28,6 +27,10 @@ import {
 	User,
 } from "@tutao/entities/sys"
 import { CalendarEvent, CalendarRepeatRule } from "@tutao/entities/tutanota"
+import { EventAlarmInfoTemplatesTuple } from "../../../../calendar/import/ImportExportUtils"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+
+import { OutgoingServerJson } from "../../../../../../platform-kit/instance-pipeline/TypeMapper"
 
 export class AlarmFacade {
 	constructor(
@@ -43,7 +46,7 @@ export class AlarmFacade {
 	public async createAlarms(loggedInUser: User, eventAlarmsTuples: EventAlarmInfoTemplatesTuple[], pushIdentifiers: PushIdentifier[]): Promise<void> {
 		const notificationSessionKey = aes256RandomKey()
 		const alarmServicePostRequestData = await this.prepareAlarmServicePostData(
-			loggedInUser._id,
+			elementIdToId(loggedInUser._id),
 			this.userFacade.getUserGroupId(),
 			this.userFacade.getCurrentUserGroupKey(),
 			eventAlarmsTuples,
@@ -57,22 +60,23 @@ export class AlarmFacade {
 		const user = this.userFacade.getLoggedInUser()
 
 		const alarmNotifications = flatMap(eventsWithAlarmInfos, ({ event, userAlarmInfos }) =>
-			userAlarmInfos.map((userAlarmInfo) => this.createAlarmNotificationForEvent(event, userAlarmInfo.alarmInfo, user._id)),
+			userAlarmInfos.map((userAlarmInfo) => this.createAlarmNotificationForEvent(event, userAlarmInfo.alarmInfo, elementIdToId(user._id))),
 		)
 
 		const sessionKey = aes256RandomKey()
 		await this.encryptNotificationKeyForDevices(sessionKey, alarmNotifications, [pushIdentifier])
 
-		const encryptedNotificationsWireFormat = JSON.stringify(
-			await Promise.all(
-				alarmNotifications.map(async (an) => {
-					const untypedInstance = await this.instancePipeline.mapAndEncrypt(AlarmNotificationTypeRef, an, sessionKey)
-					return AttributeModel.removeNetworkDebuggingInfoIfNeeded<ClientModelUntypedInstance>(untypedInstance)
-				}),
-			),
+		const encryptedNotificationsWireFormat = await Promise.all(
+			alarmNotifications.map(async (an) => {
+				const encryptedInstance = await this.instancePipeline.mapAndEncryptToParsedInstance(AlarmNotificationTypeRef, an, sessionKey)
+				return this.instancePipeline.typeMapper.makeServerJson(encryptedInstance)
+			}),
 		)
 
-		await this.nativePushFacade.scheduleAlarms(encryptedNotificationsWireFormat, keyToBase64(sessionKey))
+		await this.nativePushFacade.scheduleAlarms(
+			OutgoingServerJson.getJsonRepresentationOfMultiple(encryptedNotificationsWireFormat),
+			keyToBase64(sessionKey),
+		)
 	}
 
 	private async prepareAlarmServicePostData(
@@ -94,13 +98,13 @@ export class AlarmFacade {
 			for (const alarmInfoTemplate of alarmInfoTemplates) {
 				const userAlarmInfoSessionKey = aes256RandomKey()
 				const userAlarmInfoData = createUserAlarmInfoData({
-					ownerEncSessionKey: this.cryptoWrapper.encryptKey(userGroupKey.object, userAlarmInfoSessionKey),
-					ownerKeyVersion: userGroupKey.version.toString(),
 					encryptedTrigger: this.cryptoWrapper.encryptString(userAlarmInfoSessionKey, alarmInfoTemplate.trigger),
 					alarmIdentifier: alarmInfoTemplate.alarmIdentifier,
 					ownerGroup: ownerGroup,
 					calendarEventRef: eventRef,
 				})
+				userAlarmInfoData.ownerEncSessionKey = this.cryptoWrapper.encryptKey(userGroupKey.object, userAlarmInfoSessionKey)
+				userAlarmInfoData.ownerKeyVersion = userGroupKey.version.toString()
 				alarmServicePost.userAlarmInfoData.push(userAlarmInfoData)
 
 				// one session key is used for all notifications of a single alarmInfo, but is encrypted separately for each device.
@@ -128,9 +132,9 @@ export class AlarmFacade {
 
 	private async postAlarmServiceRequest(notificationSessionKey: AesKey, alarmServicePostData: AlarmServicePost): Promise<void> {
 		try {
-			await this.serviceExecutor.post(AlarmService, alarmServicePostData, { sessionKey: notificationSessionKey })
+			await this.serviceExecutor.execute(AlarmService_POST, alarmServicePostData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey: notificationSessionKey })
 		} catch (e) {
-			if (e instanceof restError.TooManyRequestsError) {
+			if (e instanceof TooManyRequestsError) {
 				return this.infoMessageHandler.onInfoMessage({
 					translationKey: "calendarAlarmsTooBigError_msg",
 					args: {},

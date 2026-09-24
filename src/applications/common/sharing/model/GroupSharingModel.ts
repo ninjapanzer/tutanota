@@ -2,10 +2,10 @@ import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import { EventController } from "../../api/main/EventController"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient"
-import { getElementId, getEtId, isSameId, OperationType } from "../../../../platform-kit/meta"
+import { elementIdToId, getElementId, getEtId, idToElementId, isSameId, isSameSingleId, OperationType } from "../../../../platform-kit/meta"
 import { ProgrammingError, ShareCapability } from "../../../../platform-kit/app-env"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { findAndRemove, lazy, noOp, ofClass, promiseMap } from "../../../../platform-kit/utils"
+import { NotFoundError } from "../../../../platform-kit/rest-client/error"
+import { assertNotNull, findAndRemove, lazy, noOp, ofClass, promiseMap } from "../../../../platform-kit/utils"
 import { loadGroupInfoForMember, loadGroupMembers } from "../GroupUtils"
 import type { LoginController } from "../../api/main/LoginController"
 import { UserError } from "../../api/main/UserError"
@@ -17,10 +17,10 @@ import type { GroupManagementFacade } from "../../../../platform-kit/base/facade
 import { RecipientsModel } from "../../api/main/RecipientsModel"
 import { GroupNameData, GroupSettingsModel } from "./GroupSettingsModel"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { MailAddress } from "@tutao/entities/tutanota"
 import { Recipient, RecipientType } from "../../../../entities/tutanota/Utils"
@@ -66,12 +66,13 @@ export class GroupSharingModel {
 		this._shareFacade = shareFacade
 		this._groupManagementFacade = groupManagementFacade
 		this.onEntityUpdate = stream()
-		this.eventController.addEntityListener(this.onEntityEvents)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
-	private readonly onEntityEvents: EntityEventsListener = {
-		onEntityUpdatesReceived: (events, id) => this.entityEventsReceived(events, id),
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "GroupSharingModel",
+		onEntityUpdatesReceived: (events, id) => this.onEntityUpdatesReceived(events, id),
+		priority: ListenerPriority.NORMAL,
 	}
 
 	static async newAsync(
@@ -85,7 +86,7 @@ export class GroupSharingModel {
 		recipientsModel: RecipientsModel,
 		lazyGroupSettingsModel: lazy<Promise<GroupSettingsModel>>,
 	): Promise<GroupSharingModel> {
-		const group = await entityClient.load(GroupTypeRef, groupInfo.group)
+		const group = await entityClient.load(GroupTypeRef, idToElementId(groupInfo.group))
 		const groupSettingsModel = await lazyGroupSettingsModel()
 		const [sentGroupInvitations, memberInfos, groupNameData] = await Promise.all([
 			entityClient.loadAll(SentGroupInvitationTypeRef, group.invitations),
@@ -109,7 +110,7 @@ export class GroupSharingModel {
 	}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.onEntityEvents)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	/**
@@ -139,12 +140,12 @@ export class GroupSharingModel {
 	canCancelInvitation(sentGroupInvitation: SentGroupInvitation): boolean {
 		return (
 			hasCapabilityOnGroup(this.logins.getUserController().user, this.group, ShareCapability.Invite) ||
-			isSharedGroupOwner(this.group, this.logins.getUserController().user._id)
+			isSharedGroupOwner(this.group, elementIdToId(this.logins.getUserController().user._id))
 		)
 	}
 
 	memberIsSelf(member: GroupMember): boolean {
-		return isSameId(this.logins.getUserController().user._id, member.user)
+		return isSameId(this.logins.getUserController().user._id, idToElementId(member.user))
 	}
 
 	cancelInvitation(invitation: SentGroupInvitation): Promise<void> {
@@ -203,36 +204,36 @@ export class GroupSharingModel {
 		return groupInvitationReturn.invitedMailAddresses
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		return promiseMap(updates, (update) => {
-			if (!isSameId(eventOwnerGroupId, getEtId(this.group))) {
+			if (!isSameSingleId(eventOwnerGroupId, getEtId(this.group))) {
 				// ignore events of different group here
-				return
+				return Promise.resolve()
 			}
 
 			if (isUpdateForTypeRef(SentGroupInvitationTypeRef, update)) {
-				if (update.operation === OperationType.CREATE && isSameId(update.instanceListId, this.group.invitations)) {
+				if (update.operation === OperationType.CREATE && isSameSingleId(update.instanceListId, this.group.invitations)) {
 					return this.entityClient
-						.load(SentGroupInvitationTypeRef, [update.instanceListId, update.instanceId])
+						.load(SentGroupInvitationTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
 						.then((instance) => {
 							if (instance) {
 								this.sentGroupInvitations.push(instance)
 								this.onEntityUpdate()
 							}
 						})
-						.catch(ofClass(restError.NotFoundError, (e) => console.log("sent invitation not found", update)))
+						.catch(ofClass(NotFoundError, (e) => console.log("sent invitation not found", update)))
 				}
 
 				if (update.operation === OperationType.DELETE) {
-					findAndRemove(this.sentGroupInvitations, (sentGroupInvitation) => isSameId(getElementId(sentGroupInvitation), update.instanceId))
+					findAndRemove(this.sentGroupInvitations, (sentGroupInvitation) => isSameSingleId(getElementId(sentGroupInvitation), update.instanceId))
 					this.onEntityUpdate()
 				}
 			} else if (isUpdateForTypeRef(GroupMemberTypeRef, update)) {
 				console.log("update received in share dialog", update)
 
-				if (update.operation === OperationType.CREATE && isSameId(update.instanceListId, this.group.members)) {
+				if (update.operation === OperationType.CREATE && isSameSingleId(update.instanceListId, this.group.members)) {
 					return this.entityClient
-						.load(GroupMemberTypeRef, [update.instanceListId, update.instanceId])
+						.load(GroupMemberTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
 						.then((instance) => {
 							if (instance) {
 								return loadGroupInfoForMember(instance, this.entityClient).then((groupMemberInfo) => {
@@ -242,14 +243,15 @@ export class GroupSharingModel {
 								})
 							}
 						})
-						.catch(ofClass(restError.NotFoundError, (e) => console.log("group member not found", update)))
+						.catch(ofClass(NotFoundError, (e) => console.log("group member not found", update)))
 				}
 
 				if (update.operation === OperationType.DELETE) {
-					findAndRemove(this.memberInfos, (memberInfo) => isSameId(getElementId(memberInfo.member), update.instanceId))
+					findAndRemove(this.memberInfos, (memberInfo) => isSameSingleId(getElementId(memberInfo.member), update.instanceId))
 					this.onEntityUpdate()
 				}
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

@@ -15,6 +15,7 @@ import { getHtmlSanitizer } from "../../common/misc/HtmlSanitizer.js"
 import { UpdatableSettingsDetailsViewer } from "../../common/settings/Interfaces.js"
 import { EmailTemplate, TemplateGroupRootTypeRef } from "@tutao/entities/tutanota"
 import { EntityUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { idToElementId } from "@tutao/meta"
 
 export class TemplateDetailsViewer implements UpdatableSettingsDetailsViewer {
 	// we're not memoizing the translated language name since this is not a proper mithril component and may stick around after a language
@@ -47,12 +48,12 @@ export class TemplateDetailsViewer implements UpdatableSettingsDetailsViewer {
 				? m(ActionBar, {
 						buttons: [
 							{
-								title: "edit_action",
+								label: "edit_action",
 								icon: Icons.PenFilled,
 								click: () => this.editTemplate(),
 							},
 							{
-								title: "remove_action",
+								label: "remove_action",
 								icon: Icons.TrashFilled,
 								click: () => this.deleteTemplate(),
 							},
@@ -82,11 +83,12 @@ export class TemplateDetailsViewer implements UpdatableSettingsDetailsViewer {
 
 	private async editTemplate() {
 		const { template } = this
-		const groupRoot = await locator.entityClient.load(TemplateGroupRootTypeRef, assertNotNull(template._ownerGroup, "template without ownerGroup!"))
+		const ownerGroupId = idToElementId(assertNotNull(template._ownerGroup, "template without ownerGroup!"))
+		const groupRoot = await locator.entityClient.load(TemplateGroupRootTypeRef, ownerGroupId)
 		showTemplateEditor(template, groupRoot)
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return Promise.resolve()
 	}
 }

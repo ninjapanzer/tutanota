@@ -1,6 +1,6 @@
 import o from "@tutao/otest"
 import { ConversationItem, ConversationPrefProvider, ConversationViewModel } from "../../../../src/applications/mail-app/mail/view/ConversationViewModel.js"
-import { isSameId, isSameTypeRef, OperationType } from "../../../../src/platform-kit/meta"
+import { isSameId, isSameTypeRef, OperationType, stringifyId } from "../../../../src/platform-kit/meta"
 import { CreateMailViewerOptions } from "../../../../src/applications/mail-app/mail/view/MailViewer.js"
 import { MailViewerViewModel } from "../../../../src/applications/mail-app/mail/view/MailViewerViewModel.js"
 import { EntityClient } from "../../../../src/platform-kit/network/EntityClient.js"
@@ -9,7 +9,7 @@ import { EventController } from "../../../../src/applications/common/api/main/Ev
 import { defer, DeferredObject, delay, noOp } from "../../../../src/platform-kit/utils"
 import { matchers, object, when } from "testdouble"
 import { createTestEntity, makePopulatedClientModelInfo } from "../../TestUtils.js"
-import { MailboxDetail, MailboxModel } from "../../../../src/applications/common/mailFunctionality/MailboxModel.js"
+import { MailboxDetail } from "../../../../src/applications/common/mailFunctionality/MailboxModel.js"
 import { MailModel } from "../../../../src/applications/mail-app/mail/model/MailModel.js"
 import { noPatchesAndInstance } from "../../api/worker/EventBusClientTest"
 
@@ -23,7 +23,7 @@ import {
 	MailSetTypeRef,
 	MailTypeRef,
 } from "@tutao/entities/tutanota"
-import { EntityEventsListener } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdatesListener } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 o.spec("ConversationViewModel", function () {
 	let conversation: ConversationEntry[]
@@ -33,13 +33,12 @@ o.spec("ConversationViewModel", function () {
 
 	let viewModel: ConversationViewModel
 	let mailModel: MailModel
-	let mailboxModel: MailboxModel
 	let mailboxDetail: MailboxDetail
 	let entityRestClientMock: EntityRestClientMock
 	let prefProvider: ConversationPrefProvider
 	let redraw: () => unknown
 	let loadingDefer: DeferredObject<void>
-	let eventCallback: EntityEventsListener
+	let eventCallback: EntityUpdatesListener
 	let canUseConversationView: boolean
 
 	const listId = "listId"
@@ -61,10 +60,10 @@ o.spec("ConversationViewModel", function () {
 		const entityClient = new EntityClient(entityRestClientMock, makePopulatedClientModelInfo())
 
 		const eventController: EventController = {
-			addEntityListener: (listener) => {
+			addEntityUpdatesListener: (listener) => {
 				eventCallback = listener
 			},
-			removeEntityListener: noOp,
+			removeEntityUpdatesListener: noOp,
 		} as Partial<EventController> as EventController
 
 		const viewModelParams = {
@@ -222,14 +221,14 @@ o.spec("ConversationViewModel", function () {
 			trashDraftMail.state = MailState.DRAFT
 			trashDraftMail.mailDetailsDraft = ["listId", "elementId"]
 
-			const trash = createTestEntity(MailSetTypeRef, {
+			const trashFolder = createTestEntity(MailSetTypeRef, {
 				_id: [listId, "trashFolder"],
 				folderType: MailSetKind.TRASH,
 			})
-			entityRestClientMock.addListInstances(trash)
+			entityRestClientMock.addListInstances(trashFolder)
 
 			when(mailModel.getMailboxDetailsForMail(trashDraftMail)).thenResolve(mailboxDetail)
-			when(mailModel.getMailFolderForMail(trashDraftMail)).thenReturn(trash)
+			when(mailModel.getMailFolderForMail(trashDraftMail)).thenReturn(trashFolder)
 
 			await makeViewModel(trashDraftMail)
 
@@ -238,7 +237,7 @@ o.spec("ConversationViewModel", function () {
 
 			const mailsDisplayed = viewModel.conversationItems().filter((i) => isSameTypeRef(i.type_ref, MailTypeRef))
 			o.check(sameAsConversation(mailsDisplayed)).equals(true)(
-				`Wrong mails in conversation, got ${mailsDisplayed.map((ci) => ci.entryId)}, should be ${conversation.map((ce) => ce._id)}`,
+				`Wrong mails in conversation, got ${mailsDisplayed.map((ci) => stringifyId(ci.entryId))}, should be ${conversation.map((ce) => stringifyId(ce._id))}`,
 			)
 		})
 	})
@@ -266,8 +265,8 @@ o.spec("ConversationViewModel", function () {
 
 			const mailsDisplayed = viewModel.conversationItems().filter((i) => isSameTypeRef(i.type_ref, MailTypeRef))
 			o.check(sameAsConversation(mailsDisplayed)).equals(true)(
-				`Wrong mails in conversation, got ${mailsDisplayed.map((ci) => `[${ci.entryId[0]}, ${ci.entryId[1]}]`).join(", ")}, should be ${conversation
-					.map((ce) => `[${ce._id[0]}, ${ce._id[1]}]`)
+				`Wrong mails in conversation, got ${mailsDisplayed.map((ci) => stringifyId(ci.entryId)).join(", ")}, should be ${conversation
+					.map((ce) => stringifyId(ce._id))
 					.join(", ")}`,
 			)
 		})

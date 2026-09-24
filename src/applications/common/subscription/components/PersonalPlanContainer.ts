@@ -1,14 +1,13 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { px, size } from "../../../../ui/size"
 import { PersonalPaidPlanBox } from "./PersonalPaidPlanBox"
 import { getApplePriceStr, getPriceStr } from "../utils/SubscriptionUtils"
 import { PersonalFreePlanBox } from "./PersonalFreePlanBox"
 import { PlanConfig } from "./BusinessPlanContainer"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { anyHasGlobalFirstYearCampaign, filterPlanConfigsAndGetSelectedPlan, getHasCampaign, PlanBoxContainerAttrs } from "../utils/PlanSelectorUtils"
+import { filterPlanConfigsAndGetSelectedPlan, getHasCampaign, hasRelevantGlobalFirstYearCampaign, PlanBoxContainerAttrs } from "../utils/PlanSelectorUtils"
 import { PaymentInterval } from "../utils/PriceUtils"
-
 import { PlanType } from "../../../../entities/sys/Utils"
 
 export class PersonalPlanContainer implements Component<PlanBoxContainerAttrs> {
@@ -107,12 +106,12 @@ export class PersonalPlanContainer implements Component<PlanBoxContainerAttrs> {
 			discountDetails && (getHasCampaign(discountDetails[PlanType.Revolutionary], isYearly) || getHasCampaign(discountDetails[PlanType.Legend], isYearly))
 
 		return m(
-			`#plan-selector.flex-column${allowSwitchingPaymentInterval ? "" : ".mt-16"}${anyHasGlobalFirstYearCampaign(discountDetails) || anyPaidPlanHasCampaign ? ".mt-32" : ""}`,
+			`#plan-selector.flex-column${allowSwitchingPaymentInterval ? "" : ".mt-16"}${hasRelevantGlobalFirstYearCampaign(discountDetails ?? null) || anyPaidPlanHasCampaign ? ".mt-32" : ""}`,
 			{
 				"data-testid": "dialog:select-subscription",
 				style: {
 					position: "relative",
-					...(styles.isMobileLayout()
+					...(Styles.get().isMobileLayout()
 						? {
 								// Ignore the horizontal paddings to use full width of the dialog for mobile
 								width: `calc(100% + 2 * ${px(size.spacing_24)})`,
@@ -156,16 +155,19 @@ export class PersonalPlanContainer implements Component<PlanBoxContainerAttrs> {
 						showMultiUser,
 						position: idx % 2 === 0 ? "left" : "right",
 						discountDetail: discountDetails?.[planConfig.type],
+						freePlanVisible: availablePlans.includes(PlanType.Free),
 					})
 				}),
 			),
-			m(PersonalFreePlanBox, {
-				isSelected: selectedPlan() === PlanType.Free,
-				isDisabled: !availablePlans.includes(PlanType.Free) || currentPlan === PlanType.Free,
-				isCurrentPlan: currentPlan === PlanType.Free,
-				onclick: (newPlan) => selectedPlan(newPlan),
-				priceAndConfigProvider,
-			}),
+			//Only show free plan when explicitly included, because we don't want to switch directly to Free anymore
+			availablePlans.includes(PlanType.Free) &&
+				m(PersonalFreePlanBox, {
+					isSelected: selectedPlan() === PlanType.Free,
+					isDisabled: !availablePlans.includes(PlanType.Free) || currentPlan === PlanType.Free,
+					isCurrentPlan: currentPlan === PlanType.Free,
+					onclick: (newPlan) => selectedPlan(newPlan),
+					priceAndConfigProvider,
+				}),
 		)
 	}
 }

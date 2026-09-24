@@ -2,17 +2,17 @@ import m, { ClassComponent, Vnode } from "mithril"
 import { WizardStepComponentAttrs } from "../../../ui/base/wizard/WizardStep"
 import { SignupViewModel } from "./SignupView"
 import { getCurrentPaymentInterval, PlanTypeToName, shouldShowApplePrices, UpgradeType } from "../subscription/utils/SubscriptionUtils"
-import { anyHasGlobalFirstYearCampaign, getDiscountDetails } from "../subscription/utils/PlanSelectorUtils"
+import { getDiscountDetails, getPlanSelectorSubtitle, getPlanSelectorTitle } from "../subscription/utils/PlanSelectorUtils"
 import { TranslationKeyType } from "../../../ui/utils/TranslationKey"
 import { PrimaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
 import { PlanSelector, PlanSelectorAttr, SubscriptionActionButtons } from "../subscription/PlanSelector"
-import { getAsLazy } from "@tutao/utils"
+import { getAsLazy } from "../../../ui/base/MaybeLazy"
 import { lang } from "../../../ui/utils/LanguageViewModel"
 import { px } from "../../../ui/size"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { MessageBanner } from "../../../ui/base/MessageBanner"
-import { Icons } from "../../../ui/base/icons/Icons"
 import { AvailablePlanType, PlanType } from "../../../entities/sys/Utils"
+import { PaymentInterval } from "../subscription/utils/PriceUtils"
 
 export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs<SignupViewModel>> {
 	view(vnode: Vnode<WizardStepComponentAttrs<SignupViewModel>>) {
@@ -23,7 +23,12 @@ export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs
 		const isApplePrice = shouldShowApplePrices(accountingInfo ?? null)
 		const discountDetails = getDiscountDetails(isApplePrice, planPrices!)
 		const promotionMessage = planPrices!.getRawPricingData().messageTextId as TranslationKeyType
-
+		let message
+		try {
+			message = promotionMessage == null ? null : lang.getTranslation(promotionMessage)
+		} catch (e) {
+			message = null
+		}
 		const button: PrimaryButtonAttrs = {
 			label: "pricing.select_action",
 			onclick: () => {},
@@ -37,20 +42,11 @@ export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs
 		const isBusiness = ctx.viewModel.options.businessUse()
 
 		return m(
-			`.full-width${styles.isMobileLayout() ? ".pt-16" : ""}`,
-			// Headline for a global campaign
-			!data.options!.businessUse() &&
-				anyHasGlobalFirstYearCampaign(discountDetails) &&
-				m(
-					"",
-					{ style: { "max-width": px(530) } },
-
-					m(MessageBanner, { translation: lang.getTranslation("pricing.cyber_monday_msg"), type: "base", icon: Icons.GiftFilled }),
-				),
+			`.full-width${Styles.get().isMobileLayout() ? ".pt-16" : ""}`,
 			// Headline for general messages -- currently only used when a user tries to manage multiple subscriptions on ios (which is not possible)
 			data.msg && m(MessageBanner, { translation: data.msg, type: "error" }),
 			// Headline for promotional messages
-			promotionMessage && m(MessageBanner, { translation: lang.getTranslation(promotionMessage), type: "base" }),
+			message && m(MessageBanner, { translation: message, type: "base" }),
 
 			m(
 				".flex.flex-column.items-start.full-width",
@@ -61,24 +57,15 @@ export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs
 					},
 				},
 				[
-					m(
-						`h1.font-mdio${styles.isMobileLayout() ? ".h3" : ".h1"}`,
-						{
-							style: {
-								position: "relative",
-								top: px(-6),
-							},
-						},
-						lang.getTranslationText("planselector_page_title"),
-					),
-					m(`p.mb-32`, lang.getTranslationText("planselector_page_subtitle")),
+					this.renderHeadline(data),
+					this.renderSubtitle(data),
 					m(
 						`.flex.gap-64.full-width${isBusiness ? ".justify-center" : ""}`,
 						m(
 							".flex-grow",
 							{
 								style: {
-									"max-width": styles.isMobileLayout() ? "initial" : isBusiness ? px(860) : px(530),
+									"max-width": Styles.get().isMobileLayout() ? "initial" : isBusiness ? px(860) : px(530),
 								},
 							},
 							m(PlanSelector, {
@@ -88,7 +75,7 @@ export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs
 								availablePlans: availablePlans!,
 								isApplePrice,
 								currentPlan: data.currentPlan ?? undefined,
-								currentPaymentInterval: getCurrentPaymentInterval(accountingInfo!),
+								currentPaymentInterval: getCurrentPaymentInterval(accountingInfo) ?? PaymentInterval.Yearly,
 								allowSwitchingPaymentInterval: isApplePrice || data.upgradeType !== UpgradeType.Switch,
 								showMultiUser: false,
 								discountDetails,
@@ -106,6 +93,25 @@ export class PlanSelectorPage implements ClassComponent<WizardStepComponentAttrs
 					),
 				],
 			),
+		)
+	}
+	private renderSubtitle(data: SignupViewModel) {
+		const subtitleTranslationKey = getPlanSelectorSubtitle(data.globalCampaignName, data.bonusMonthForYearlyPlans > 0)
+		return m(`p.mb-32`, lang.getTranslationText(subtitleTranslationKey))
+	}
+
+	private renderHeadline(data: SignupViewModel) {
+		const titleTranslationKey = getPlanSelectorTitle(data.globalCampaignName, data.bonusMonthForYearlyPlans > 0)
+
+		return m(
+			`h1.font-mdio${Styles.get().isMobileLayout() ? ".h3" : ".h1"}`,
+			{
+				style: {
+					position: "relative",
+					top: px(-6),
+				},
+			},
+			lang.getTranslationText(titleTranslationKey),
 		)
 	}
 }

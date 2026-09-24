@@ -1,6 +1,6 @@
 {
 	"extends": "../../tsconfig_common.json",
-	"include": ["network", "../../types/*"],
+	"include": ["network", "../types/*"],
 	"compilerOptions": {
 		"rootDir": "network",
 		"outDir": "../../build/network",
@@ -16,12 +16,6 @@
 		},
 		{
 			"path": "../entities/tsconfig.entities.storage.json"
-		},
-		{
-			"path": "../entities/tsconfig.entities.tutanota.json"
-		},
-		{
-			"path": "../entities/tsconfig.entities.base.json"
 		},
 		{
 			"path": "../entities/tsconfig.entities.monitor.json"

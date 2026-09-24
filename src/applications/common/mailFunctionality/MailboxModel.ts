@@ -5,9 +5,9 @@ import { EntityClient } from "../../../platform-kit/network/EntityClient.js"
 import { LoginController } from "../api/main/LoginController.js"
 import { assertNotNull, lazyMemoized, newPromise, ofClass } from "@tutao/utils"
 import { getEnabledMailAddressesWithUser } from "./SharedMailUtils.js"
-import * as restError from "@tutao/rest-client/error"
-import { isSameId, OperationType } from "@tutao/meta"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { PreconditionFailedError } from "@tutao/rest-client/error"
+import { elementIdToId, idToElementId, isSameId, OperationType } from "@tutao/meta"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	createMailAddressProperties,
 	createMailboxProperties,
@@ -50,9 +50,10 @@ export class MailboxModel {
 
 	// only init listeners once
 	private readonly initListeners = lazyMemoized(() => {
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.entityEventsReceived(updates, eventOwnerGroupId),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		this.eventController.addEntityUpdatesListener({
+			id: "MailboxModel",
+			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.onEntityUpdatesReceived(updates, eventOwnerGroupId),
+			priority: ListenerPriority.NORMAL,
 		})
 	})
 
@@ -84,11 +85,11 @@ export class MailboxModel {
 	 */
 	private async mailboxDetailsFromMembership(membership: GroupMembership): Promise<MailboxDetail> {
 		const [mailboxGroupRoot, mailGroupInfo, mailGroup] = await Promise.all([
-			this.entityClient.load(MailboxGroupRootTypeRef, membership.group),
+			this.entityClient.load(MailboxGroupRootTypeRef, idToElementId(membership.group)),
 			this.entityClient.load(GroupInfoTypeRef, membership.groupInfo),
-			this.entityClient.load(GroupTypeRef, membership.group),
+			this.entityClient.load(GroupTypeRef, idToElementId(membership.group)),
 		])
-		const mailbox = await this.entityClient.load(MailBoxTypeRef, mailboxGroupRoot.mailbox)
+		const mailbox = await this.entityClient.load(MailBoxTypeRef, idToElementId(mailboxGroupRoot.mailbox))
 		return {
 			mailbox,
 			mailGroupInfo,
@@ -121,13 +122,13 @@ export class MailboxModel {
 
 	async getMailboxDetailByMailboxId(mailboxId: Id): Promise<MailboxDetail | null> {
 		const allDetails = await this.getMailboxDetails()
-		return allDetails.find((detail) => isSameId(detail.mailbox._id, mailboxId)) ?? null
+		return allDetails.find((detail) => isSameId(detail.mailbox._id, idToElementId(mailboxId))) ?? null
 	}
 
 	async getMailboxDetailsForMailGroup(mailGroupId: Id): Promise<MailboxDetail> {
 		const mailboxDetails = await this.getMailboxDetails()
 		return assertNotNull(
-			mailboxDetails.find((md) => mailGroupId === md.mailGroup._id),
+			mailboxDetails.find((md) => isSameId(idToElementId(mailGroupId), md.mailGroup._id)),
 			"Mailbox detail for mail group does not exist",
 		)
 	}
@@ -136,12 +137,12 @@ export class MailboxModel {
 		const userMailGroupMembership = this.logins.getUserController().getUserMailGroupMembership()
 		const mailboxDetails = await this.getMailboxDetails()
 		return assertNotNull(
-			mailboxDetails.find((md) => md.mailGroup._id === userMailGroupMembership.group),
+			mailboxDetails.find((md) => isSameId(md.mailGroup._id, idToElementId(userMailGroupMembership.group))),
 			"Mailbox detail for user does not exist",
 		)
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(GroupInfoTypeRef, update)) {
 				if (update.operation === OperationType.UPDATE) {
@@ -168,42 +169,38 @@ export class MailboxModel {
 		//  - we set mailboxProperties reference manually (we could save the id elsewhere but it's easier this way)
 
 		// If we are already loading/creating, just return it to avoid races
-		const existingPromise = this.mailboxPropertiesPromises.get(mailboxGroupRoot._id)
+		const existingPromise = this.mailboxPropertiesPromises.get(elementIdToId(mailboxGroupRoot._id))
 		if (existingPromise) {
 			return existingPromise
 		}
 
 		const promise: Promise<MailboxProperties> = this.loadOrCreateMailboxProperties(mailboxGroupRoot)
-		this.mailboxPropertiesPromises.set(mailboxGroupRoot._id, promise)
-		return promise.finally(() => this.mailboxPropertiesPromises.delete(mailboxGroupRoot._id))
+		this.mailboxPropertiesPromises.set(elementIdToId(mailboxGroupRoot._id), promise)
+		return promise.finally(() => this.mailboxPropertiesPromises.delete(elementIdToId(mailboxGroupRoot._id)))
 	}
 
 	async loadOrCreateMailboxProperties(mailboxGroupRoot: MailboxGroupRoot): Promise<MailboxProperties> {
 		if (!mailboxGroupRoot.mailboxProperties) {
-			mailboxGroupRoot.mailboxProperties = await this.entityClient
-				.setup(
-					null,
-					createMailboxProperties({
-						_ownerGroup: mailboxGroupRoot._ownerGroup ?? "",
-						reportMovedMails: "0",
-						mailAddressProperties: [],
-					}),
-				)
-				.catch(
-					ofClass(restError.PreconditionFailedError, (e) => {
-						// We try to prevent race conditions but they can still happen with multiple clients trying ot create mailboxProperties at the same time.
-						// We send special precondition from the server with an existing id.
-						if (e.data && e.data.startsWith("exists:")) {
-							const existingId = e.data.substring("exists:".length)
-							console.log("mailboxProperties already exists", existingId)
-							return existingId
-						} else {
-							throw new ProgrammingError(`Could not create mailboxProperties, precondition: ${e.data}`)
-						}
-					}),
-				)
+			const properties = createMailboxProperties({
+				reportMovedMails: "0",
+				mailAddressProperties: [],
+			})
+			properties._ownerGroup = mailboxGroupRoot._ownerGroup ?? ""
+			mailboxGroupRoot.mailboxProperties = await this.entityClient.setup(null, properties).catch(
+				ofClass(PreconditionFailedError, (e) => {
+					// We try to prevent race conditions but they can still happen with multiple clients trying ot create mailboxProperties at the same time.
+					// We send special precondition from the server with an existing id.
+					if (e.data && e.data.startsWith("exists:")) {
+						const existingId = e.data.substring("exists:".length)
+						console.log("mailboxProperties already exists", existingId)
+						return existingId
+					} else {
+						throw new ProgrammingError(`Could not create mailboxProperties, precondition: ${e.data}`)
+					}
+				}),
+			)
 		}
-		const mailboxProperties = await this.entityClient.load(MailboxPropertiesTypeRef, assertNotNull(mailboxGroupRoot.mailboxProperties))
+		const mailboxProperties = await this.entityClient.load(MailboxPropertiesTypeRef, idToElementId(assertNotNull(mailboxGroupRoot.mailboxProperties)))
 		if (mailboxProperties.mailAddressProperties.length === 0) {
 			await this.migrateFromOldSenderName(mailboxGroupRoot, mailboxProperties)
 		}
@@ -214,7 +211,7 @@ export class MailboxModel {
 	private async migrateFromOldSenderName(mailboxGroupRoot: MailboxGroupRoot, mailboxProperties: MailboxProperties) {
 		const userGroupInfo = this.logins.getUserController().userGroupInfo
 		const legacySenderName = userGroupInfo.name
-		const mailboxDetails = await this.getMailboxDetailsForMailGroup(mailboxGroupRoot._id)
+		const mailboxDetails = await this.getMailboxDetailsForMailGroup(elementIdToId(mailboxGroupRoot._id))
 		const mailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userGroupInfo)
 		for (const mailAddress of mailAddresses) {
 			mailboxProperties.mailAddressProperties.push(

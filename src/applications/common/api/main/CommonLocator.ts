@@ -4,6 +4,7 @@ import { CredentialsProvider } from "../../misc/credentials/CredentialsProvider.
 import {
 	CommonSystemFacade,
 	DesktopSystemFacade,
+	ImapSyncFacade,
 	MobileContactsFacade,
 	MobilePaymentsFacade,
 	MobileSystemFacade,
@@ -39,7 +40,7 @@ import type { UserManagementFacade } from "../worker/facades/lazy/UserManagement
 import { RecoverCodeFacade } from "../../../../platform-kit/base/facades/lazy/RecoverCodeFacade.js"
 import { ContactFacade } from "../worker/facades/lazy/ContactFacade.js"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { WorkerFacade } from "../worker/facades/WorkerFacade.js"
 import { WebsocketConnectivityModel } from "../../misc/WebsocketConnectivityModel.js"
 import type { MailboxDetail, MailboxModel } from "../../mailFunctionality/MailboxModel.js"
@@ -53,7 +54,8 @@ import { UsageTestModel } from "../../misc/UsageTestModel.js"
 import { WebMobileFacade } from "../../native/WebMobileFacade.js"
 import { OperationProgressTracker } from "./OperationProgressTracker.js"
 import { DomainConfigProvider } from "../common/DomainConfigProvider.js"
-import { MailAddressTableModel, UserInfo } from "../../settings/mailaddress/MailAddressTableModel.js"
+import { MailAddressTableModel, MailAddressTableInfo } from "../../settings/mailaddress/MailAddressTableModel.js"
+import type { GroupInfo } from "@tutao/entities/sys"
 import { lazy } from "@tutao/utils"
 import { NativeInterfaceMain } from "../../native/NativeInterfaceMain.js"
 import { NativePushServiceApp } from "../../native/NativePushServiceApp.js"
@@ -61,31 +63,30 @@ import { NativePushServiceApp } from "../../native/NativePushServiceApp.js"
 import { SendMailModel } from "../../mailFunctionality/SendMailModel.js"
 import { RecipientsSearchModel } from "../../misc/RecipientsSearchModel.js"
 import type { CalendarInfo, CalendarModel } from "../../../calendar-app/calendar/model/CalendarModel.js"
-import type { CalendarEventModel, CalendarOperation } from "../../../calendar-app/calendar/gui/eventeditor-model/CalendarEventModel.js"
+import type { CalendarEventModelFactory } from "../../../calendar-app/calendar/gui/eventeditor-model/CalendarEventModel.js"
 import type { CalendarEventPreviewViewModel } from "../../../calendar-app/calendar/gui/eventpopup/CalendarEventPreviewViewModel.js"
 import { RecipientsModel } from "./RecipientsModel.js"
 import { WorkerRandomizer } from "../worker/workerInterfaces.js"
-import { CommonSearchModel } from "../../search/CommonSearchModel.js"
 import { DeviceConfig } from "../../misc/DeviceConfig.js"
 import type { CalendarContactPreviewViewModel } from "../../../calendar-app/calendar/gui/eventpopup/CalendarContactPreviewViewModel.js"
 import { SyncTracker } from "./SyncTracker.js"
 import { KeyVerificationFacade } from "../../../../platform-kit/base/facades/lazy/KeyVerificationFacade"
 import type { CalendarInviteHandler } from "../../../calendar-app/calendar/view/CalendarInvites"
 import { GroupSettingsModel } from "../../sharing/model/GroupSettingsModel"
-import PublicEncryptionKeyProvider from "../../../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
+import PublicEncryptionKeyProvider from "../../../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
 
-import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { LoginViewModel } from "../../login/LoginViewModel"
 import { DriveFacade } from "../worker/facades/lazy/DriveFacade.js"
 import { TransferProgressDispatcher } from "./TransferProgressDispatcher"
 import { CalendarEventUpdateCoordinator } from "../../../calendar-app/calendar/model/CalendarEventUpdateCoordinator"
 import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorage"
-import { CalendarEvent, Contact, Mail, MailboxProperties } from "@tutao/entities/tutanota"
+import { CalendarEvent, Contact, MailboxProperties } from "@tutao/entities/tutanota"
 import { ThemeController } from "../../../../ui/ThemeController"
 import { WhitelabelThemeGenerator } from "../../../../ui/WhitelabelThemeGenerator"
 import { Header } from "../../../../ui/Header"
-import { Router } from "../../../../ui/ScopedRouter"
+import { Router } from "../../../../ui/ScopedThrottledRouter"
 import { SearchToken } from "../../../../ui/utils/QueryTokenUtils"
 import { ClientModelInfo } from "@tutao/instance-pipeline"
 
@@ -101,7 +102,6 @@ export interface CommonLocator {
 	secondFactorHandler: SecondFactorHandler
 	loginListener: PageContextLoginListener
 	newsModel: NewsModel
-	search: CommonSearchModel
 	infoMessageHandler: InfoMessageHandler
 	desktopSettingsFacade: SettingsFacade
 	desktopSystemFacade: DesktopSystemFacade
@@ -135,6 +135,7 @@ export interface CommonLocator {
 	connectivityModel: WebsocketConnectivityModel
 	identityKeyCreator: IdentityKeyCreator
 	driveFacade: DriveFacade
+	imapImporter: ImapSyncFacade
 
 	mailboxModel: MailboxModel
 
@@ -165,7 +166,9 @@ export interface CommonLocator {
 
 	mailAddressTableModelForOwnMailbox(): Promise<MailAddressTableModel>
 
-	mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, userInfo: UserInfo): Promise<MailAddressTableModel>
+	mailAddressTableModelForSharedMailbox(mailGroupInfo: GroupInfo): Promise<MailAddressTableModel>
+
+	mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, userInfo: MailAddressTableInfo): Promise<MailAddressTableModel>
 
 	sendMailModel(mailboxDetails: MailboxDetail, mailboxProperties: MailboxProperties): Promise<SendMailModel>
 
@@ -179,13 +182,7 @@ export interface CommonLocator {
 	throttledRouter: lazy<Router>
 
 	// calendar-related
-	calendarEventModel(
-		editMode: CalendarOperation,
-		event: Partial<CalendarEvent>,
-		mailboxDetail: MailboxDetail,
-		mailboxProperties: MailboxProperties,
-		responseTo: Mail | null,
-	): Promise<CalendarEventModel | null>
+	calendarEventModel: CalendarEventModelFactory
 
 	calendarEventPreviewModel(
 		selectedEvent: CalendarEvent,

@@ -2,9 +2,9 @@ import m, { Component, Vnode } from "mithril"
 import { DropDownSelector, type DropDownSelectorAttrs, SelectorItemList } from "../../../ui/base/DropDownSelector"
 import { getLanguage, lang, LanguageCode, languageCodeToTag, languageNative } from "../../../ui/utils/LanguageViewModel"
 import { locator } from "../api/main/CommonLocator"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { DropDownSelectorLink } from "../../../ui/base/DropDownSelectorLink"
-import { isDesktop } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { DeviceConfig } from "../misc/DeviceConfig"
 
 interface LanguageDropdownAttrs {
@@ -45,11 +45,11 @@ export class LanguageDropdown implements Component<LanguageDropdownAttrs> {
 					: getLanguage()
 				await lang.setLanguage(newLanguage)
 
-				if (isDesktop()) {
+				if (EnvProvider.get().isDesktop()) {
 					await locator.desktopSettingsFacade.changeLanguage(newLanguage.code, newLanguage.languageTag)
 				}
 
-				styles.updateStyle("main")
+				Styles.get().updateStyle("main")
 				m.redraw()
 			},
 		}

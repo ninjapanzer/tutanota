@@ -5,7 +5,7 @@ import { formatPrice, formatPriceWithInfo, getPaymentMethodName, PaymentInterval
 import { Const } from "@tutao/app-env"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import type { UpgradeSubscriptionData } from "./UpgradeSubscriptionWizard"
-import * as restError from "@tutao/rest-client/error"
+import { BadGatewayError, PreconditionFailedError } from "@tutao/rest-client/error"
 import {
 	appStorePlanName,
 	getPreconditionFailedPaymentMsg,
@@ -25,13 +25,14 @@ import { MobilePaymentResultType } from "@tutao/native-bridge/generatedIpc/enums
 import { updatePaymentData } from "./InvoiceAndPaymentDataPage"
 import { SessionType } from "../../../platform-kit/app-env/SessionType"
 import { MobilePaymentError } from "../api/common/error/MobilePaymentError.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { DateTime } from "luxon"
 import { formatDate } from "../../../ui/utils/Formatter.js"
 import { ReferralType, SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
 import { completeUpgradeStage } from "../ratings/UserSatisfactionUtils"
-import { createSwitchAccountTypePostIn, SwitchAccountTypeService } from "@tutao/entities/sys"
+import { createSwitchAccountTypePostIn, SwitchAccountTypeService_POST } from "@tutao/entities/sys"
 import { AccountType, PaymentMethodType } from "../../../entities/sys/Utils"
+import { elementIdToId } from "@tutao/meta"
 
 export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscriptionData> {
 	private dom!: HTMLElement
@@ -51,7 +52,8 @@ export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscr
 			if (!success) {
 				return
 			}
-			const receivedNotification = await waitUntilCustomerInfoPlanTypeIsCorrect(data.targetPlanType, assertNotNull(data.customer?._id))
+			const customerId = elementIdToId(assertNotNull(data.customer?._id ?? null))
+			const receivedNotification = await waitUntilCustomerInfoPlanTypeIsCorrect(data.targetPlanType, customerId)
 			if (receivedNotification) {
 				return this.close(data, this.dom)
 			}
@@ -65,9 +67,9 @@ export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscr
 			referralCode: data.referralData?.code ?? null,
 			specialPriceUserSingle: null,
 			surveyData: null,
-			app: client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
+			app: ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
 		})
-		showProgressDialog("pleaseWait_msg", locator.serviceExecutor.post(SwitchAccountTypeService, serviceData))
+		showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(SwitchAccountTypeService_POST, serviceData, null))
 			.then(() => {
 				const stage = data.upgradeUsageTest?.getStage(1)
 
@@ -82,7 +84,7 @@ export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscr
 				return this.close(data, this.dom)
 			})
 			.catch(
-				ofClass(restError.PreconditionFailedError, (e) => {
+				ofClass(PreconditionFailedError, (e) => {
 					Dialog.message(
 						lang.makeTranslation(
 							"precondition_failed",
@@ -93,7 +95,7 @@ export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscr
 				}),
 			)
 			.catch(
-				ofClass(restError.TooManyRequestsError, (e) => {
+				ofClass(BadGatewayError, (e) => {
 					Dialog.message(
 						lang.makeTranslation(
 							"payment_failed",

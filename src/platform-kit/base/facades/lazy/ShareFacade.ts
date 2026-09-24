@@ -1,7 +1,5 @@
-import { isSameTypeRef } from "../../../meta"
-import type { ShareCapability } from "@tutao/app-env"
-import { assertWorkerOrNode } from "@tutao/app-env"
-import { neverNull } from "@tutao/utils"
+import { EnvProvider, ShareCapability } from "@tutao/app-env"
+import { isNotNull, neverNull } from "@tutao/utils"
 import { RecipientsNotFoundError } from "../../../network/error/RecipientsNotFoundError.js"
 import {
 	_encryptBytes,
@@ -16,9 +14,9 @@ import {
 } from "@tutao/crypto"
 import { IServiceExecutor } from "../../../network/ServiceRequest.js"
 import { UserFacade } from "../UserFacade.js"
-import { KeyLoaderFacade } from "../../crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../base-crypto/KeyLoaderFacade.js"
 import { KeyVerificationMismatchError } from "../../../network/error/KeyVerificationMismatchError"
-import { CryptoFacade } from "../../crypto/CryptoFacade"
+import { CryptoFacade } from "../../base-crypto/CryptoFacade"
 import { EntityClient } from "../../../network/EntityClient"
 import {
 	createGroupInvitationDeleteData,
@@ -27,13 +25,13 @@ import {
 	createSharedGroupData,
 	GroupInvitationPostData,
 	GroupInvitationPostReturn,
-	GroupInvitationService,
-	InternalRecipientKeyData,
-	InternalRecipientKeyDataTypeRef,
+	GroupInvitationService_DELETE,
+	GroupInvitationService_POST,
+	GroupInvitationService_PUT,
 } from "@tutao/entities/tutanota"
 import { GroupInfo, GroupInfoTypeRef, ReceivedGroupInvitation } from "@tutao/entities/sys"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class ShareFacade {
 	constructor(
@@ -55,7 +53,7 @@ export class ShareFacade {
 	}
 
 	async sendGroupInvitationRequest(invitationData: GroupInvitationPostData): Promise<GroupInvitationPostReturn> {
-		return this.serviceExecutor.post(GroupInvitationService, invitationData)
+		return this.serviceExecutor.execute(GroupInvitationService_POST, invitationData, null)
 	}
 
 	async prepareGroupInvitation(
@@ -97,8 +95,8 @@ export class ShareFacade {
 				notFoundRecipients,
 				keyVerificationMismatchRecipients,
 			)
-			if (keyData && isSameTypeRef(keyData._type, InternalRecipientKeyDataTypeRef)) {
-				invitationData.internalKeyData.push(keyData as InternalRecipientKeyData)
+			if (isNotNull(keyData) && keyData.pubEncRecipientKeyData != null) {
+				invitationData.internalKeyData.push(keyData.pubEncRecipientKeyData)
 			}
 		}
 
@@ -130,13 +128,13 @@ export class ShareFacade {
 			userGroupKeyVersion: userGroupEncGroupKey.encryptingKeyVersion.toString(),
 			sharedGroupKeyVersion: sharedGroupEncInviteeGroupInfoKey.encryptingKeyVersion.toString(),
 		})
-		await this.serviceExecutor.put(GroupInvitationService, serviceData)
+		await this.serviceExecutor.execute(GroupInvitationService_PUT, serviceData, null)
 	}
 
 	async rejectOrCancelGroupInvitation(receivedGroupInvitationId: IdTuple): Promise<void> {
 		const serviceData = createGroupInvitationDeleteData({
 			receivedInvitation: receivedGroupInvitationId,
 		})
-		await this.serviceExecutor.delete(GroupInvitationService, serviceData)
+		await this.serviceExecutor.execute(GroupInvitationService_DELETE, serviceData, null)
 	}
 }

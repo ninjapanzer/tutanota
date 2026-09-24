@@ -1,13 +1,4 @@
 export {
-	aesEncrypt,
-	aesEncryptConfigurationDatabaseItem,
-	aesDecrypt,
-	asyncDecryptBytes,
-	aes256EncryptSearchIndexEntry,
-	aesDecryptUnauthenticated,
-	aes256EncryptSearchIndexEntryWithIV,
-} from "./encryption/Aes.js"
-export {
 	type X25519PrivateKey,
 	type X25519PublicKey,
 	type X25519KeyPair,
@@ -28,8 +19,11 @@ import {
 	ed25519PublicKeyToBytes,
 	type Ed25519Signature,
 	ed25519SignatureToBytes,
+	type EncodedEd25519Signature,
 	generateEd25519KeyPair,
 	initEd25519,
+	initEd25519ForTesting,
+	type SigningPublicKey,
 	signWithEd25519,
 	verifyEd25519Signature,
 } from "./encryption/Ed25519"
@@ -39,10 +33,13 @@ export {
 	type Ed25519PublicKey,
 	type Ed25519KeyPair,
 	type Ed25519Signature,
+	type SigningPublicKey,
+	type EncodedEd25519Signature,
 	generateEd25519KeyPair,
 	signWithEd25519,
 	verifyEd25519Signature,
 	initEd25519,
+	initEd25519ForTesting,
 	bytesToEd25519PublicKey,
 	ed25519PublicKeyToBytes,
 	bytesToEd25519PrivateKey,
@@ -79,24 +76,8 @@ export {
 	ARGON2ID_MEMORY_IN_KiB,
 	ARGON2ID_PARALLELISM,
 } from "./hashes/Argon2id/Argon2id.js"
-export {
-	type AbstractEncryptedKeyPair,
-	type EncryptedKeyPairs,
-	type EncryptedPqKeyPairs,
-	type EncryptedRsaKeyPairs,
-	type EncryptedRsaX25519KeyPairs,
-	isEncryptedPqKeyPairs,
-	encryptKey,
-	decryptKey,
-	encryptRsaKey,
-	decryptRsaKey,
-	decryptKeyPair,
-	encryptX25519Key,
-	encryptKyberKey,
-	aes256DecryptWithRecoveryKey,
-	decryptKeyUnauthenticatedWithDeviceKeyChain,
-} from "./encryption/KeyEncryption.js"
 export { Randomizer, random } from "./random/Randomizer.js"
+export { EntropyDataChunk } from "./random/EntropyDataChunk.js"
 export {
 	encode,
 	hexToRsaPublicKey,
@@ -108,14 +89,7 @@ export {
 	extractRawPublicRsaKeyFromPrivateRsaKey,
 	rsaPublicKeyToBytes,
 } from "./encryption/Rsa.js"
-export {
-	type RsaKeyPair,
-	type RsaX25519KeyPair,
-	type RsaPrivateKey,
-	type RawRsaPublicKey,
-	type RsaPublicKey,
-	type RsaX25519PublicKey,
-} from "./encryption/RsaKeyPair.js"
+export { RsaKeyPair, RsaX25519KeyPair, RsaPrivateKey, RsaPublicKey, RsaX25519PublicKey } from "./encryption/RsaKeyPair.js"
 export {
 	KeyPairType,
 	type AsymmetricKeyPair,
@@ -131,7 +105,7 @@ export {
 	isVersionedRsaOrRsaX25519PublicKey,
 	isRsaX25519PublicKey,
 } from "./encryption/AsymmetricKeyPair.js"
-export { type PQKeyPairs, type PQPublicKeys, pqKeyPairsToPublicKeys } from "./encryption/PQKeyPairs.js"
+export { PQKeyPairs, PQPublicKeys, pqKeyPairsToPublicKeys } from "./encryption/PQKeyPairs.js"
 export { sha1Hash } from "./hashes/Sha1.js"
 export { sha256Hash } from "./hashes/Sha256.js"
 export { sha512Hash } from "./hashes/Sha512.js"
@@ -139,43 +113,51 @@ export { TotpVerifier } from "./misc/TotpVerifier.js"
 export { type TotpSecret } from "./misc/TotpVerifier.js"
 export { murmurHash } from "./hashes/MurmurHash.js"
 export { hkdf } from "./hashes/HKDF.js"
-export { hmacSha256, verifyHmacSha256, type MacTag, verifyHmacSha256Async, hmacSha256Async } from "./encryption/Hmac.js"
+export { hmacSha256, verifyHmacSha256, verifyHmacSha256Async, hmacSha256Async } from "./encryption/Hmac.js"
 export {
 	aes256RandomKey,
 	keyToUint8Array,
 	uint8ArrayToKey,
+	uint8ArrayTo256Key,
+	uint8ArrayTo128Key,
 	base64ToKey,
 	keyToBase64,
 	uint8ArrayToBitArray,
 	bitArrayToUint8Array,
 	createAuthVerifierAsBase64Url,
 	createAuthVerifier,
-	type BitArray,
-	type AesKey,
-	type Aes128Key,
-	type Aes256Key,
-	IV_BYTE_LENGTH,
-	FIXED_IV,
-	generateIV,
+	INITIALIZATION_VECTOR_LENGTH_BYTES,
+	FIXED_INITIALIZATION_VECTOR,
+	type InitializationVector,
+	type KdfNonce,
+	generateInitializationVector,
+	generateKdfNonce,
+	validateInitializationVectorLength,
+	validateKdfNonceLength,
 } from "./encryption/symmetric/SymmetricCipherUtils.js"
-export { AesKeyLength, getAndVerifyAesKeyLength, getKeyLengthInBytes } from "./encryption/symmetric/AesKeyLength.js"
+export { AesKey, Aes256Key, Aes128Key, type BitArray, AesKeyLength, getKeyLengthInBytes, assert256BitKey } from "./encryption/symmetric/AesKey.js"
 export { blake3Hash, blake3Mac, blake3MacVerify, blake3Kdf } from "./hashes/Blake3.js"
-export { AeadFacade, PADDING_BYTE } from "./encryption/symmetric/AeadFacade.js"
+export { PADDING_BYTE } from "./encryption/symmetric/AeadFacade.js"
 export * as cryptoUtils from "./CryptoUtils.js"
-export * from "./CryptoWrapper.js"
-export { SymmetricKeyDeriver, type SymmetricSubKeys, type AeadSubKeys } from "./encryption/symmetric/SymmetricKeyDeriver.js"
-export type {
-	SymmetricCipherVersion,
-	SymmetricAesCipherVersion,
-	SymmetricAeadCipherVersion,
-	getSymmetricCipherVersion,
-} from "./encryption/symmetric/SymmetricCipherVersion.js"
 export {
-	SymmetricCipherFacade,
-	SYMMETRIC_CIPHER_FACADE,
-	type ValueDecryptor,
-	InstanceDecryptor,
-	MissingSessionKey,
-} from "./encryption/symmetric/SymmetricCipherFacade.js"
+	SymmetricSubKeys,
+	AeadSubKeys,
+	AeadWithGroupKeySubKeys,
+	AeadWithSessionKeySubKeys,
+	AesCbcSubKeys,
+	AesCbcThenHmacSubKeys,
+	UnusedReservedUnauthenticatedSubKeys,
+	type InstanceTypeId,
+} from "./encryption/symmetric/SymmetricKeyDeriver.js"
+export { SymmetricCipherVersion, getSymmetricCipherVersion } from "./encryption/symmetric/SymmetricCipherVersion.js"
 export { AesCbcFacade } from "./encryption/symmetric/AesCbcFacade.js"
 export * from "./CryptoTypes.js"
+export * from "./encryption/symmetric/ParsedCiphertext.js"
+export * from "./instance-pipeline-crypto/Aes.js"
+export * from "./instance-pipeline-crypto/CryptoWrapper.js"
+export * from "./instance-pipeline-crypto/KeyEncryption.js"
+export * from "./instance-pipeline-crypto/SymmetricCipherFacade.js"
+export * from "./instance-pipeline-crypto/decryption/InstanceDecryptor.js"
+export * from "./instance-pipeline-crypto/encryption/SubKeyProvider.js"
+export { type RsaImplementation } from "./encryption/RsaImplementation.js"
+export { EncryptedKeyPairs, EncryptedRsaX25519KeyPairs, EncryptedRsaKeyPairs, EncryptedPqKeyPairs } from "./encryption/EncryptedKeyPairs"

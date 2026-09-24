@@ -1,112 +1,78 @@
 import { ProgrammingError } from "./ProgrammingError"
+import { _isNode, _isWorker } from "./TsPlatformConstants"
+import { TypeChecks } from "./TsTypeChecks"
 
 // keep in sync with LaunchHtml.js meta tag title
 export const LOGIN_TITLE = "Mail. Done. Right. Tuta Mail Login & Sign up for an Ad-free Mailbox"
-export const Mode: Record<EnvMode, EnvMode> = Object.freeze({
-	Browser: "Browser",
-	App: "App",
-	Test: "Test",
-	Playground: "Playground",
-	Desktop: "Desktop",
-	Admin: "Admin",
-})
 
-export function getWebsocketBaseUrl(domainConfig: DomainConfig): string {
-	return (
-		domainConfig.apiUrl
-			// replaces http: with ws: and https: with wss:
-			.replace(/^http/, "ws")
-	)
+export type DomainConfigMap = Record<string, DomainConfig>
+export type EnvType = {
+	staticUrl: string | null // if null the url from the browser is used
+	mode: Mode
+	platformId: PlatformId | null
+	dist: boolean
+	versionNumber: string
+	timeout: number
+	domainConfigs: DomainConfigMap
+	networkDebugging: boolean
+	clientName: string | null
 }
 
-/** Returns the origin which should be used for API requests. */
-export function getApiBaseUrl(domainConfig: DomainConfig): string {
-	if (isIOSApp()) {
-		// http:// -> api:// and https:// -> apis://
-		return domainConfig.apiUrl.replace(/^http/, "api")
-	} else {
-		return domainConfig.apiUrl
-	}
-}
-
-export function isIOSApp(): boolean {
-	if (isApp() && env.platformId == null) {
-		throw new ProgrammingError("PlatformId is not set!")
-	}
-	return isApp() && env.platformId === "ios"
+export const enum PlatformId {
+	Ios = "ios",
+	Android = "android",
+	Darwin = "darwin",
+	Linux = "linux",
+	Win32 = "win32",
 }
 
 /**
- * Return true if an Apple device; used for checking if CTRL or CMD/Meta should be used as the primary modifier
+ * Different parameters based on the domain the app is running on.
  */
-export function isAppleDevice(): boolean {
-	return env.platformId === "darwin" || isIOSApp()
+export type DomainConfig = {
+	/** Whether it is a well-known domain provided by us. */
+	firstPartyDomain: boolean
+	/** the other domain in the domain migration for the current staging level */
+	partneredDomainTransitionUrl: string
+	/**
+	 *  What URL should be used for REST requests.
+	 * Important! You probably do not want to use it directly but rather through the accessor function
+	 */
+	apiUrl: string
+	/**
+	 * Which URL should be opened for Webauthn flow on desktop for keys associated with our current domain (tuta.com).
+	 */
+	webauthnUrl: string
+	/**
+	 * Which URL should b opened for Webauthn flow on desktop for keys associated with our legacy domain (tutanota.com)
+	 */
+	legacyWebauthnUrl: string
+	/** Same as {@link webauthnUrl} but for mobile apps. */
+	webauthnMobileUrl: string
+	/** Same as {@link legacyWebauthnUrl} but for mobile apps. */
+	legacyWebauthnMobileUrl: string
+	/** Which URL should be opened for the credit card payment flow. */
+	paymentUrl: string
+	/** Our current Relying Party ID to register the keys for. Superdomain of our domains. */
+	webauthnRpId: string
+	/** URL for the legacy U2F API. */
+	u2fAppId: string
+	/** Which URL to use to build the gift card sharing URL. */
+	giftCardBaseUrl: string
+	/** Which URL to use to build the referral URL. */
+	referralBaseUrl: string
+	/** Base URL for requesting any information from de website */
+	websiteBaseUrl: string
 }
 
-export function isAndroidApp(): boolean {
-	if (isApp() && env.platformId == null) {
-		throw new ProgrammingError("PlatformId is not set!")
-	}
-
-	return isApp() && env.platformId === "android"
+export const enum Mode {
+	Browser = "Browser",
+	App = "App",
+	Test = "Test",
+	Playground = "Playground",
+	Desktop = "Desktop",
+	Admin = "Admin",
 }
-
-export function isApp(): boolean {
-	return env.mode === Mode.App
-}
-
-export function isDesktop(): boolean {
-	return env.mode === Mode.Desktop
-}
-
-export function isBrowser(): boolean {
-	return env.mode === Mode.Browser
-}
-
-export function ifDesktop<T>(obj: T | null): T | null {
-	return isDesktop() ? obj : null
-}
-
-let worker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope
-let node = typeof process === "object" && typeof process.versions === "object" && typeof process.versions.node !== "undefined"
-
-export function isMain(): boolean {
-	return !worker && !node
-}
-
-export function isWebClient() {
-	return env.mode === Mode.Browser
-}
-
-export function isAdminClient(): boolean {
-	return env.mode === Mode.Admin
-}
-
-export function isElectronClient(): boolean {
-	return isDesktop() || isAdminClient()
-}
-
-export function isMainOrNode(): boolean {
-	return !worker || node || isTest()
-}
-
-export function isWorkerOrNode(): boolean {
-	return worker || node || isTest()
-}
-
-export function isWorker(): boolean {
-	return worker
-}
-
-export function isTest(): boolean {
-	return env.mode === Mode.Test
-}
-
-export function isDesktopMainThread(): boolean {
-	return node && typeof env !== "undefined" && (isDesktop() || isAdminClient())
-}
-
-let boot = !isDesktopMainThread() && !isWorker()
 
 /**
  * A hackaround. Set by bundler.
@@ -115,41 +81,183 @@ let boot = !isDesktopMainThread() && !isWorker()
  */
 const assertionsEnabled = false
 
-export function assertMainOrNode() {
-	if (!assertionsEnabled) return
+export class EnvProvider {
+	private static boot: boolean =
+		_isNode && !_isWorker && EnvProvider.tryInitWithGlobalEnv() != null && (EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient())
 
-	if (!isMainOrNode()) {
-		throw new Error("this code must not run in the worker thread")
+	private static singleton: EnvProvider | null = null
+
+	public static get(): EnvProvider {
+		EnvProvider.tryInitWithGlobalEnv()
+		if (EnvProvider.singleton == null) {
+			throw new Error("global var env is not defined yet")
+		}
+		return EnvProvider.singleton
 	}
 
-	if (boot) {
-		throw new Error("this main code must not be loaded at boot time")
+	public isMainOrNode(): boolean {
+		return EnvProvider.isMainOrNode()
 	}
-}
 
-export function assertMainOrNodeBoot() {
-	if (!assertionsEnabled) return
-
-	if (!isMainOrNode()) {
-		throw new Error("this code must not run in the worker thread")
+	private static tryInitWithGlobalEnv(): EnvProvider | null {
+		if (EnvProvider.singleton == null && TypeChecks.hasProperty("env")) {
+			EnvProvider.singleton = new EnvProvider(env)
+		}
+		return EnvProvider.singleton
 	}
-}
 
-export function assertWorkerOrNode() {
-	if (!assertionsEnabled) return
-
-	if (!isWorkerOrNode()) {
-		throw new Error("this code must not run in the gui thread")
+	public getVersionNumber(): string {
+		return this.env.versionNumber
 	}
-}
 
-export function bootFinished() {
-	boot = false
-}
+	public getTimeOutValue(): number {
+		return this.env.timeout
+	}
 
-/**
- * Whether or not we will be using an offline cache (doesn't take into account if credentials are stored)
- */
-export function isOfflineStorageAvailable(): boolean {
-	return !isBrowser() && !isAdminClient()
+	constructor(public readonly env: EnvType) {}
+
+	public getPlatformId(): PlatformId | null {
+		return this.env.platformId
+	}
+
+	public networkDebuggingEnabled(): boolean {
+		return this.env.networkDebugging
+	}
+
+	public getClientName(): string | null {
+		return this.env.clientName
+	}
+
+	public isIOSApp(): boolean {
+		if (this.isApp() && this.env.platformId == null) {
+			throw new ProgrammingError("PlatformId is not set!")
+		}
+		return this.isApp() && this.env.platformId === PlatformId.Ios
+	}
+
+	/**
+	 * Return true if an Apple device; used for checking if CTRL or CMD/Meta should be used as the primary modifier
+	 */
+	public isAppleDevice(): boolean {
+		return this.env.platformId === PlatformId.Darwin || this.isIOSApp()
+	}
+
+	public isAndroidApp(): boolean {
+		if (this.isApp() && this.env.platformId == null) {
+			throw new ProgrammingError("PlatformId is not set!")
+		}
+
+		return this.isApp() && this.env.platformId === PlatformId.Android
+	}
+
+	public isApp(): boolean {
+		return this.env.mode === Mode.App
+	}
+
+	public isDesktop(): boolean {
+		return this.env.mode === Mode.Desktop
+	}
+
+	public isBrowser(): boolean {
+		return this.env.mode === Mode.Browser
+	}
+
+	public isWebClient(): boolean {
+		return this.env.mode === Mode.Browser
+	}
+
+	public isAdminClient(): boolean {
+		return this.env.mode === Mode.Admin
+	}
+
+	isElectronClient(): boolean {
+		return this.isDesktop() || this.isAdminClient()
+	}
+
+	public static isMainOrNode(): boolean {
+		return !_isWorker || _isNode || EnvProvider.isTest()
+	}
+
+	public static isWorkerOrNode(): boolean {
+		return _isWorker || _isNode || EnvProvider.isTest()
+	}
+
+	public static isWorker(): boolean {
+		return _isWorker
+	}
+
+	public static isMain(): boolean {
+		return !_isWorker && !_isNode
+	}
+
+	public static isTest(): boolean {
+		EnvProvider.tryInitWithGlobalEnv()
+		return EnvProvider.singleton?.env.mode === Mode.Test
+	}
+
+	/**
+	 * Whether or not we will be using an offline cache (doesn't take into account if credentials are stored)
+	 */
+	public isOfflineStorageAvailable(): boolean {
+		return !this.isBrowser() && !this.isAdminClient()
+	}
+
+	public isFullArchiveSearchAvailable(): boolean {
+		return this.isOfflineStorageAvailable() && this.isDesktop()
+	}
+
+	public static bootFinished(): void {
+		this.boot = false
+	}
+
+	public static isBootFinished(): boolean {
+		return this.boot
+	}
+
+	public getWebsocketBaseUrl(domainConfig: DomainConfig): string {
+		// replaces http: with ws: and https: with wss:
+		return domainConfig.apiUrl.replace(/^http/, "ws")
+	}
+
+	/** Returns the origin which should be used for API requests. */
+	public getApiBaseUrl(domainConfig: DomainConfig): string {
+		if (this.isIOSApp()) {
+			// http:// -> api:// and https:// -> apis://
+			return domainConfig.apiUrl.replace(/^http/, "api")
+		} else {
+			return domainConfig.apiUrl
+		}
+	}
+
+	static assertMainOrNode(): void {
+		if (!assertionsEnabled) return
+
+		if (!EnvProvider.isMainOrNode()) {
+			throw new Error("this code must not run in the worker thread")
+		}
+
+		if (EnvProvider.isBootFinished()) {
+			throw new Error("this main code must not be loaded at boot time")
+		}
+	}
+
+	public static assertMainOrNodeBoot(): void {
+		if (!assertionsEnabled) return
+
+		if (!EnvProvider.isMainOrNode()) {
+			throw new Error("this code must not run in the worker thread")
+		}
+	}
+
+	public static assertWorkerOrNode(): void {
+		if (!assertionsEnabled) return
+
+		if (!EnvProvider.isWorkerOrNode()) {
+			throw new Error("this code must not run in the gui thread")
+		}
+	}
+
+	public static overrideEnv(env: EnvType): void {
+		;(EnvProvider.get().env satisfies EnvType) = env
+	}
 }

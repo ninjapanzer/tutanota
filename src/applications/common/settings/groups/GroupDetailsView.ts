@@ -11,17 +11,20 @@ import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { LegacyTextField } from "../../../../ui/base/LegacyTextField.js"
 import type { DropDownSelectorAttrs } from "../../../../ui/base/DropDownSelector.js"
 import { DropDownSelector } from "../../../../ui/base/DropDownSelector.js"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { IconButton, IconButtonAttrs } from "../../../../ui/base/IconButton.js"
 import { ButtonSize } from "../../../../ui/base/ButtonSize.js"
 import { GroupDetailsModel } from "../../../mail-app/settings/groups/GroupDetailsModel.js"
 import { showBuyDialog } from "../../subscription/BuyDialog.js"
 import { UpdatableSettingsDetailsViewer } from "../Interfaces.js"
 import { GroupType } from "../../../../entities/sys/Utils"
+import { MailAddressTable } from "../mailaddress/MailAddressTable.js"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
+	private mailAddressTableExpanded = false
+
 	constructor(private readonly model: GroupDetailsModel) {}
 
 	/**
@@ -33,7 +36,11 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 	}
 
 	renderView(): Children {
-		return m("#user-viewer.fill-absolute.scroll.plr-24", [this.renderHeader(), this.renderCommonInfo(), this.renderMailGroupInfo()])
+		return m("#user-viewer.fill-absolute.scroll.plr-24", [
+			this.renderHeader(),
+			this.renderCommonInfo(),
+			this.model.isMailGroup() ? this.renderMailGroupInfo() : null,
+		])
 	}
 
 	/**
@@ -53,6 +60,7 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 	 * @private
 	 */
 	private renderMailGroupInfo(): ChildArray {
+		const mailAddressTableModel = this.model.getMailAddressTableModel()
 		return [
 			this.renderUsedStorage(),
 			m(LegacyTextField, {
@@ -67,12 +75,21 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 				injectionsRight: () =>
 					m(IconButton, {
 						icon: Icons.PenFilled,
-						title: "setSenderName_action",
+						label: "setSenderName_action",
 						click: () => {
 							this.showChangeSenderNameDialog()
 						},
 					}),
 			}),
+			mailAddressTableModel
+				? m(MailAddressTable, {
+						model: mailAddressTableModel,
+						expanded: this.mailAddressTableExpanded,
+						onExpanded: (expanded) => {
+							this.mailAddressTableExpanded = expanded
+						},
+					})
+				: null,
 		]
 	}
 
@@ -110,7 +127,7 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 			isReadOnly: true,
 			injectionsRight: () =>
 				m(IconButton, {
-					title: "edit_action",
+					label: "edit_action",
 					click: () => this.showChangeNameDialog(),
 					icon: Icons.PenFilled,
 					size: ButtonSize.Compact,
@@ -182,15 +199,15 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 		})
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
-		return this.model.entityEventsReceived(updates)
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+		return this.model.onEntityUpdatesReceived(updates)
 	}
 
 	private renderMembersTable(): Children {
 		if (!this.model.isGroupActive()) return null
 
 		const addUserButtonAttrs: IconButtonAttrs = {
-			title: "addUserToGroup_label",
+			label: "addUserToGroup_label",
 			click: () => this.showAddMemberDialog(),
 			icon: Icons.Plus,
 			size: ButtonSize.Compact,
@@ -198,7 +215,7 @@ export class GroupDetailsView implements UpdatableSettingsDetailsViewer {
 
 		const lines: TableLineAttrs[] = this.model.getMembersInfo().map((userGroupInfo) => {
 			const removeButtonAttrs: IconButtonAttrs = {
-				title: "remove_action",
+				label: "remove_action",
 				click: () => showProgressDialog("pleaseWait_msg", this.model.removeGroupMember(userGroupInfo)),
 				icon: Icons.X,
 				size: ButtonSize.Compact,

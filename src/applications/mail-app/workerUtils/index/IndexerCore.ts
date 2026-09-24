@@ -34,7 +34,6 @@
 
 import { DbTransaction } from "../../../common/api/worker/search/DbFacade.js"
 import {
-	$Promisable,
 	arrayHashSigned,
 	assertNotNull,
 	defer,
@@ -47,13 +46,10 @@ import {
 	mergeMaps,
 	neverNull,
 	noOp,
-	PromisableWrapper,
-	promiseMapCompat,
-	PromiseMapFn,
 	tokenize,
 	uint8ArrayToBase64,
 } from "../../../../platform-kit/utils"
-import { elementIdPart, generatedIdToTimestamp, listIdPart, TypeRef } from "../../../../platform-kit/meta"
+import { elementIdPart, expandId, generatedIdToTimestamp, listIdPart, TypeRef } from "../../../../platform-kit/meta"
 import { compareMetaEntriesOldest, getIdFromEncSearchIndexEntry, typeRefToTypeInfo } from "../../../common/api/common/utils/IndexUtils.js"
 import type {
 	AttributeHandler,
@@ -81,7 +77,6 @@ import {
 	iterateBinaryBlocks,
 	removeBinaryBlockRanges,
 } from "../../../common/api/worker/search/SearchIndexEncoding.js"
-import { aes256EncryptSearchIndexEntry, aesDecryptUnauthenticated } from "../../../../platform-kit/crypto"
 import {
 	ElementDataOS,
 	GroupDataOS,
@@ -102,6 +97,8 @@ import {
 } from "../../../common/api/worker/search/IndexEncryptionUtils"
 import { ContactList } from "@tutao/entities/tutanota"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
+import { aes256EncryptSearchIndexEntry, aesDecryptUnauthenticated } from "../../../../platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { $Promisable, PromisableWrapper, promiseMapCompat, PromiseMapFn } from "./IndexerPromiseUtils"
 
 const SEARCH_INDEX_ROW_LENGTH = 1000
 
@@ -174,7 +171,7 @@ export class IndexerCore {
 			for (const [index, token] of tokens.entries()) {
 				if (!tokenToEntry.has(token)) {
 					tokenToEntry.set(token, {
-						id: Array.isArray(instance._id) ? instance._id[1] : instance._id,
+						id: expandId(instance._id).elementId,
 						attribute: attributeHandler.id,
 						positions: [index],
 					})
@@ -197,14 +194,14 @@ export class IndexerCore {
 	 * @param indexUpdate IndexUpdate for which {@code create} fields will be populated
 	 */
 	async encryptSearchIndexEntries(id: IdTuple, ownerGroup: Id, keyToIndexEntries: Map<string, SearchIndexEntry[]>, indexUpdate: IndexUpdate): Promise<void> {
-		const { key, iv } = await this.db.encryptionData()
+		const { key, initializationVector } = await this.db.encryptionData()
 		const listId = listIdPart(id)
-		const encInstanceId = encryptIndexKeyUint8Array(key, elementIdPart(id), iv)
+		const encInstanceId = encryptIndexKeyUint8Array(key, elementIdPart(id), initializationVector)
 		const encInstanceIdB64 = uint8ArrayToBase64(encInstanceId)
 		const elementIdTimestamp = generatedIdToTimestamp(elementIdPart(id))
 		const encWordsB64: string[] = []
 		for (const [indexKey, value] of keyToIndexEntries.entries()) {
-			const encWordB64 = encryptIndexKeyBase64(key, indexKey, iv)
+			const encWordB64 = encryptIndexKeyBase64(key, indexKey, initializationVector)
 			encWordsB64.push(encWordB64)
 			const encIndexEntries = getFromMap(indexUpdate.create.indexMap, encWordB64, () => [])
 			for (const indexEntry of value)
@@ -224,8 +221,8 @@ export class IndexerCore {
 	 * Process delete event before applying to the index.
 	 */
 	async _processDeleted(typeRef: TypeRef<any>, instanceId: Id, indexUpdate: IndexUpdate): Promise<void> {
-		const { key, iv } = await this.db.encryptionData()
-		const encInstanceIdPlain = encryptIndexKeyUint8Array(key, instanceId, iv)
+		const { key, initializationVector } = await this.db.encryptionData()
+		const encInstanceIdPlain = encryptIndexKeyUint8Array(key, instanceId, initializationVector)
 		const encInstanceIdB64 = uint8ArrayToBase64(encInstanceIdPlain)
 		const { appId, typeId } = typeRefToTypeInfo(typeRef)
 		const transaction = await this.db.dbFacade.createTransaction(true, [ElementDataOS])
@@ -697,11 +694,11 @@ export class IndexerCore {
 						throw new InvalidDatabaseStateError("non existing index row")
 					}
 
-					const timestampToEntries: Map<number, Array<Uint8Array>> = new Map()
+					const timestampToEntries: Map<number, Array<Uint8Array<ArrayBuffer>>> = new Map()
 					// Iterate all entries in a block, decrypt id of each and put it into the map
 					iterateBinaryBlocks(binaryBlock, (encSearchIndexEntry) => {
 						const encId = getIdFromEncSearchIndexEntry(encSearchIndexEntry)
-						const decId = decryptIndexKey(encryptionData.key, encId, encryptionData.iv)
+						const decId = decryptIndexKey(encryptionData.key, encId, encryptionData.initializationVector)
 						const timeStamp = generatedIdToTimestamp(decId)
 						getFromMap(timestampToEntries, timeStamp, () => []).push(encSearchIndexEntry)
 					})

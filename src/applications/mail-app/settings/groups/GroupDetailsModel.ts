@@ -3,7 +3,7 @@ import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
 import { stringValidator } from "../../../../ui/base/Dialog.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { BadRequestError, NotAuthorizedError, PreconditionFailedError } from "../../../../platform-kit/rest-client/error"
 import { compareGroupInfos, getGroupInfoDisplayName } from "../../../../platform-kit/network/GroupUtils.js"
 import { UserError } from "../../../common/api/main/UserError.js"
 import { BookingParams } from "../../../common/subscription/BuyDialog.js"
@@ -11,16 +11,18 @@ import { toFeatureType } from "../../../common/subscription/utils/SubscriptionUt
 import { createGroupInfo, CustomerTypeRef, Group, GroupInfo, GroupInfoTypeRef, GroupMemberTypeRef, GroupTypeRef, UserTypeRef } from "@tutao/entities/sys"
 import { BookingItemFeatureType, GroupType } from "../../../../entities/sys/Utils"
 import { MailboxPropertiesTypeRef } from "@tutao/entities/tutanota"
-import { GENERATED_MIN_ID, isSameId, OperationType } from "../../../../platform-kit/meta"
+import { GENERATED_MIN_ID, idToElementId, isSameId, OperationType } from "../../../../platform-kit/meta"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { MailAddressTableModel } from "../../../common/settings/mailaddress/MailAddressTableModel.js"
 
 export class GroupDetailsModel {
 	groupInfo: GroupInfo
 	private readonly group: LazyLoaded<Group>
 	private usedStorageInBytes!: number
-	private readonly members: LazyLoaded<Array<GroupInfo>>
 
+	private readonly members: LazyLoaded<Array<GroupInfo>>
 	private senderName!: LazyLoaded<string>
+	private mailAddressTableModel!: LazyLoaded<MailAddressTableModel>
 
 	constructor(
 		groupInfo: GroupInfo,
@@ -29,8 +31,8 @@ export class GroupDetailsModel {
 	) {
 		this.entityClient = entityClient
 		this.groupInfo = groupInfo
-		this.group = new LazyLoaded(() => this.entityClient.load(GroupTypeRef, this.groupInfo.group))
 
+		this.group = new LazyLoaded(() => this.entityClient.load(GroupTypeRef, idToElementId(this.groupInfo.group)))
 		this.group.getAsync().then(() => this.updateViewCallback())
 
 		this.members = new LazyLoaded(async () => {
@@ -40,16 +42,16 @@ export class GroupDetailsModel {
 			return promiseMap(groupMembers, (member) => this.entityClient.load(GroupInfoTypeRef, member.userGroupInfo))
 		})
 
-		// noinspection JSIgnoredPromiseFromCall
 		this.updateMembers()
 
-		if (this.groupInfo.groupType === GroupType.Mail) {
+		if (this.isMailGroup()) {
 			this.senderName = new LazyLoaded<string>(() => this.loadSenderName())
-			// noinspection JSIgnoredPromiseFromCall
 			this.updateSenderName()
+
+			this.mailAddressTableModel = new LazyLoaded<MailAddressTableModel>(() => locator.mailAddressTableModelForSharedMailbox(this.groupInfo))
+			this.updateMailAddressTableModel()
 		}
 
-		// noinspection JSIgnoredPromiseFromCall
 		this.updateUsedStorage()
 	}
 
@@ -99,10 +101,10 @@ export class GroupDetailsModel {
 	 */
 	async removeGroupMember(userGroupInfo: GroupInfo): Promise<void> {
 		try {
-			const userGroup = await this.entityClient.load(GroupTypeRef, userGroupInfo.group)
+			const userGroup = await this.entityClient.load(GroupTypeRef, idToElementId(userGroupInfo.group))
 			return locator.groupManagementFacade.removeUserFromGroup(assertNotNull(userGroup.user), this.groupInfo.group)
 		} catch (e) {
-			if (!(e instanceof restError.NotAuthorizedError)) throw e
+			if (!(e instanceof NotAuthorizedError)) throw e
 			throw new UserError("removeUserFromGroupNotAdministratedError_msg")
 		}
 	}
@@ -112,7 +114,7 @@ export class GroupDetailsModel {
 		try {
 			return await locator.groupManagementFacade.deactivateGroup(group, !deactivate)
 		} catch (e) {
-			if (!(e instanceof restError.PreconditionFailedError)) throw e
+			if (!(e instanceof PreconditionFailedError)) throw e
 			if (!deactivate) {
 				throw new UserError("emailAddressInUse_msg")
 			} else {
@@ -180,7 +182,7 @@ export class GroupDetailsModel {
 	}
 
 	async getPossibleMembers(): Promise<Array<{ name: string; value: Id }>> {
-		const customer = await this.entityClient.load(CustomerTypeRef, neverNull(locator.logins.getUserController().user.customer))
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(neverNull(locator.logins.getUserController().user.customer)))
 		const userGroupInfos = await this.entityClient.loadAll(GroupInfoTypeRef, customer.userGroups)
 		// remove all users that are already member
 		let globalAdmin = locator.logins.isGlobalAdminUserLoggedIn()
@@ -200,8 +202,8 @@ export class GroupDetailsModel {
 	}
 
 	async addUserToGroup(group: Id): Promise<any> {
-		const userGroup = await this.entityClient.load(GroupTypeRef, group)
-		const user = await this.entityClient.load(UserTypeRef, neverNull(userGroup.user))
+		const userGroup = await this.entityClient.load(GroupTypeRef, idToElementId(group))
+		const user = await this.entityClient.load(UserTypeRef, idToElementId(neverNull(userGroup.user)))
 		return locator.groupManagementFacade.addUserToGroup(user, this.groupInfo.group)
 	}
 
@@ -211,9 +213,19 @@ export class GroupDetailsModel {
 		this.updateViewCallback()
 	}
 
+	getMailAddressTableModel(): MailAddressTableModel | null {
+		return this.mailAddressTableModel.isLoaded() ? this.mailAddressTableModel.getLoaded() : null
+	}
+
 	private async updateSenderName(): Promise<void> {
 		this.senderName.reset()
 		await this.senderName.getAsync()
+		this.updateViewCallback()
+	}
+
+	private async updateMailAddressTableModel(): Promise<void> {
+		this.mailAddressTableModel.reset()
+		await this.mailAddressTableModel.getAsync()
 		this.updateViewCallback()
 	}
 
@@ -222,7 +234,7 @@ export class GroupDetailsModel {
 			try {
 				this.usedStorageInBytes = await locator.groupManagementFacade.readUsedSharedMailGroupStorage(await this.group.getAsync())
 			} catch (e) {
-				if (!(e instanceof restError.BadRequestError)) throw e
+				if (!(e instanceof BadRequestError)) throw e
 				// may happen if the user gets the admin flag removed
 			}
 		} else {
@@ -232,7 +244,7 @@ export class GroupDetailsModel {
 		this.updateViewCallback()
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		await promiseMap(updates, async (update) => {
 			const { instanceListId, instanceId, operation } = update
 

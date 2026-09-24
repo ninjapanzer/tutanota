@@ -5,10 +5,10 @@ import { displayOverlay, PositionRect } from "./Overlay"
 import type { ButtonAttrs } from "./Button.js"
 import { Button, ButtonType } from "./Button.js"
 import { lang, MaybeTranslation, TranslationKey } from "../utils/LanguageViewModel"
-import { styles } from "../styles"
+import { Styles } from "../styles"
 import { LayerType } from "./RootView"
 import type { ClickHandler } from "./GuiUtils"
-import { assertMainOrNode, secondsToMillis } from "../../platform-kit/app-env"
+import { EnvProvider, TimeConstants } from "../../platform-kit/app-env"
 import { isNotEmpty, remove } from "../../platform-kit/utils"
 import { IconButton, IconButtonAttrs } from "./IconButton"
 import { AllIcons, Icon, IconSize } from "./Icon"
@@ -16,11 +16,11 @@ import { theme } from "../theme"
 import { Icons } from "./icons/Icons"
 import { fabBottomSpacing } from "./FloatingActionButton"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
-const SNACKBAR_SHOW_TIME = secondsToMillis(6)
-const SNACKBAR_HIDE_DELAY_TIME = secondsToMillis(1.5)
-const INFO_SNACKBAR_SHOW_TIME = secondsToMillis(10)
+const SNACKBAR_SHOW_TIME = TimeConstants.secondsToMillis(6)
+const SNACKBAR_HIDE_DELAY_TIME = TimeConstants.secondsToMillis(1.5)
+const INFO_SNACKBAR_SHOW_TIME = TimeConstants.secondsToMillis(10)
 const MAX_SNACKBAR_WIDTH = 400
 export type SnackBarButtonAttrs = {
 	label: MaybeTranslation
@@ -105,7 +105,7 @@ export function showInfoSnackbar(message: TranslationKey) {
 	cancelSnackbar = showSnackBar({
 		message,
 		dismissButton: {
-			title: "close_alt",
+			label: "close_alt",
 			click: () => cancelSnackbar(),
 			icon: Icons.X,
 		},
@@ -201,8 +201,8 @@ export function showSnackBar(args: {
 
 function getSnackBarPosition() {
 	// The snackbar will be moved up from off the bottom of the viewport by the transformation animation.
-	const snackBarMargin = styles.isUsingBottomNavigation() ? size.spacing_12 : size.spacing_24
-	const leftOffset = styles.isDesktopLayout() ? layout_size.drawer_menu_width : 0
+	const snackBarMargin = Styles.get().isUsingBottomNavigation() ? size.spacing_12 : size.spacing_24
+	const leftOffset = Styles.get().isDesktopLayout() ? layout_size.drawer_menu_width : 0
 	const snackBarWidth = Math.min(window.innerWidth - leftOffset - 2 * snackBarMargin, MAX_SNACKBAR_WIDTH)
 	let result: PositionRect = {
 		bottom: px(snackBarMargin + fabBottomSpacing()),
@@ -211,7 +211,7 @@ function getSnackBarPosition() {
 	}
 
 	// The SnackBar is only shown at the right in single column layout
-	if (styles.isSingleColumnLayout()) {
+	if (Styles.get().isSingleColumnLayout()) {
 		result.right = px(leftOffset + snackBarMargin)
 	} else {
 		result.left = px(leftOffset + snackBarMargin)

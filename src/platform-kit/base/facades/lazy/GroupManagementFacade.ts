@@ -1,15 +1,14 @@
-import { assertWorkerOrNode } from "@tutao/app-env"
-import { freshVersioned, getFirstOrThrow, neverNull } from "@tutao/utils"
+import { EnvProvider } from "@tutao/app-env"
+import { freshVersioned, getFirstOrThrow, isNotNull, neverNull } from "@tutao/utils"
 import { CounterFacade } from "../../../network/CounterFacade.js"
 import { EntityClient } from "../../../network/EntityClient.js"
 import { IServiceExecutor } from "../../../network/ServiceRequest.js"
 import { UserFacade } from "../UserFacade.js"
-import { PQFacade } from "../../crypto/PQFacade.js"
-import { KeyLoaderFacade } from "../../crypto/KeyLoaderFacade.js"
+import { PQFacade } from "../../base-crypto/PQFacade.js"
+import { KeyLoaderFacade } from "../../base-crypto/KeyLoaderFacade.js"
 import { _encryptKeyWithVersionedKey, _encryptString, AesKey, CryptoWrapper, PQKeyPairs, VersionedKey } from "@tutao/crypto"
-import { IdentityKeyCreator } from "../../crypto/IdentityKeyCreator"
-import { AdminKeyLoaderFacade } from "../../crypto/AdminKeyLoaderFacade"
-import { CacheManagementInterface } from "../../../../app-kit/local-store/CacheManagementInterface"
+import { IdentityKeyCreator } from "../../base-crypto/IdentityKeyCreator"
+import { AdminKeyLoaderFacade } from "../../base-crypto/AdminKeyLoaderFacade"
 import { CounterType } from "../../../../entities/monitor/Utils"
 import {
 	createMembershipAddData,
@@ -18,14 +17,16 @@ import {
 	Group,
 	GroupInfoTypeRef,
 	GroupTypeRef,
-	MembershipService,
+	MembershipService_DELETE,
+	MembershipService_POST,
 	User,
 } from "@tutao/entities/sys"
 import { GroupType } from "../../../../entities/sys/Utils"
 import {
-	CalendarService,
+	CalendarService_POST,
 	ContactListGroupRoot,
-	ContactListGroupService,
+	ContactListGroupService_DELETE,
+	ContactListGroupService_POST,
 	createCreateMailGroupData,
 	createDeleteGroupData,
 	createInternalGroupData,
@@ -33,12 +34,17 @@ import {
 	createUserAreaGroupDeleteData,
 	createUserAreaGroupPostData,
 	InternalGroupData,
-	MailGroupService,
-	TemplateGroupService,
+	MailGroupService_DELETE,
+	MailGroupService_POST,
+	TemplateGroupService_POST,
 	UserAreaGroupData,
 } from "@tutao/entities/tutanota"
+import { CacheManager, UserAndGroup } from "../../base-crypto/persistence/CacheManager"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../instance-pipeline/RestClientOptions"
+import { elementIdToId, idToElementId } from "@tutao/meta"
+import { isNull } from "../../../utils/Utils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class GroupManagementFacade {
 	constructor(
@@ -49,13 +55,13 @@ export class GroupManagementFacade {
 		private readonly pqFacade: PQFacade,
 		private readonly keyLoaderFacade: KeyLoaderFacade,
 		private readonly adminKeyLoaderFacade: AdminKeyLoaderFacade,
-		private readonly cacheManagementFacade: CacheManagementInterface,
+		private readonly cacheManagementFacade: CacheManager,
 		private readonly cryptoWrapper: CryptoWrapper,
 		private readonly identityKeyCreator: IdentityKeyCreator,
 	) {}
 
 	async readUsedSharedMailGroupStorage(group: Group): Promise<number> {
-		return this.counters.readCounterValue(CounterType.UserStorageLegacy, neverNull(group.customer), group._id)
+		return this.counters.readCounterValue(CounterType.UserStorageLegacy, neverNull(group.customer), elementIdToId(group._id))
 	}
 
 	async createSharedMailGroup(name: string, mailAddress: string): Promise<void> {
@@ -86,7 +92,7 @@ export class GroupManagementFacade {
 			mailEncMailboxSessionKey: mailEncMailboxSessionKey.key,
 			groupData: mailGroupData,
 		})
-		const mailGroupPostOut = await this.serviceExecutor.post(MailGroupService, data)
+		const mailGroupPostOut = await this.serviceExecutor.execute(MailGroupService_POST, data, null)
 
 		await this.identityKeyCreator.createIdentityKeyPair(
 			mailGroupPostOut.mailGroup,
@@ -107,7 +113,7 @@ export class GroupManagementFacade {
 	async generateUserAreaGroupData(name: string): Promise<UserAreaGroupData> {
 		// adminGroup Is not set when generating new customer, then the admin group will be the admin of the customer
 		// adminGroupKey Is not set when generating calendar as normal user
-		const userGroup = await this.entityClient.load(GroupTypeRef, this.userFacade.getUserGroupId())
+		const userGroup = await this.entityClient.load(GroupTypeRef, idToElementId(this.userFacade.getUserGroupId()))
 		const adminGroupId = neverNull(userGroup.admin) // user group has always admin group
 
 		let adminGroupKey: VersionedKey | null = null
@@ -126,7 +132,7 @@ export class GroupManagementFacade {
 		const groupInfoSessionKey = this.cryptoWrapper.aes256RandomKey()
 
 		const userEncGroupKey = _encryptKeyWithVersionedKey(userGroupKey, groupKey.object)
-		const adminEncGroupKey = adminGroupKey ? _encryptKeyWithVersionedKey(adminGroupKey, groupKey.object) : null
+		const adminEncGroupKey = isNotNull(adminGroupKey) ? _encryptKeyWithVersionedKey(adminGroupKey, groupKey.object) : null
 		const customerEncGroupInfoSessionKey = _encryptKeyWithVersionedKey(customerGroupKey, groupInfoSessionKey)
 		const groupEncGroupRootSessionKey = _encryptKeyWithVersionedKey(groupKey, groupRootSessionKey)
 
@@ -143,13 +149,16 @@ export class GroupManagementFacade {
 		})
 	}
 
-	async createCalendar(name: string): Promise<{ user: User; group: Group }> {
+	async createCalendar(name: string): Promise<UserAndGroup> {
 		const groupData = await this.generateUserAreaGroupData(name)
 		const postData = createUserAreaGroupPostData({
 			groupData,
 		})
-		const postGroupData = await this.serviceExecutor.post(CalendarService, postData, { sessionKey: this.cryptoWrapper.aes256RandomKey() }) // we expect a session key to be defined as the entity is marked encrypted
-		const group = await this.entityClient.load(GroupTypeRef, postGroupData.group)
+		const postGroupData = await this.serviceExecutor.execute(CalendarService_POST, postData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
+			sessionKey: this.cryptoWrapper.aes256RandomKey(),
+		}) // we expect a session key to be defined as the entity is marked encrypted
+		const group = await this.entityClient.load(GroupTypeRef, idToElementId(postGroupData.group))
 		const user = await this.cacheManagementFacade.reloadUser()
 
 		return { user, group }
@@ -161,7 +170,8 @@ export class GroupManagementFacade {
 			groupData,
 		})
 
-		const postGroupData = await this.serviceExecutor.post(TemplateGroupService, serviceData, {
+		const postGroupData = await this.serviceExecutor.execute(TemplateGroupService_POST, serviceData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
 			sessionKey: this.cryptoWrapper.aes256RandomKey(),
 		}) // we expect a session key to be defined as the entity is marked encrypted
 
@@ -175,20 +185,21 @@ export class GroupManagementFacade {
 		const serviceData = createUserAreaGroupPostData({
 			groupData,
 		})
-		const postGroupData = await this.serviceExecutor.post(ContactListGroupService, serviceData, {
+		const postGroupData = await this.serviceExecutor.execute(ContactListGroupService_POST, serviceData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
 			sessionKey: this.cryptoWrapper.aes256RandomKey(),
 		}) // we expect a session key to be defined as the entity is marked encrypted
-		const group = await this.entityClient.load(GroupTypeRef, postGroupData.group)
+		const group = await this.entityClient.load(GroupTypeRef, idToElementId(postGroupData.group))
 		await this.cacheManagementFacade.reloadUser()
 
 		return group
 	}
 
-	async deleteContactListGroup(groupRoot: ContactListGroupRoot) {
+	async deleteContactListGroup(groupRoot: ContactListGroupRoot): Promise<void> {
 		const serviceData = createUserAreaGroupDeleteData({
-			group: groupRoot._id,
+			group: elementIdToId(groupRoot._id),
 		})
-		await this.serviceExecutor.delete(ContactListGroupService, serviceData)
+		await this.serviceExecutor.execute(ContactListGroupService_DELETE, serviceData, null)
 	}
 
 	/**
@@ -206,7 +217,7 @@ export class GroupManagementFacade {
 		const adminEncGroupKey = this.cryptoWrapper.encryptKeyWithVersionedKey(adminGroupKey, groupKey)
 		const ownerEncGroupInfoSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(ownerGroupKey, groupInfoSessionKey)
 
-		return createInternalGroupData({
+		const internalGroupData = createInternalGroupData({
 			pubRsaKey: null,
 			groupEncPrivRsaKey: null,
 			pubEccKey: keyPair.x25519KeyPair.publicKey,
@@ -217,18 +228,19 @@ export class GroupManagementFacade {
 			adminEncGroupKey: adminEncGroupKey.key,
 			ownerEncGroupInfoSessionKey: ownerEncGroupInfoSessionKey.key,
 			adminKeyVersion: adminEncGroupKey.encryptingKeyVersion.toString(),
-			ownerKeyVersion: ownerEncGroupInfoSessionKey.encryptingKeyVersion.toString(),
 		})
+		internalGroupData.ownerKeyVersion = ownerEncGroupInfoSessionKey.encryptingKeyVersion.toString()
+		return internalGroupData
 	}
 
 	/**
 	 * Load a list of group IDs with all team groups, e.g., shared mailbox groups.
 	 */
 	async loadTeamGroupIds(): Promise<Array<Id>> {
-		const customerId = this.userFacade.getUser()?.customer
-		if (!customerId) return [] // external users have no team groups
+		const customerId = this.userFacade.getUser()?.customer ?? null
+		if (isNull(customerId)) return [] // external users have no team groups
 
-		const customer = await this.entityClient.load(CustomerTypeRef, customerId)
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(customerId))
 		const teamGroupInfos = await this.entityClient.loadAll(GroupInfoTypeRef, customer.teamGroups)
 		return teamGroupInfos.map((groupInfo) => groupInfo.group)
 	}
@@ -238,13 +250,13 @@ export class GroupManagementFacade {
 		const groupKey = await this.adminKeyLoaderFacade.getCurrentGroupKeyViaAdminEncGKey(groupId)
 		const symEncGKey = _encryptKeyWithVersionedKey(userGroupKey, groupKey.object)
 		const data = createMembershipAddData({
-			user: user._id,
+			user: elementIdToId(user._id),
 			group: groupId,
 			symEncGKey: symEncGKey.key,
 			groupKeyVersion: String(groupKey.version),
 			symKeyVersion: symEncGKey.encryptingKeyVersion.toString(),
 		})
-		await this.serviceExecutor.post(MembershipService, data)
+		await this.serviceExecutor.execute(MembershipService_POST, data, null)
 	}
 
 	async removeUserFromGroup(userId: Id, groupId: Id): Promise<void> {
@@ -252,17 +264,17 @@ export class GroupManagementFacade {
 			user: userId,
 			group: groupId,
 		})
-		await this.serviceExecutor.delete(MembershipService, data)
+		await this.serviceExecutor.execute(MembershipService_DELETE, data, null)
 	}
 
 	async deactivateGroup(group: Group, restore: boolean): Promise<void> {
 		const data = createDeleteGroupData({
-			group: group._id,
+			group: elementIdToId(group._id),
 			restore,
 		})
 
 		if (group.type === GroupType.Mail) {
-			await this.serviceExecutor.delete(MailGroupService, data)
+			await this.serviceExecutor.execute(MailGroupService_DELETE, data, null)
 		} else {
 			throw new Error("invalid group type for deactivation")
 		}

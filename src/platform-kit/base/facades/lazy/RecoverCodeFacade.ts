@@ -1,6 +1,6 @@
 import { assertNotNull, KeyVersion, uint8ArrayToHex } from "@tutao/utils"
 import { LoginFacade } from "../LoginFacade.js"
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import {
 	Aes256Key,
 	aes256RandomKey,
@@ -8,25 +8,27 @@ import {
 	createAuthVerifier,
 	createAuthVerifierAsBase64Url,
 	cryptoUtils,
-	decryptKey,
+	decrypt256Key,
 	encryptKey,
 	keyToUint8Array,
 	VersionedKey,
 } from "@tutao/crypto"
 import { EntityClient } from "../../../network/EntityClient.js"
 import { UserFacade } from "../UserFacade.js"
-import { KeyLoaderFacade } from "../../crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../base-crypto/KeyLoaderFacade.js"
 import { createRecoverCode, RecoverCodeTypeRef, User } from "@tutao/entities/sys"
-import { asKdfType } from "../../crypto/Constants"
+import { asKdfType } from "../../base-crypto/Constants"
+import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../instance-pipeline/RestClientOptions"
+import { idToElementId } from "@tutao/meta"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export type RecoverData = {
-	userEncRecoverCode: Uint8Array
+	userEncRecoverCode: Uint8Array<ArrayBuffer>
 	userKeyVersion: KeyVersion
-	recoverCodeEncUserGroupKey: Uint8Array
+	recoverCodeEncUserGroupKey: Uint8Array<ArrayBuffer>
 	hexCode: Hex
-	recoveryCodeVerifier: Uint8Array
+	recoveryCodeVerifier: Uint8Array<ArrayBuffer>
 }
 
 /**
@@ -65,7 +67,7 @@ export class RecoverCodeFacade {
 		return uint8ArrayToHex(keyToUint8Array(rawRecoverCode))
 	}
 
-	async getRawRecoverCode(passphraseKey: AesKey): Promise<AesKey> {
+	async getRawRecoverCode(passphraseKey: AesKey): Promise<Aes256Key> {
 		const user = this.userFacade.getLoggedInUser()
 		const recoverCodeId = user.auth?.recoverCode
 		if (recoverCodeId == null) {
@@ -76,12 +78,15 @@ export class RecoverCodeFacade {
 			authVerifier: createAuthVerifierAsBase64Url(passphraseKey),
 		}
 
-		const recoveryCodeEntity = await this.entityClient.load(RecoverCodeTypeRef, recoverCodeId, { extraHeaders })
+		const recoveryCodeEntity = await this.entityClient.load(RecoverCodeTypeRef, idToElementId(recoverCodeId), {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+			extraHeaders,
+		})
 		const userGroupKey = await this.keyLoaderFacade.loadSymUserGroupKey(cryptoUtils.parseKeyVersion(recoveryCodeEntity.userKeyVersion))
-		return decryptKey(userGroupKey, recoveryCodeEntity.userEncRecoverCode)
+		return decrypt256Key(userGroupKey, recoveryCodeEntity.userEncRecoverCode)
 	}
 
-	private async getPassphraseKey(user: User, passphrase: string) {
+	private async getPassphraseKey(user: User, passphrase: string): Promise<AesKey> {
 		const passphraseKeyData = {
 			kdfType: asKdfType(user.kdfVersion),
 			passphrase,
@@ -104,9 +109,9 @@ export class RecoverCodeFacade {
 			userEncRecoverCode: userEncRecoverCode,
 			userKeyVersion: String(userKeyVersion),
 			recoverCodeEncUserGroupKey: recoverCodeEncUserGroupKey,
-			_ownerGroup: this.userFacade.getUserGroupId(),
 			verifier: recoveryCodeVerifier,
 		})
+		recoverPasswordEntity._ownerGroup = this.userFacade.getUserGroupId()
 		const passphraseKeyData = {
 			kdfType: asKdfType(user.kdfVersion),
 			passphrase,

@@ -1,6 +1,6 @@
 import type { TypeInfo } from "../../common/utils/IndexUtils"
 import { TypeRef } from "@tutao/meta"
-import { Aes256Key } from "@tutao/crypto"
+import { Aes256Key, InitializationVector } from "@tutao/crypto"
 import { SearchToken } from "../../../../../ui/utils/QueryTokenUtils"
 import { GroupType } from "../../../../../entities/sys/Utils"
 // db types
@@ -8,20 +8,20 @@ import { GroupType } from "../../../../../entities/sys/Utils"
 /**
  * First part encrypted element id (16 bytes), second part encoded and encrypted attribute and positions
  */
-export type EncryptedSearchIndexEntry = Uint8Array
+export type EncryptedSearchIndexEntry = Uint8Array<ArrayBuffer>
 
 /**
- * Binary encoded EncryptedSearchIndexEntries SearchIndexEncoding).
+ * Binary encoded EncryptedSearchIndexEntries SearchIndexEncoding.
  */
-export type SearchIndexDbRow = Uint8Array
+export type SearchIndexDbRow = Uint8Array<ArrayBuffer>
 export type SearchIndexMetaDataDbRow = {
 	id: number
 	word: string
-	rows: Uint8Array // sequences of numbers like: [app, type, indexRowId, size, app, type, ...] encoded and encrypted SearchIndexMetadataEntry
+	rows: Uint8Array<ArrayBuffer> // sequences of numbers like: [app, type, indexRowId, size, app, type, ...] encoded and encrypted SearchIndexMetadataEntry
 }
 export type ElementDataDbRow = [
 	Id, // first list id
-	Uint8Array, // second is enc meta row keys encoded in binary format
+	Uint8Array<ArrayBuffer>, // second is enc meta row keys encoded in binary format
 	Id, // third is owner group id
 ]
 export type EncryptedSearchIndexEntryWithHash = {
@@ -63,7 +63,7 @@ export type SearchIndexEntry = {
 	positions: number[]
 }
 export type DecryptedSearchIndexEntry = SearchIndexEntry & {
-	encId: Uint8Array
+	encId: Uint8Array<ArrayBuffer>
 }
 // We calculate timestamp upfront because we need it for sorting when inserting
 export type EncSearchIndexEntryWithTimestamp = {
@@ -72,7 +72,7 @@ export type EncSearchIndexEntryWithTimestamp = {
 }
 export type EncWordToMetaRow = Record<Base64, number>
 export type EncInstanceIdWithTimestamp = {
-	encInstanceId: Uint8Array
+	encInstanceId: Uint8Array<ArrayBuffer>
 	timestamp: number
 	appId: number
 	typeId: number
@@ -98,7 +98,7 @@ export type IndexUpdate = {
 
 export interface DbEncryptionData {
 	key: Aes256Key
-	iv: Uint8Array
+	initializationVector: InitializationVector
 }
 
 export type SearchIndexMetaDataRow = {
@@ -116,10 +116,10 @@ export type SearchIndexMetadataEntry = {
 }
 export type MoreResultsIndexEntry = {
 	id: Id
-	encId: Uint8Array
+	encId: Uint8Array<ArrayBuffer>
 }
 export type SearchRestriction = {
-	type: TypeRef<any>
+	type: SearchCategoryType
 	start: number | null
 	// timestamp
 	end: number | null
@@ -164,4 +164,10 @@ export type SearchIndexStateInfo = {
 	indexedMailCount: number
 	failedIndexingUpTo: number | null
 	error?: IndexingErrorReason | null
+}
+export const enum SearchCategoryType {
+	mail = "mail",
+	contact = "contact",
+	calendar = "calendar",
+	drive = "drive",
 }

@@ -2,7 +2,8 @@ import m, { Children, ClassComponent, Component, Vnode, VnodeDOM } from "mithril
 import { LegacyTextFieldType } from "./LegacyTextField.js"
 import { AllIcons, Icon, IconSize } from "./Icon.js"
 import { px, size } from "../size.js"
-import { filterInt } from "../../platform-kit/utils"
+import { filterInt } from "@tutao/utils"
+import { lang, Translation } from "../utils/LanguageViewModel"
 
 export enum InputMode {
 	NONE = "none",
@@ -12,8 +13,13 @@ export enum InputMode {
 
 export interface SingleLineTextFieldAttrs<T extends LegacyTextFieldType> extends Pick<Component, "oncreate"> {
 	value: string | number
-	ariaLabel: string
+	ariaLabel: Translation
 	disabled?: boolean
+	/**
+	 * If this attribute is false, an error state is indicated by displaying the text field in error colors.
+	 * Additionally, if false, the attribute "aria-invalid" is set to "true".
+	 */
+	valid?: boolean
 	/**
 	 * Callback fired whenever the input is interacted with.
 	 * This property is mandatory if the input is interactive (disabled = false).
@@ -27,7 +33,7 @@ export interface SingleLineTextFieldAttrs<T extends LegacyTextFieldType> extends
 	oninput?: (newValue: string) => unknown
 	placeholder?: string
 	classes?: Array<string>
-	style?: Partial<Pick<CSSStyleDeclaration, "padding" | "fontSize" | "textAlign">>
+	style?: Partial<Pick<CSSStyleDeclaration, "padding" | "fontSize" | "textAlign" | "borderWidth">>
 	onclick?: (...args: unknown[]) => unknown
 	onfocus?: (...args: unknown[]) => unknown
 	onblur?: (...args: unknown[]) => unknown
@@ -79,39 +85,43 @@ export class SingleLineTextField<T extends LegacyTextFieldType> implements Class
 		}
 
 		const fontSizeString = attrs.style?.fontSize
-		const fontSizeNumber = fontSizeString ? filterInt(fontSizeString.replace("px", "")) : NaN
-		const fontSize = isNaN(fontSizeNumber) ? 16 : fontSizeNumber
-		let iconSize
-		let padding
+		const fontSizeNumber = fontSizeString ? filterInt(fontSizeString.replace("px", "")) : 16
 
-		if (fontSize > 16 && fontSize < 32) {
+		const iconLeftPadding = 12
+
+		let iconSize
+		let iconSizeValue
+		if (fontSizeNumber > 16 && fontSizeNumber < 32) {
 			iconSize = IconSize.PX20
-			padding = size.icon_24
-		} else if (fontSize > 32) {
+			iconSizeValue = size.icon_20
+		} else if (fontSizeNumber > 32) {
 			iconSize = IconSize.PX32
-			padding = size.icon_32
+			iconSizeValue = size.icon_32
 		} else {
 			iconSize = IconSize.PX24
-			padding = 20
+			iconSizeValue = size.icon_24
 		}
+
+		const iconLeftPaddingAndIconSize = iconLeftPadding + iconSizeValue
+		const spacingBetweenIconAndText = size.spacing_16
 
 		return m(".rel.flex.flex-grow", [
 			m(
-				".abs.pl-8.flex.items-center",
-				{ style: { top: 0, bottom: 0 } },
+				".abs.flex.items-center",
+				{ style: { top: 0, bottom: 0, paddingLeft: px(iconLeftPadding) } },
 				m(Icon, {
 					size: iconSize,
 					icon: attrs.leadingIcon.icon,
 					style: { fill: attrs.leadingIcon.color },
 				}),
 			),
-			this.renderInput(attrs, px(padding + size.spacing_16)),
+			this.renderInput(attrs, px(iconLeftPaddingAndIconSize + spacingBetweenIconAndText)),
 		])
 	}
 
 	private renderInput(attrs: InputAttrs<T>, inputPadding?: string) {
-		return m("input.tutaui-text-field", {
-			ariaLabel: attrs.ariaLabel,
+		const inputAttrs: Record<string, any> = {
+			ariaLabel: attrs.ariaLabel.text,
 			value: attrs.value,
 			disabled: attrs.disabled ? true : undefined,
 			onblur: attrs.onblur,
@@ -132,33 +142,34 @@ export class SingleLineTextField<T extends LegacyTextFieldType> implements Class
 				}
 			},
 			placeholder: attrs.placeholder,
-			class: this.resolveClasses(attrs.classes, attrs.disabled),
+			class: "",
 			style: {
-				...(inputPadding ? { paddingLeft: inputPadding } : {}),
 				...attrs.style,
+				...(inputPadding ? { paddingLeft: inputPadding } : {}),
 			},
 			type: attrs.inputMode === InputMode.NONE ? undefined : attrs.type,
 			inputMode: attrs.inputMode,
 			readonly: attrs.readonly,
-			...this.getInputProperties(attrs),
-		})
-	}
+			"data-testid": `sltfi:${attrs.ariaLabel ? lang.getTestId(attrs.ariaLabel) : null}`,
+		}
 
-	private getInputProperties(attrs: InputAttrs<T>): Pick<SingleLineNumberFieldAttrs<LegacyTextFieldType.Number>, "min" | "max"> | undefined {
+		if (attrs.classes) {
+			inputAttrs["class"] += attrs.classes.join(" ")
+		}
+		if (attrs.disabled) {
+			inputAttrs["class"] += " disabled"
+		}
+
 		if (attrs.type === LegacyTextFieldType.Number) {
 			const numberAttrs = attrs as SingleLineNumberFieldAttrs<LegacyTextFieldType.Number>
-			return { min: numberAttrs.min, max: numberAttrs.max }
+			inputAttrs["min"] = numberAttrs.min
+			inputAttrs["max"] = numberAttrs.max
 		}
 
-		return undefined
-	}
-
-	private resolveClasses(classes: Array<string> = [], disabled: boolean = false): string {
-		const classList = [...classes]
-		if (disabled) {
-			classList.push("disabled")
+		if (attrs.valid === false) {
+			inputAttrs["aria-invalid"] = "true"
 		}
 
-		return classList.join(" ")
+		return m("input.tutaui-text-field", inputAttrs)
 	}
 }

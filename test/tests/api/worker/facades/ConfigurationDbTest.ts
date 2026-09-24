@@ -9,9 +9,17 @@ import {
 } from "../../../../../src/applications/common/api/worker/facades/lazy/ConfigurationDatabase.js"
 import { downcast, KeyVersion } from "../../../../../src/platform-kit/utils"
 import { DbStub } from "../search/DbStub.js"
-import { aes256RandomKey, aesEncrypt, AesKey, decryptKey, encryptKey, IV_BYTE_LENGTH, random, VersionedKey } from "../../../../../src/platform-kit/crypto"
+import {
+	Aes256Key,
+	aes256RandomKey,
+	EntropySource,
+	generateInitializationVector,
+	InitializationVector,
+	random,
+	VersionedKey,
+} from "../../../../../src/platform-kit/crypto"
 import { createTestEntity } from "../../../TestUtils.js"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { matchers, object, verify, when } from "testdouble"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade.js"
 import { DbFacade, DbTransaction } from "../../../../../src/applications/common/api/worker/search/DbFacade.js"
@@ -19,12 +27,14 @@ import { Metadata } from "../../../../../src/applications/common/api/worker/sear
 
 import { UserTypeRef } from "@tutao/entities/sys"
 import { ExternalImageRule, NewsletterBannerRule } from "../../../../../src/entities/tutanota/Utils"
+import { aesEncrypt } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { decryptKey, encryptKey } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
 
 o.spec("ConfigurationDbTest", function () {
 	let keyLoaderFacade: KeyLoaderFacade
 
 	o.beforeEach(async function () {
-		await random.addEntropy([{ data: 36, entropy: 256, source: "key" }])
+		await random.addEntropy([{ data: 36, entropy: 256, source: EntropySource.Key }])
 		keyLoaderFacade = object()
 	})
 
@@ -35,7 +45,7 @@ o.spec("ConfigurationDbTest", function () {
 		}>,
 	) {
 		const key = aes256RandomKey()
-		const iv = random.generateRandomData(IV_BYTE_LENGTH)
+		const initializationVector = generateInitializationVector()
 		const logins = downcast({
 			getLoggedInUser() {
 				return createTestEntity(UserTypeRef)
@@ -49,7 +59,7 @@ o.spec("ConfigurationDbTest", function () {
 
 			for (let entry of allowListTable) {
 				const transaction = await stub.createTransaction()
-				const encryptedAddress = await encryptItem(entry.address, key, iv)
+				const encryptedAddress = await encryptItem(entry.address, key, initializationVector)
 				await transaction.put("ExternalAllowListOS", null, {
 					address: encryptedAddress,
 					rule: entry.rule,
@@ -60,7 +70,7 @@ o.spec("ConfigurationDbTest", function () {
 				db: stub,
 				metaData: {
 					key,
-					iv,
+					initializationVector,
 				},
 			}
 		})
@@ -77,7 +87,7 @@ o.spec("ConfigurationDbTest", function () {
 		}>,
 	) {
 		const key = aes256RandomKey()
-		const iv = random.generateRandomData(IV_BYTE_LENGTH)
+		const initializationVector = generateInitializationVector()
 		const logins = downcast({
 			getLoggedInUser() {
 				return createTestEntity(UserTypeRef)
@@ -91,7 +101,7 @@ o.spec("ConfigurationDbTest", function () {
 
 			for (let entry of allowListTable) {
 				const transaction = await stub.createTransaction()
-				const encryptedAddress = await encryptItem(entry.address, key, iv)
+				const encryptedAddress = await encryptItem(entry.address, key, initializationVector)
 				await transaction.put("NewsletterBannerListOS", null, {
 					address: encryptedAddress,
 					rule: entry.rule,
@@ -102,7 +112,7 @@ o.spec("ConfigurationDbTest", function () {
 				db: stub,
 				metaData: {
 					key,
-					iv,
+					initializationVector,
 				},
 			}
 		})
@@ -171,9 +181,9 @@ o.spec("ConfigurationDbTest", function () {
 		let dbFacade: DbFacade
 		let transaction: DbTransaction
 		let currentUserGroupKey: VersionedKey
-		let dbKey: AesKey
-		let iv: Uint8Array
-		let encIv: Uint8Array
+		let dbKey: Aes256Key
+		let initializationVector: InitializationVector
+		let encIv: Uint8Array<ArrayBuffer>
 
 		o.beforeEach(function () {
 			userFacade = object()
@@ -183,8 +193,8 @@ o.spec("ConfigurationDbTest", function () {
 			currentUserGroupKey = { version: 42, object: aes256RandomKey() }
 			when(keyLoaderFacade.getCurrentSymUserGroupKey()).thenReturn(currentUserGroupKey)
 			dbKey = aes256RandomKey()
-			iv = random.generateRandomData(16)
-			encIv = aesEncrypt(dbKey, iv)
+			initializationVector = generateInitializationVector()
+			encIv = aesEncrypt(dbKey, initializationVector.bytes)
 			when(transaction.get(ConfigurationMetaDataOS, Metadata.encDbIv)).thenResolve(encIv)
 		})
 
@@ -212,7 +222,7 @@ o.spec("ConfigurationDbTest", function () {
 
 			verify(keyLoaderFacade.loadSymUserGroupKey(groupKeyVersion))
 			o(encryptionMetadata?.key).deepEquals(dbKey)
-			o(encryptionMetadata?.iv).deepEquals(iv)
+			o(encryptionMetadata?.initializationVector).deepEquals(initializationVector)
 		})
 
 		o("write group key version when updating database", async function () {
@@ -242,7 +252,7 @@ o.spec("ConfigurationDbTest", function () {
 			const encryptionMetadata = await loadEncryptionMetadata(dbFacade, "dbId", keyLoaderFacade, ConfigurationMetaDataOS)
 			verify(keyLoaderFacade.loadSymUserGroupKey(groupKeyVersion))
 			o(encryptionMetadata?.key).deepEquals(dbKey)
-			o(encryptionMetadata?.iv).deepEquals(iv)
+			o(encryptionMetadata?.initializationVector).deepEquals(initializationVector)
 		})
 	})
 

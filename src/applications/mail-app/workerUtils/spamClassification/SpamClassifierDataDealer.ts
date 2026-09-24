@@ -2,18 +2,20 @@ import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { assertNotNull, isEmpty, isNotNull, last, lazyAsync, promiseMap, splitInChunks } from "../../../../platform-kit/utils"
 import {
 	compareNewestFirst,
+	elementIdPart,
 	EntityIdEncoding,
 	GENERATED_MIN_ID,
 	getElementId,
 	hasError,
+	idToElementId,
 	isSameId,
-	StrippedEntity,
+	isSameSingleId,
 	timestampToGeneratedId,
 } from "../../../../platform-kit/meta"
 import { BulkMailLoader, MailWithMailDetails } from "../index/BulkMailLoader"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade"
 import { getSpamConfidence } from "../../../common/api/common/utils/spamClassificationUtils/SpamMailProcessor"
-import { isAppleDevice, isDesktop } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import {
 	ClientSpamTrainingDatum,
 	ClientSpamTrainingDatumIndexEntryTypeRef,
@@ -26,7 +28,7 @@ import {
 	MailSet,
 	MailSetTypeRef,
 	MailTypeRef,
-	PopulateClientSpamTrainingDatum,
+	PopulateClientSpamTrainingDatumParams,
 } from "@tutao/entities/tutanota"
 import { MailSetKind, MAX_NBR_OF_MAILS_SYNC_OPERATION, SpamDecision } from "../../../../entities/tutanota/Utils"
 import { getMailSetKind, isFolder } from "../../mail/MailUtils"
@@ -44,11 +46,11 @@ export type TrainingDataset = {
 }
 
 export type UnencryptedPopulateClientSpamTrainingDatum = Omit<
-	StrippedEntity<PopulateClientSpamTrainingDatum>,
+	PopulateClientSpamTrainingDatumParams,
 	"encVectorLegacy" | "encVectorWithServerClassifiers" | "ownerEncVectorSessionKey"
 > & {
-	vector: Uint8Array
-	vectorNewFormat: Uint8Array
+	vector: Uint8Array<ArrayBuffer>
+	vectorNewFormat: Uint8Array<ArrayBuffer>
 }
 
 export class SpamClassifierDataDealer {
@@ -64,14 +66,14 @@ export class SpamClassifierDataDealer {
 		const MAX_MAILS_CAP_APPLE = 500
 		const MAX_MAILS_CAP = 1000
 
-		if (isAppleDevice()) {
-			if (isDesktop()) {
+		if (EnvProvider.get().isAppleDevice()) {
+			if (EnvProvider.get().isDesktop()) {
 				return MAX_MAILS_CAP_DESKTOP_APPLE
 			} else {
 				return MAX_MAILS_CAP_APPLE
 			}
 		} else {
-			if (isDesktop()) {
+			if (EnvProvider.get().isDesktop()) {
 				return MAX_MAILS_CAP_DESKTOP
 			} else {
 				return MAX_MAILS_CAP
@@ -80,8 +82,8 @@ export class SpamClassifierDataDealer {
 	}
 
 	public async fetchAllTrainingData(ownerGroup: Id): Promise<TrainingDataset> {
-		const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, ownerGroup)
-		const mailbox = await this.entityClient.load(MailBoxTypeRef, mailboxGroupRoot.mailbox)
+		const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, idToElementId(ownerGroup))
+		const mailbox = await this.entityClient.load(MailBoxTypeRef, idToElementId(mailboxGroupRoot.mailbox))
 		const mailSets = await this.entityClient.loadAll(MailSetTypeRef, mailbox.mailSets.mailSets)
 
 		// clientSpamTrainingData is NOT cached
@@ -94,7 +96,7 @@ export class SpamClassifierDataDealer {
 		console.log(`mailbox ${mailbox._id} has total ${allRelevantMailsInTrainingInterval.length} relevant mails in training interval for spam classification`)
 		if (clientSpamTrainingData.length < allRelevantMailsInTrainingInterval.length) {
 			const mailsToUpload = allRelevantMailsInTrainingInterval.filter((mail) => {
-				return !clientSpamTrainingData.some((datum) => isSameId(getElementId(mail), getElementId(datum)))
+				return !clientSpamTrainingData.some((datum) => isSameSingleId(getElementId(mail), getElementId(datum)))
 			})
 			console.log("building and uploading initial / new training data for mailbox: " + mailbox._id)
 			console.log(`mailbox ${mailbox._id} has ${mailsToUpload.length} new mails suitable for encrypted training vector data upload`)
@@ -130,8 +132,8 @@ export class SpamClassifierDataDealer {
 	}
 
 	async fetchPartialTrainingDataFromIndexStartId(indexStartId: Id, ownerGroup: Id): Promise<TrainingDataset> {
-		const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, ownerGroup)
-		const mailbox = await this.entityClient.load(MailBoxTypeRef, mailboxGroupRoot.mailbox)
+		const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, idToElementId(ownerGroup))
+		const mailbox = await this.entityClient.load(MailBoxTypeRef, idToElementId(mailboxGroupRoot.mailbox))
 
 		const emptyResult = { trainingData: [], lastTrainingDataIndexId: indexStartId, hamCount: 0, spamCount: 0 }
 
@@ -173,7 +175,9 @@ export class SpamClassifierDataDealer {
 		// we always want to include more recently received mails before including older mails
 		const HIGH_CONFIDENCE_THRESHOLD = 4
 
-		const dateSortedClientSpamTrainingData = clientSpamTrainingData.sort((l, r) => compareNewestFirst(l._id, r._id, EntityIdEncoding.Base64Ext))
+		const dateSortedClientSpamTrainingData = clientSpamTrainingData.sort((l, r) =>
+			compareNewestFirst(elementIdPart(l._id), elementIdPart(r._id), EntityIdEncoding.Base64Ext),
+		)
 
 		const hamDataHighConfidence = dateSortedClientSpamTrainingData.filter(
 			(d) => Number(d.confidence) >= HIGH_CONFIDENCE_THRESHOLD && d.spamDecision === SpamDecision.WHITELIST,
@@ -236,7 +240,7 @@ export class SpamClassifierDataDealer {
 	// Visible for testing
 	async fetchMailsByMailbagAfterDate(mailbag: MailBag, mailSets: MailSet[], startDate: Date): Promise<Array<Mail>> {
 		const mails = await this.entityClient.loadAll(MailTypeRef, mailbag.mails, timestampToGeneratedId(startDate.getTime()))
-		const trashFolder = assertNotNull(mailSets.find((set) => getMailSetKind(set) === MailSetKind.TRASH))
+		const trashFolder = assertNotNull(mailSets.find((set) => getMailSetKind(set) === MailSetKind.TRASH) ?? null)
 		return mails.filter((mail) => {
 			const isMailTrashed = mail.sets.some((setId) => isSameId(setId, trashFolder._id))
 			return isNotNull(mail.mailDetails) && !hasError(mail) && mail.receivedDate > startDate && !isMailTrashed
@@ -251,7 +255,7 @@ export class SpamClassifierDataDealer {
 
 		// sorted from latest to oldest
 		const mailbagsToFetch = [assertNotNull(mailbox.currentMailBag), ...mailbox.archivedMailBags.reverse()]
-		for (let currentMailbag = mailbagsToFetch.shift(); isNotNull(currentMailbag); currentMailbag = mailbagsToFetch.shift()) {
+		for (let currentMailbag = mailbagsToFetch.shift() ?? null; isNotNull(currentMailbag); currentMailbag = mailbagsToFetch.shift() ?? null) {
 			const mailsOfThisMailbag = await this.fetchMailsByMailbagAfterDate(currentMailbag, mailSets, startDate)
 			if (isEmpty(mailsOfThisMailbag)) {
 				// the list is empty if none of the mails in the mailbag were recent enough,
@@ -270,8 +274,8 @@ export class SpamClassifierDataDealer {
 			async (mailWithDetail) => {
 				const { mail, mailDetails } = mailWithDetail
 				const allMailFolders = mailSets.filter((mailSet) => isFolder(mailSet)).map((mailFolder) => mailFolder._id)
-				const mailFolderId = assertNotNull(mail.sets.find((setId) => allMailFolders.find((folderId) => isSameId(setId, folderId))))
-				const mailFolder = assertNotNull(mailSets.find((set) => isSameId(set._id, mailFolderId)))
+				const mailFolderId = assertNotNull(mail.sets.find((setId) => allMailFolders.find((folderId) => isSameId(setId, folderId))) ?? null)
+				const mailFolder = assertNotNull(mailSets.find((set) => isSameId(set._id, mailFolderId)) ?? null)
 				const isSpam = getMailSetKind(mailFolder) === MailSetKind.SPAM
 				const { uploadableVectorLegacy, uploadableVector } = await mailFacade.createModelInputAndUploadableVectors(mail, mailDetails, mailFolder)
 				const unencryptedPopulateClientSpamTrainingData: UnencryptedPopulateClientSpamTrainingDatum = {

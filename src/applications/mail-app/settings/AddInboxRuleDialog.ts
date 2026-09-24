@@ -1,33 +1,31 @@
 import m from "mithril"
 import { Dialog } from "../../../ui/base/Dialog"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel"
-import { assertMainOrNode, UpgradePromptType } from "../../../platform-kit/app-env"
+import { EnvProvider, UpgradePromptType } from "../../../platform-kit/app-env"
 import { isDomainName, isMailAddress, isRegularExpression } from "../../../platform-kit/utils/FormatUtils"
 import { getInboxRuleTypeNameMapping } from "../mail/model/InboxRuleHandler"
-import { elementIdPart, isSameId } from "../../../platform-kit/meta"
+import { elementIdPart, isSameSingleId } from "../../../platform-kit/meta"
 import type { MailboxDetail } from "../../common/mailFunctionality/MailboxModel.js"
 import stream from "mithril/stream"
 import { DropDownSelector } from "../../../ui/base/DropDownSelector.js"
 import { Autocapitalize, LegacyTextField } from "../../../ui/base/LegacyTextField.js"
-import { neverNull } from "../../../platform-kit/utils"
-import * as restError from "../../../platform-kit/rest-client/error"
-import { isOfflineError } from "../../../platform-kit/rest-client/error"
+import { isOfflineError, LockedError } from "../../../platform-kit/rest-client/error"
 import { showNotAvailableForFreeDialog } from "../../common/misc/SubscriptionDialogs"
 import { locator } from "../../common/api/main/CommonLocator"
 import { mailLocator } from "../mailLocator.js"
 import {
 	assertSystemFolderOfType,
 	getExistingRuleForType,
-	getFolderName,
 	getIndentedFolderNameForDropdown,
+	getMailSetName,
 	getPathToFolderString,
 } from "../mail/model/MailUtils.js"
-import type { IndentedFolder } from "../../common/api/common/mail/FolderSystem.js"
+import type { IndentedMailSet } from "../../common/api/common/mail/FolderSystem.js"
 import { Checkbox } from "../../../ui/base/Checkbox"
 import { createInboxRule, InboxRule } from "@tutao/entities/tutanota"
 import { InboxRuleType, MailSetKind } from "../../../entities/tutanota/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type InboxRuleTemplate = Pick<InboxRule, "type" | "value"> & {
 	_id?: InboxRule["_id"]
@@ -40,10 +38,10 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 		showNotAvailableForFreeDialog(UpgradePromptType.INBOX_RULES)
 	} else if (mailBoxDetail) {
 		const folders = await mailLocator.mailModel.getMailboxFoldersForId(mailBoxDetail.mailbox.mailSets._id)
-		let targetFolders = folders.getIndentedList().map((folderInfo: IndentedFolder) => {
+		let targetFolders = folders.getIndentedList().map((folderInfo: IndentedMailSet) => {
 			return {
 				name: getIndentedFolderNameForDropdown(folderInfo),
-				value: folderInfo.folder,
+				value: folderInfo.mailSet,
 			}
 		})
 		const inboxRuleType = stream(ruleOrTemplate.type)
@@ -74,7 +72,7 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 					label: "inboxRuleTargetFolder_label",
 					items: targetFolders,
 					selectedValue: inboxRuleTarget(),
-					selectedValueDisplay: getFolderName(inboxRuleTarget()),
+					selectedValueDisplay: getMailSetName(inboxRuleTarget()),
 					selectionChangedHandler: inboxRuleTarget,
 					helpLabel: () => getPathToFolderString(folders, inboxRuleTarget(), true),
 				}),
@@ -109,7 +107,8 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 			if (inboxRuleTarget().folderType === MailSetKind.SPAM) {
 				rule.excludeFromSpamFilter = true
 			}
-			props.inboxRules = ruleId == null ? [...inboxRules, rule] : inboxRules.map((inboxRule) => (isSameId(inboxRule._id, ruleId) ? rule : inboxRule))
+			props.inboxRules =
+				ruleId == null ? [...inboxRules, rule] : inboxRules.map((inboxRule) => (isSameSingleId(inboxRule._id, ruleId) ? rule : inboxRule))
 
 			locator.entityClient
 				.update(props)
@@ -121,7 +120,7 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 						props.inboxRules = inboxRules
 						//do not close
 						throw error
-					} else if (error instanceof restError.LockedError) {
+					} else if (error instanceof LockedError) {
 						dialog.close()
 					} else {
 						props.inboxRules = inboxRules
@@ -134,17 +133,18 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 		Dialog.showActionDialog({
 			title: "addInboxRule_action",
 			child: form,
-			validator: () => validateInboxRuleInput(inboxRuleType(), inboxRuleValue(), ruleOrTemplate._id),
+			validator: async () => validateInboxRuleInput(inboxRuleType(), inboxRuleValue(), ruleOrTemplate._id),
 			allowOkWithReturn: true,
 			okAction: addInboxRuleOkAction,
 		})
 	}
 }
 
-export function createInboxRuleTemplate(ruleType: string | null, value: string | null): InboxRuleTemplate {
+export function createInboxRuleTemplate(ruleType: string | null, value: string): InboxRuleTemplate {
+	const type = ruleType ?? InboxRuleType.FROM_EQUALS
 	return {
-		type: ruleType ?? InboxRuleType.FROM_EQUALS,
-		value: getCleanedValue(neverNull(ruleType), value || ""),
+		type,
+		value: getCleanedValue(type, value),
 	}
 }
 
@@ -166,7 +166,7 @@ function validateInboxRuleInput(type: string, value: string, ruleId: Id | undefi
 	} else {
 		let existingRule = getExistingRuleForType(locator.logins.getUserController().props, currentCleanedValue, type)
 
-		if (existingRule && (!ruleId || (ruleId && !isSameId(existingRule._id, ruleId)))) {
+		if (existingRule && (!ruleId || (ruleId && !isSameSingleId(existingRule._id, ruleId)))) {
 			return "inboxRuleAlreadyExists_msg"
 		}
 	}

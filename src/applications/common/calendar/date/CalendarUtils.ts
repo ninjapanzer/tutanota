@@ -1,9 +1,9 @@
-import { clone, isSameId, StrippedEntity } from "@tutao/meta"
+import { clone, elementIdPart, isSameId, isSameSingleId } from "@tutao/meta"
 import {
 	AdvancedRepeatRule,
 	CalendarEvent,
 	CalendarEventAttendee,
-	CalendarEventTypeRef,
+	CalendarEventParams,
 	CalendarGroupRoot,
 	CalendarRepeatRule,
 	createCalendarEvent,
@@ -29,7 +29,6 @@ import {
 	insertIntoSortedArray,
 	isNotEmpty,
 	isNotNull,
-	isSameDayOfDate,
 	isValidDate,
 	memoized,
 	neverNull,
@@ -37,46 +36,51 @@ import {
 } from "@tutao/utils"
 import { BIRTHDAY_CALENDAR_BASE_ID, EndType, EventTextTimeOption, RepeatPeriod, WeekStart } from "@tutao/app-env"
 import { DateTime, DurationLikeObject, FixedOffsetZone, IANAZone, MonthNumbers, WeekdayNumbers } from "luxon"
-import { CalendarEventTimes, DAYS_SHIFTED_MS, generateEventElementId, isAllDayEvent, isAllDayEventByTimes } from "../../api/common/utils/CommonCalendarUtils"
+import {
+	CalendarEventDateTimeFields,
+	CalendarEventTimes,
+	DAYS_SHIFTED_MS,
+	generateEventElementId,
+	isAllDayEvent,
+	isAllDayEventByTimes,
+} from "../../api/common/utils/CommonCalendarUtils"
 import { Time } from "./Time.js"
 import { CalendarInfo } from "../../../calendar-app/calendar/model/CalendarModel"
-import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
-import { CalendarEventUidIndexEntry } from "../../api/worker/facades/lazy/CalendarFacade.js"
+import { ResolvedUidIndexEntry } from "../../api/worker/facades/lazy/CalendarFacade.js"
 import { ParserError } from "../../misc/parsing/ParserCombinator.js"
-import { LoginController } from "../../api/main/LoginController.js"
-import { BirthdayEventRegistry } from "./CalendarEventsRepository.js"
 import type { TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
 import { isoDateToBirthday } from "../../api/common/utils/BirthdayUtils"
 import { EventWrapper, type EventWrapperFlags } from "../../../calendar-app/calendar/view/CalendarViewModel.js"
 import { AllIcons } from "../../../../ui/base/Icon"
 import { Icons } from "../../../../ui/base/icons/Icons"
+import { IcsCalendarEvent } from "../../../calendar-app/calendar/export/CalendarParser"
 
 export type CalendarTimeRange = {
 	start: number
 	end: number
 }
 
-export function eventStartsBefore(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsBefore(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() < currentDate.getTime()
 }
 
-export function eventStartsBeforeDay(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsBeforeDay(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() < getStartOfDayWithZone(currentDate, zone).getTime()
 }
 
-export function eventEndsBefore(date: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsBefore(date: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() < date.getTime()
 }
 
-export function eventStartsAfter(date: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsAfter(date: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() > date.getTime()
 }
 
-export function eventEndsAfterDay(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsAfterDay(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() > getStartOfNextDayWithZone(currentDate, zone).getTime()
 }
 
-export function eventEndsAfterOrOn(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsAfterOrOn(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() >= getStartOfNextDayWithZone(currentDate, zone).getTime()
 }
 
@@ -112,28 +116,6 @@ export function getMonthRange(date: Date, zone: string): CalendarTimeRange {
 	}
 }
 
-export function getDayRange(date: Date, zone: string): CalendarTimeRange {
-	const startDateTime = DateTime.fromJSDate(date, {
-		zone,
-	}).set({
-		hour: 0,
-		minute: 0,
-		second: 0,
-		millisecond: 0,
-	})
-	const start = startDateTime.toJSDate().getTime()
-	const end = startDateTime
-		.plus({
-			day: 1,
-		})
-		.toJSDate()
-		.getTime()
-	return {
-		start,
-		end,
-	}
-}
-
 /**
  * @param date a date object representing a calendar date (like 1st of May 2023 15:15) in {@param zone}
  * @param zone the time zone to calculate which calendar date {@param date} represents.
@@ -155,21 +137,6 @@ export function getStartOfNextDayWithZone(date: Date, zone: string): Date {
 			millisecond: 0,
 		})
 		.plus({ day: 1 })
-		.toJSDate()
-}
-
-/** @param date a date object representing some time on some calendar date (like 1st of May 2023) in {@param zone}
- * @param zone the time zone for which to calculate the calendar date that {@param date} represents
- * @returns a date object representing the start of the previous calendar date (30nd of April 2023 00:00) in {@param zone} */
-export function getStartOfPreviousDayWithZone(date: Date, zone: string): Date {
-	return DateTime.fromJSDate(date, { zone })
-		.set({
-			hour: 0,
-			minute: 0,
-			second: 0,
-			millisecond: 0,
-		})
-		.minus({ day: 1 })
 		.toJSDate()
 }
 
@@ -868,7 +835,10 @@ export function getEventStart({ startTime, endTime }: CalendarEventTimes, timeZo
 	}
 }
 
-/** @param date encodes some calendar date in {@param zone} (like the 1st of May 2023)
+/**
+ * @param date encodes some calendar date in {@param zone} (like the 1st of May 2023)
+ * @param zone - Time zone applied to the given date
+ *
  * @returns {Date} encodes the same calendar date in UTC */
 export function getAllDayDateUTCFromZone(date: Date, zone: string): Date {
 	return DateTime.fromJSDate(date, { zone })
@@ -905,7 +875,7 @@ export function isSameEventInstance(left: EventWrapper, right: EventWrapper): bo
 
 export function hasAlarmsForTheUser(user: User, event: CalendarEvent): boolean {
 	const useAlarmList = neverNull(user.alarmInfoList).alarms
-	return event.alarmInfos.some(([listId]) => isSameId(listId, useAlarmList))
+	return event.alarmInfos.some(([listId]) => isSameSingleId(listId, useAlarmList))
 }
 
 export function eventComparator(l: EventWrapper, r: EventWrapper): number {
@@ -925,10 +895,19 @@ function assertDateIsValid(date: Date) {
  * impossible to create through the interface.
  */
 export const enum CalendarEventValidity {
-	InvalidContainsInvalidDate,
+	InvalidDate,
 	InvalidEndBeforeStart,
 	InvalidPre1970,
 	Valid,
+}
+
+export function checkEventDateValidity(date: Date): CalendarEventValidity {
+	if (!isValidDate(date)) {
+		return CalendarEventValidity.InvalidDate
+	} else if (date.getTime() < TIMESTAMP_ZERO_YEAR) {
+		return CalendarEventValidity.InvalidPre1970
+	}
+	return CalendarEventValidity.Valid
 }
 
 /**
@@ -937,12 +916,16 @@ export const enum CalendarEventValidity {
  * @returns Enum describing the reason to reject the event, if any.
  */
 export function checkEventValidity(event: CalendarEvent): CalendarEventValidity {
-	if (!isValidDate(event.startTime) || !isValidDate(event.endTime)) {
-		return CalendarEventValidity.InvalidContainsInvalidDate
-	} else if (event.endTime.getTime() <= event.startTime.getTime()) {
+	const startValidity = checkEventDateValidity(event.startTime)
+	if (startValidity !== CalendarEventValidity.Valid) {
+		return startValidity
+	}
+	const endValidity = checkEventDateValidity(event.endTime)
+	if (endValidity !== CalendarEventValidity.Valid) {
+		return endValidity
+	}
+	if (event.endTime.getTime() <= event.startTime.getTime()) {
 		return CalendarEventValidity.InvalidEndBeforeStart
-	} else if (event.startTime.getTime() < TIMESTAMP_ZERO_YEAR) {
-		return CalendarEventValidity.InvalidPre1970
 	}
 	return CalendarEventValidity.Valid
 }
@@ -1360,7 +1343,7 @@ function* eventOccurencesGenerator(
  *
  * @param event the calendar event to check. to get correct results, this must be the progenitor.
  */
-export function calendarEventHasMoreThanOneOccurrencesLeft({ progenitor, alteredInstances }: CalendarEventUidIndexEntry): boolean {
+export function calendarEventHasMoreThanOneOccurrencesLeft({ progenitor, alteredInstances }: ResolvedUidIndexEntry): boolean {
 	if (progenitor == null) {
 		// this may happen if we accept multiple invites to altered instances without ever getting the progenitor.
 		return alteredInstances.length > 1
@@ -1471,7 +1454,7 @@ export function findNextAlarmOccurrence(
 				startTime: eventStart,
 				endTime: eventEnd,
 				repeatRule,
-			} as StrippedEntity<CalendarEvent>),
+			} as CalendarEventParams),
 			localTimeZone,
 			maxDate,
 		)
@@ -1535,17 +1518,6 @@ export function findFirstPrivateCalendar(calendarInfo: ReadonlyMap<Id, CalendarI
 	return null
 }
 
-export const DEFAULT_HOUR_OF_DAY = 6
-
-/** Get CSS class for the date element. */
-export function getDateIndicator(day: Date, selectedDate: Date | null): string {
-	if (isSameDayOfDate(day, selectedDate)) {
-		return ".accent-bg.circle"
-	} else {
-		return ""
-	}
-}
-
 /**
  * Determine what format the time of an event should be rendered, given a surrounding time period.
  *
@@ -1601,15 +1573,6 @@ export function getFirstDayOfMonth(d: Date): Date {
 	const date = new Date(d)
 	date.setDate(1)
 	return date
-}
-
-/**
- * get the "primary" event of a series - the one that contains the repeat rule and is not a repeated or a rescheduled instance.
- * @param calendarEvent
- * @param entityClient
- */
-export async function resolveCalendarEventProgenitor(calendarEvent: CalendarEvent, entityClient: EntityClient): Promise<CalendarEvent> {
-	return calendarEvent.repeatRule ? await entityClient.load(CalendarEventTypeRef, calendarEvent._id) : calendarEvent
 }
 
 /** clip the range start-end to the range given by min-max. if the result would have length 0, null is returned. */
@@ -1795,29 +1758,6 @@ export function extractYearFromBirthday(birthday: string | null): number | null 
 	return Number.parseInt(dateParts[0])
 }
 
-export async function retrieveBirthdayEventsForUser(
-	logins: LoginController,
-	searchResultEventIds: IdTuple[],
-	birthdayEventsByMonth: Map<number, BirthdayEventRegistry[]>,
-) {
-	if (!(await logins.getUserController().isNewPaidPlan())) {
-		return []
-	}
-
-	const birthdayEventsFromSearchResult = searchResultEventIds.filter(([calendarId, _]) => isBirthdayCalendar(calendarId))
-	const birthdayEventIdsString = birthdayEventsFromSearchResult.flatMap((eventId) => eventId.join("/"))
-	const retrievedEvents: CalendarEvent[] = []
-
-	const allBirthdayEvents = Array.from(birthdayEventsByMonth.values()).flat()
-	for (const event of allBirthdayEvents) {
-		if (birthdayEventIdsString.includes(event.event._id.join("/"))) {
-			retrievedEvents.push(event.event)
-		}
-	}
-
-	return retrievedEvents
-}
-
 export function calculateContactsAge(birthYear: number | null, currentYear: number): number | null {
 	if (!birthYear) {
 		return null
@@ -1826,12 +1766,26 @@ export function calculateContactsAge(birthYear: number | null, currentYear: numb
 	return currentYear - birthYear
 }
 
-export function extractContactIdFromEvent(id: string | null | undefined): string | null {
-	if (id == null) {
+/**
+ * Get contact id that was used to derive {@param calendarEventId}.
+ * For birthdays, we create "virtual" (client-only) calendar events. Their id is derived from the contact id. This
+ * function does the opposite, giving the original contact id.
+ */
+export function birthdayCalendarEventContactId(calendarEventId: IdTuple): IdTuple | null {
+	const idParts = elementIdPart(calendarEventId).split("#")
+	if (idParts.length !== 2) {
 		return null
 	}
-
-	return decodeBase64("utf-8", id)
+	const [_, encodedContactId] = idParts
+	const contactId = decodeBase64("utf-8", encodedContactId)
+	if (contactId == null) {
+		return null
+	}
+	const contactIdParts = contactId.split("/")
+	if (contactIdParts.length !== 2) {
+		return null
+	}
+	return [contactIdParts[0], contactIdParts[1]]
 }
 
 /**
@@ -1918,4 +1872,8 @@ export function getWeekStart(userSettings: UserSettingsGroupRoot): WeekStart {
 
 export function getAttendeeStatus(attendee: CalendarEventAttendee): CalendarAttendeeStatus {
 	return downcast(attendee.status)
+}
+
+export function getCalendarEventDurationInMinutes(ev: CalendarEvent | IcsCalendarEvent) {
+	return DateTime.fromJSDate(ev.endTime).diff(DateTime.fromJSDate(ev.startTime), "minutes").minutes
 }

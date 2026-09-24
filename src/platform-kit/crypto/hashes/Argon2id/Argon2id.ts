@@ -1,5 +1,7 @@
 import { callWebAssemblyFunctionWithArguments, ConstPtr, mutableSecureFree, Ptr, secureFree, stringToUtf8Uint8Array, WASMExports } from "@tutao/utils"
-import { Aes256Key, uint8ArrayToKey } from "../../encryption/symmetric/SymmetricCipherUtils.js"
+import { uint8ArrayToKey, uint8ArrayTo256Key } from "../../encryption/symmetric/SymmetricCipherUtils.js"
+import { Aes256Key, AesKeyLength } from "../../encryption/symmetric/AesKey"
+import { number, NumberArgument, Uint8ArrayArgument } from "../../../utils/WebAssemblyArgument"
 // Per OWASP's recommendations @ https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 export const ARGON2ID_ITERATIONS = 4
 export const ARGON2ID_MEMORY_IN_KiB = 32 * 1024
@@ -27,7 +29,7 @@ export interface Argon2IDExports extends WASMExports {
  * @param salt 16 bytes of random data
  * @return resolved with the key
  */
-export async function generateKeyFromPassphrase(argon2: Argon2IDExports, pass: string, salt: Uint8Array): Promise<Aes256Key> {
+export async function generateKeyFromPassphrase(argon2: Argon2IDExports, pass: string, salt: Uint8Array<ArrayBuffer>): Promise<Aes256Key> {
 	const hash = await argon2idHashRaw(
 		argon2,
 		ARGON2ID_ITERATIONS,
@@ -38,7 +40,7 @@ export async function generateKeyFromPassphrase(argon2: Argon2IDExports, pass: s
 		ARGON2ID_KEY_LENGTH,
 	)
 
-	return uint8ArrayToKey(hash)
+	return uint8ArrayTo256Key(hash)
 }
 
 async function argon2idHashRaw(
@@ -46,23 +48,23 @@ async function argon2idHashRaw(
 	timeCost: number,
 	memoryCost: number,
 	parallelism: number,
-	password: Uint8Array,
-	salt: Uint8Array,
+	password: Uint8Array<ArrayBuffer>,
+	salt: Uint8Array<ArrayBuffer>,
 	hashLength: number,
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
 	const hash = new Uint8Array(hashLength)
 	const result = callWebAssemblyFunctionWithArguments(
 		argon2.argon2id_hash_raw,
 		argon2,
-		timeCost,
-		memoryCost,
-		parallelism,
+		number(timeCost),
+		number(memoryCost),
+		number(parallelism),
 		secureFree(password),
-		password.length,
-		salt,
-		salt.length,
+		number(password.length),
+		new Uint8ArrayArgument(salt),
+		number(salt.length),
 		mutableSecureFree(hash),
-		hash.length,
+		number(hash.length),
 	)
 
 	if (result !== 0) {

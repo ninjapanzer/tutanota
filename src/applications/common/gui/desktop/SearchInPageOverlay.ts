@@ -3,17 +3,18 @@ import type { PositionRect } from "../../../../ui/base/Overlay"
 import { displayOverlay } from "../../../../ui/base/Overlay"
 import { component_size, px } from "../../../../ui/size"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { assertMainOrNode, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { locator } from "../../api/main/CommonLocator"
 import { ElectronResult } from "@tutao/native-bridge/generatedIpc/types"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager.js"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { ToggleButton } from "../../../../ui/base/buttons/ToggleButton.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { getSafeAreaInsetBottom } from "../../../../ui/HtmlUtils.js"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * search bar for the Ctrl+F in-page search of the Desktop client
@@ -63,7 +64,7 @@ export class SearchInPageOverlay {
 		return {
 			height: px(component_size.navbar_height_mobile),
 			// Place the search overlay on top of the bottom nav bar
-			bottom: px(styles.isUsingBottomNavigation() ? -bottomNavHeight : 0),
+			bottom: px(Styles.get().isUsingBottomNavigation() ? -bottomNavHeight : 0),
 			right: px(0),
 			left: px(0),
 		}
@@ -157,12 +158,12 @@ export class SearchInPageOverlay {
 							[
 								this.inputField(),
 								m(IconButton, {
-									title: "previous_action",
+									label: "previous_action",
 									icon: Icons.ChevronLeft,
 									click: () => this.find(false, true),
 								}),
 								m(IconButton, {
-									title: "next_action",
+									label: "next_action",
 									icon: Icons.ChevronRight,
 									click: () => this.find(true, true),
 								}),
@@ -180,7 +181,7 @@ export class SearchInPageOverlay {
 							],
 						),
 						m(IconButton, {
-							title: "close_alt",
+							label: "close_alt",
 							icon: Icons.X,
 							click: () => this.close(),
 						}),

@@ -2,7 +2,7 @@ import m, { Children, Component, Vnode } from "mithril"
 import { Dialog } from "../../../ui/base/Dialog"
 import { LegacyTextField } from "../../../ui/base/LegacyTextField.js"
 import { lang } from "../../../ui/utils/LanguageViewModel"
-import { Keys, UpgradePromptType } from "../../../platform-kit/app-env"
+import { UpgradePromptType } from "../../../platform-kit/app-env"
 import { Checkbox } from "../../../ui/base/Checkbox.js"
 import { px } from "../../../ui/size"
 import { ButtonType } from "../../../ui/base/Button.js"
@@ -23,6 +23,7 @@ import { getStartOfTheWeekOffsetForUser } from "../../common/misc/weekOffset"
 import { OutOfOfficeNotification } from "@tutao/entities/tutanota"
 import { OUT_OF_OFFICE_SUBJECT_PREFIX } from "../../../entities/tutanota/Utils"
 import { getHtmlSanitizer } from "../../common/misc/HtmlSanitizer"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 export function showEditOutOfOfficeNotificationDialog(outOfOfficeNotification: OutOfOfficeNotification | null) {
 	const dialogModel = new EditOutOfOfficeNotificationDialogModel(
@@ -224,7 +225,7 @@ class EditOutOfOfficeNotificationDialog implements Component<EditOutOfOfficeNoti
 			m(DatePicker, {
 				date: model.startDate(),
 				onDateSelected: model.startDate,
-				label: "dateFrom_label",
+				label: lang.getTranslation("dateFrom_label"),
 				nullSelectionText: "emptyString_msg",
 				startOfTheWeekOffset,
 			}),
@@ -237,7 +238,7 @@ class EditOutOfOfficeNotificationDialog implements Component<EditOutOfOfficeNoti
 				? m(DatePicker, {
 						date: model.endDate(),
 						onDateSelected: model.endDate,
-						label: "dateTo_label",
+						label: lang.getTranslation("dateTo_label"),
 						nullSelectionText: "emptyString_msg",
 						startOfTheWeekOffset,
 					})

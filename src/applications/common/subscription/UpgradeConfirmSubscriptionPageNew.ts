@@ -1,10 +1,11 @@
 import m, { Children, ClassComponent, Vnode } from "mithril"
 import { Dialog } from "../../../ui/base/Dialog"
+import { ExternalLink } from "../../../ui/base/ExternalLink.js"
 import { lang, MaybeTranslation } from "../../../ui/utils/LanguageViewModel"
 import { formatPrice, formatPriceWithInfo, getPaymentMethodName, PaymentInterval } from "./utils/PriceUtils"
-import { Const, isIOSApp, SessionType } from "@tutao/app-env"
+import { Const, EnvProvider, SessionType } from "@tutao/app-env"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
-import * as restError from "@tutao/rest-client/error"
+import { BadGatewayError, PreconditionFailedError } from "@tutao/rest-client/error"
 import {
 	appStorePlanName,
 	getPreconditionFailedPaymentMsg,
@@ -14,14 +15,13 @@ import {
 } from "./utils/SubscriptionUtils"
 import { assertNotNull, base64ExtToBase64, base64ToUint8Array, ofClass } from "@tutao/utils"
 import { locator } from "../api/main/CommonLocator"
-import { createSwitchAccountTypePostIn, SwitchAccountTypeService } from "@tutao/entities/sys"
+import { createSwitchAccountTypePostIn, SwitchAccountTypeService_POST } from "@tutao/entities/sys"
 import { AccountType, AvailablePlanType, PaymentMethodType, PlanType } from "../../../entities/sys/Utils"
 import { getDisplayNameOfPlanType, SelectedSubscriptionOptions } from "./FeatureListProvider"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
 import { MobilePaymentResultType } from "@tutao/native-bridge/generatedIpc/enums"
-import { updatePaymentData } from "./InvoiceAndPaymentDataPage"
 import { MobilePaymentError } from "../api/common/error/MobilePaymentError.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { DateTime } from "luxon"
 import { formatDate } from "../../../ui/utils/Formatter.js"
 import { WizardStepContext } from "../../../ui/base/wizard/WizardController"
@@ -30,22 +30,22 @@ import { theme } from "../../../ui/theme"
 import { TextField } from "../../../ui/base/TextField"
 import { Icons } from "../../../ui/base/icons/Icons"
 import { IconButton } from "../../../ui/base/IconButton"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { WizardStepComponentAttrs } from "../../../ui/base/wizard/WizardStep"
 import { AllIcons } from "../../../ui/base/Icon"
 import { layout_size, px } from "../../../ui/size"
 import { SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils"
+import { elementIdToId } from "@tutao/meta"
 
+export const PlanTypeToIcon: Record<AvailablePlanType, AllIcons> = {
+	[PlanType.Free]: Icons.Revolutionary,
+	[PlanType.Revolutionary]: Icons.Revolutionary,
+	[PlanType.Legend]: Icons.Legendary,
+	[PlanType.Essential]: Icons.HouseOutline,
+	[PlanType.Advanced]: Icons.StoreOutline,
+	[PlanType.Unlimited]: Icons.CityOutline,
+}
 export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardStepComponentAttrs<SignupViewModel>> {
-	private iconByPlanType: Record<AvailablePlanType, AllIcons> = {
-		[PlanType.Free]: Icons.Revolutionary,
-		[PlanType.Revolutionary]: Icons.Revolutionary,
-		[PlanType.Legend]: Icons.Legendary,
-		[PlanType.Essential]: Icons.HouseOutline,
-		[PlanType.Advanced]: Icons.StoreOutline,
-		[PlanType.Unlimited]: Icons.CityOutline,
-	}
-
 	private _setStep(ctx: WizardStepContext<SignupViewModel>, index: number) {
 		ctx.controller.setStepUnreachable(ctx.controller.currentStep)
 		ctx.controller.setStep(index)
@@ -59,9 +59,9 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 		const isFirstMonthForFree = data.planPrices!.getRawPricingData().firstMonthForFreeForYearlyPlan && isYearly
 		const isAppStorePayment = data.paymentData.paymentMethod === PaymentMethodType.AppStore
 
-		return m(`.flex.flex-column.full-width${styles.isMobileLayout() ? ".pt-16" : ""}`, [
+		return m(`.flex.flex-column.full-width${Styles.get().isMobileLayout() ? ".pt-16" : ""}`, [
 			m(
-				`h1.font-mdio${styles.isMobileLayout() ? ".h2" : ".h1"}`,
+				`h1.font-mdio${Styles.get().isMobileLayout() ? ".h2" : ".h1"}`,
 				{
 					style: {
 						position: "relative",
@@ -70,12 +70,12 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 				},
 				lang.get("confirm_order_page_title"),
 			),
-			m(`p${styles.isMobileLayout() ? ".mb-32" : ""}`, { style: { color: theme.on_surface_variant } }, lang.get("confirm_order_page_subtitle")),
+			m(`p${Styles.get().isMobileLayout() ? ".mb-32" : ""}`, { style: { color: theme.on_surface_variant } }, lang.get("confirm_order_page_subtitle")),
 
 			m(".flex.gap-16", [
 				m(".flex-grow", [
 					m(
-						`.flex.col.gap-16.pt-16.pb-16.border-radius-16${styles.isMobileLayout() ? "" : ".plr-16"}`,
+						`.flex.col.gap-16.pt-16.pb-16.border-radius-16${Styles.get().isMobileLayout() ? "" : ".plr-16"}`,
 						{
 							style: {
 								"background-color": theme.surface_container_high,
@@ -89,15 +89,15 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 								isReadOnly: true,
 								class: "",
 								leadingIcon: {
-									icon: this.iconByPlanType[data.targetPlanType as AvailablePlanType],
+									icon: PlanTypeToIcon[data.targetPlanType as AvailablePlanType],
 									color: theme.on_surface_variant,
 								},
 								injectionsRight: () => {
 									return m(IconButton, {
 										icon: Icons.PenFilled,
-										title: "edit_action",
+										label: "edit_action",
 										click: () => {
-											if (styles.bodyWidth >= layout_size.wizard_show_illustration_min_width && !data.options.businessUse()) {
+											if (Styles.get().bodyWidth >= layout_size.wizard_show_illustration_min_width && !data.options.businessUse()) {
 												data.inlinePlanSelectorOpen(!data.inlinePlanSelectorOpen())
 											} else {
 												ctx.controller.setStep(0)
@@ -117,11 +117,11 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 									color: theme.on_surface_variant,
 								},
 								injectionsRight: () => {
-									return isIOSApp()
+									return EnvProvider.get().isIOSApp()
 										? undefined
 										: m(IconButton, {
 												icon: Icons.PenFilled,
-												title: "edit_action",
+												label: "edit_action",
 												click: () => {
 													this._setStep(ctx, 2)
 												},
@@ -141,7 +141,7 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 									injectionsRight: () => {
 										return m(IconButton, {
 											icon: Icons.PenFilled,
-											title: "edit_action",
+											label: "edit_action",
 											click: () => {
 												this._setStep(ctx, 2)
 											},
@@ -161,7 +161,7 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 								injectionsRight: () => {
 									return m(IconButton, {
 										icon: Icons.Swap,
-										title: "edit_action",
+										label: "edit_action",
 										click: () => {
 											if (isYearly) {
 												data.options.paymentInterval(PaymentInterval.Monthly)
@@ -217,7 +217,7 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 						m(PrimaryButton, {
 							size: "md",
 							label: isAppStorePayment ? "checkoutWithAppStore_action" : "confirmAndPay_action",
-							width: styles.isMobileLayout() ? "full" : "flex",
+							width: Styles.get().isMobileLayout() ? "full" : "flex",
 							onclick: () => this.upgrade(ctx),
 							style: {
 								"margin-left": "auto",
@@ -236,22 +236,14 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 	}
 
 	private async upgrade(ctx: WizardStepContext<SignupViewModel>) {
-		// We return early because we do the upgrade after the user has submitted payment which is on the confirmation page
 		if (ctx.viewModel.paymentData.paymentMethod === PaymentMethodType.AppStore) {
-			const success = await this.handleAppStorePayment(ctx.viewModel)
-			if (!success) {
-				return
-			}
-			const receivedNotification = await showProgressDialog(
-				"waitingForAppStoreConfirmation_msg",
-				waitUntilCustomerInfoPlanTypeIsCorrect(ctx.viewModel.targetPlanType, assertNotNull(ctx.viewModel.customer?._id)),
-			)
-			if (receivedNotification) {
-				ctx.goNext()
-				return
-			}
+			return this.upgradeWithAppStore(ctx)
+		} else {
+			return this.upgradeWithTuta(ctx)
 		}
+	}
 
+	private upgradeWithTuta(ctx: WizardStepContext<SignupViewModel>): Promise<void> {
 		const serviceData = createSwitchAccountTypePostIn({
 			accountType: AccountType.PAID,
 			customer: null,
@@ -260,33 +252,59 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 			referralCode: ctx.viewModel.referralData?.code ?? null,
 			specialPriceUserSingle: null,
 			surveyData: null,
-			app: client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
+			app: ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
 		})
-		showProgressDialog("pleaseWait_msg", locator.serviceExecutor.post(SwitchAccountTypeService, serviceData))
-			// Order confirmation (click on Buy), send selected payment method as an enum
-			.then(() => ctx.goNext())
-			.catch(
-				ofClass(restError.PreconditionFailedError, (e) => {
-					Dialog.message(
-						lang.makeTranslation(
-							"precondition_failed",
-							lang.get(getPreconditionFailedPaymentMsg(e.data)) +
-								(ctx.viewModel.upgradeType === UpgradeType.Signup ? " " + lang.get("accountWasStillCreated_msg") : ""),
-						),
-					)
-				}),
+		return (
+			showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(SwitchAccountTypeService_POST, serviceData, null))
+				// Order confirmation (click on Buy), send selected payment method as an enum
+				.then(() => ctx.goNext())
+				.catch(
+					ofClass(PreconditionFailedError, (e) => {
+						Dialog.message(
+							lang.makeTranslation(
+								"precondition_failed",
+								lang.get(getPreconditionFailedPaymentMsg(e.data)) +
+									(ctx.viewModel.upgradeType === UpgradeType.Signup ? " " + lang.get("accountWasStillCreated_msg") : ""),
+							),
+						)
+					}),
+				)
+				.catch(
+					ofClass(BadGatewayError, () => {
+						Dialog.message(
+							lang.makeTranslation(
+								"payment_failed",
+								lang.get("paymentProviderNotAvailableError_msg") +
+									(ctx.viewModel.upgradeType === UpgradeType.Signup ? " " + lang.get("accountWasStillCreated_msg") : ""),
+							),
+						)
+					}),
+				)
+		)
+	}
+
+	private async upgradeWithAppStore(ctx: WizardStepContext<SignupViewModel>): Promise<void> {
+		const success = await this.handleAppStorePayment(ctx.viewModel)
+		if (!success) {
+			return
+		}
+
+		const receivedNotification = await showProgressDialog(
+			"waitingForAppStoreConfirmation_msg",
+			waitUntilCustomerInfoPlanTypeIsCorrect(ctx.viewModel.targetPlanType, elementIdToId(assertNotNull(ctx.viewModel.customer?._id))),
+		)
+		if (!receivedNotification) {
+			await Dialog.message("appStoreConfirmationTimeout_msg", () =>
+				m(".pt-8", [
+					m(ExternalLink, {
+						href: "https://apps.apple.com/account/subscriptions",
+						text: lang.get("settings_label"),
+						isCompanySite: false,
+					}),
+				]),
 			)
-			.catch(
-				ofClass(restError.TooManyRequestsError, () => {
-					Dialog.message(
-						lang.makeTranslation(
-							"payment_failed",
-							lang.get("paymentProviderNotAvailableError_msg") +
-								(ctx.viewModel.upgradeType === UpgradeType.Signup ? " " + lang.get("accountWasStillCreated_msg") : ""),
-						),
-					)
-				}),
-			)
+		}
+		ctx.goNext()
 	}
 
 	/** @return whether subscribed successfully */
@@ -320,15 +338,7 @@ export class UpgradeConfirmSubscriptionPageNew implements ClassComponent<WizardS
 			}
 		}
 
-		return await updatePaymentData(
-			data.options.paymentInterval(),
-			data.invoiceData,
-			data.paymentData,
-			null,
-			data.newAccountData != null,
-			null,
-			data.accountingInfo!,
-		)
+		return true
 	}
 
 	private renderPriceNextYear(data: SignupViewModel) {

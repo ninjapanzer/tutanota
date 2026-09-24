@@ -1,12 +1,11 @@
-import * as restError from "@tutao/rest-client/error"
-import { isOfflineError } from "@tutao/rest-client/error"
+import { AccessExpiredError, BadRequestError, isOfflineError, NotAuthenticatedError } from "@tutao/rest-client/error"
 import { lang, MaybeTranslation } from "../../../ui/utils/LanguageViewModel.js"
 import { SecondFactorHandler } from "../misc/2fa/SecondFactorHandler.js"
 import { getLoginErrorMessage, handleExpectedLoginError } from "../misc/LoginUtils.js"
 import type { LoginController } from "../api/main/LoginController"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
-import { assertMainOrNode, CancelledError, ProgrammingError, SessionType } from "@tutao/app-env"
+import { CancelledError, DomainConfig, EnvProvider, ProgrammingError, SessionType } from "@tutao/app-env"
 import type { CredentialsProvider } from "../misc/credentials/CredentialsProvider.js"
 import { CredentialAuthenticationError } from "../api/common/error/CredentialAuthenticationError"
 import { first, noOp } from "@tutao/utils"
@@ -20,8 +19,9 @@ import { credentialsToUnencrypted } from "../misc/credentials/Credentials.js"
 import { AppLock } from "./AppLock.js"
 import { AppLockAuthenticationError } from "../api/common/error/AppLockAuthenticationError"
 import { getWhitelabelRegistrationDomains } from "../../../ui/utils/WhitelabelUtils"
+import { ResumeSessionState } from "../../../platform-kit/base/facades/LoginFacade"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Defines what the view should currently render.
@@ -328,9 +328,8 @@ export class LoginViewModel implements ILoginViewModel {
 				credentials = await this.unlockAppAndGetCredentials(this.autoLoginCredentials.userId)
 
 				if (credentials) {
-					const offlineTimeRange = this.deviceConfig.getOfflineTimeRangeDate(this.autoLoginCredentials.userId)
-					const result = await this.loginController.resumeSession(credentials, null, offlineTimeRange)
-					if (result.type === "success") {
+					const result = await this.loginController.resumeSession(credentials, null)
+					if (result.state === ResumeSessionState.Success) {
 						await this.onLogin()
 					} else {
 						this.state = LoginState.NotAuthenticated
@@ -341,7 +340,7 @@ export class LoginViewModel implements ILoginViewModel {
 				this.state = LoginState.NotAuthenticated
 			}
 		} catch (e) {
-			if (e instanceof restError.NotAuthenticatedError && this.autoLoginCredentials) {
+			if (e instanceof NotAuthenticatedError && this.autoLoginCredentials) {
 				const autoLoginCredentials = this.autoLoginCredentials
 				await this.credentialsProvider.deleteByUserId(autoLoginCredentials.userId)
 				if (credentials) {
@@ -461,9 +460,9 @@ export class LoginViewModel implements ILoginViewModel {
 	private async onLoginFailed(error: Error): Promise<void> {
 		this.helpText = getLoginErrorMessage(error, false)
 
-		if (error instanceof restError.BadRequestError || error instanceof restError.NotAuthenticatedError) {
+		if (error instanceof BadRequestError || error instanceof NotAuthenticatedError) {
 			this.state = LoginState.InvalidCredentials
-		} else if (error instanceof restError.AccessExpiredError) {
+		} else if (error instanceof AccessExpiredError) {
 			this.state = LoginState.AccessExpired
 		} else {
 			this.state = LoginState.UnknownError

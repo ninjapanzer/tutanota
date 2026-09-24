@@ -1,5 +1,5 @@
 import m, { Component, Vnode } from "mithril"
-import { assertMainOrNode } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import ColumnEmptyMessageBox from "../../../../ui/base/ColumnEmptyMessageBox"
 import { lang, MaybeTranslation, Translation } from "../../../../ui/utils/LanguageViewModel"
 import { theme } from "../../../../ui/theme"
@@ -9,7 +9,7 @@ import { deviceConfig, MailListDisplayMode } from "../../../common/misc/DeviceCo
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { Mail } from "@tutao/entities/tutanota"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type MultiItemViewerAttrs<T> = {
 	selectedEntities: readonly T[]
@@ -77,7 +77,8 @@ export class MultiItemViewer<T> implements Component<MultiItemViewerAttrs<T>> {
 
 export function getMailSelectionMessage(selectedEntities: ReadonlyArray<Mail>): Translation {
 	let nbrOfSelectedMails = selectedEntities.length
-	let isConversationViewEnabled = deviceConfig.getMailListDisplayMode() === MailListDisplayMode.CONVERSATIONS
+	let isConversationViewEnabled =
+		!deviceConfig.getConversationViewShowOnlySelectedMail() && deviceConfig.getMailListDisplayMode() === MailListDisplayMode.CONVERSATIONS
 
 	if (nbrOfSelectedMails === 0) {
 		return lang.getTranslation("noMail_msg")

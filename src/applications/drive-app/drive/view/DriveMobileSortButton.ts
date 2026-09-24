@@ -1,9 +1,9 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { SortColumn, SortingPreference } from "./DriveViewModel"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { createDropdown, DropdownButtonAttrs } from "../../../../ui/base/Dropdown"
 import { IconButton } from "../../../../ui/base/IconButton"
+import { SortColumn, SortingPreference } from "./DriveUtils"
 
 export interface DriveMobileSortButtonAttrs {
 	readonly currentSort: SortingPreference
@@ -39,7 +39,7 @@ export class DriveMobileSortButton implements Component<DriveMobileSortButtonAtt
 		})
 
 		return m(IconButton, {
-			title: "sortBy_label",
+			label: "sortBy_label",
 			icon: Icons.OrderedList,
 			click: (e: MouseEvent, dom: HTMLElement) => {
 				createDropdown({

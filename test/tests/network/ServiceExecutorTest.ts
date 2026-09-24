@@ -1,19 +1,32 @@
 import o, { assertThrows, verify } from "@tutao/otest"
-import { RestClient } from "../../../src/platform-kit/rest-client"
-import { HttpMethod, MediaType, RestClientOptions } from "../../../src/platform-kit/rest-client/types"
-import { CryptoFacade } from "../../../src/platform-kit/base/crypto/CryptoFacade.js"
+import { DEFAULT_REST_CLIENT_OPTIONS, RestClient } from "../../../src/platform-kit/rest-client"
+import { HttpMethod, MediaType, RestClientOptions, RestTextBody } from "../../../src/platform-kit/rest-client/types"
+import { CryptoFacade } from "../../../src/platform-kit/base/base-crypto/CryptoFacade.js"
 import { matchers, object, when } from "testdouble"
-import { AttributeModel, DeleteService, GetService, PostService, PutService, ServerModelUntypedInstance } from "../../../src/platform-kit/meta"
-import { deepEqual, downcast } from "../../../src/platform-kit/utils"
+import { DeleteService, GetService, NULL_ENTITY, NullEntityTypeRef, PostService, PutService, ServerTypeModel } from "../../../src/platform-kit/meta"
+import { assert, deepEqual, downcast } from "../../../src/platform-kit/utils"
 import { ProgrammingError } from "../../../src/platform-kit/app-env"
-import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver, removeOriginals } from "../TestUtils.js"
+import { clientInitializedTypeModelResolver, createTestEntity, removeOriginals } from "../TestUtils.js"
 import { InstancePipeline, LoggedInUserProvider, TypeModelResolver } from "../../../src/platform-kit/instance-pipeline"
-import { aes256RandomKey } from "../../../src/platform-kit/crypto"
+import { aes256RandomKey, AesKey, SymmetricCipherFacade, SymmetricEncryptionScheme } from "../../../src/platform-kit/crypto"
 import { LoginIncompleteError } from "../../../src/platform-kit/rest-client/error"
-import { CustomerAccountReturnTypeRef, CustomerAccountService } from "@tutao/entities/accounting"
-
-import { AlarmServicePostTypeRef, GiftCardCreateDataTypeRef, SaltDataTypeRef } from "@tutao/entities/sys"
+import { CustomerAccountReturnTypeRef, CustomerAccountService_GET } from "@tutao/entities/accounting"
+import {
+	AlarmNotificationTypeRef,
+	AlarmServicePost,
+	AlarmServicePostTypeRef,
+	GiftCardCreateData,
+	GiftCardCreateDataTypeRef,
+	SaltData,
+	SaltDataTypeRef,
+	UserAlarmInfoDataTypeRef,
+} from "@tutao/entities/sys"
 import { ServiceExecutor } from "../../../src/platform-kit/network/ServiceExecutor"
+import { IncomingServerJson } from "../../../src/platform-kit/instance-pipeline/TypeMapper"
+import { AEAD_FACADE } from "@tutao/crypto/aead-facade"
+import { AES_CBC_FACADE } from "@tutao/crypto/aes-cbc-facade"
+import { SYMMETRIC_KEY_DERIVER } from "@tutao/crypto/symmetric-key-deriver"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../src/platform-kit/instance-pipeline/RestClientOptions"
 
 const { anything } = matchers
 
@@ -28,8 +41,15 @@ o.spec("ServiceExecutor", function () {
 	let cryptoFacade: CryptoFacade
 	let executor: ServiceExecutor
 	let fullyLoggedIn: boolean = true
-	let previousNetworkDebugging
+	let sessionKey: AesKey
+	let alarmServicePostData: AlarmServicePost
+	let alarmServicePostDataTypeModel: ServerTypeModel
+	let saltDataTypeModel: ServerTypeModel
+	let saltData: SaltData
+	let saltDataJson: string
+	let alarmServicePostDataJson: string
 	let typeModelResolver: TypeModelResolver
+
 	const authDataProvider: LoggedInUserProvider = downcast({
 		createAuthHeaders(): Dict {
 			return authHeaders
@@ -37,116 +57,96 @@ o.spec("ServiceExecutor", function () {
 		isFullyLoggedIn(): boolean {
 			return fullyLoggedIn
 		},
+		getDefaultSymmetricEncryptionScheme(): SymmetricEncryptionScheme {
+			return SymmetricEncryptionScheme.AesCbc
+		},
 	})
 
-	o.beforeEach(function () {
+	o.beforeEach(async () => {
 		restClient = object()
 		authHeaders = {}
 		fullyLoggedIn = true
 
-		instancePipeline = object()
-		cryptoFacade = object()
 		typeModelResolver = clientInitializedTypeModelResolver()
+		instancePipeline = new InstancePipeline(typeModelResolver, () => null!, new SymmetricCipherFacade(AES_CBC_FACADE, AEAD_FACADE, SYMMETRIC_KEY_DERIVER))
+		sessionKey = aes256RandomKey()
+
+		cryptoFacade = object()
 		executor = new ServiceExecutor(restClient, authDataProvider, instancePipeline, () => cryptoFacade, typeModelResolver)
-		previousNetworkDebugging = env.networkDebugging
-		env.networkDebugging = false
-	})
-	o.afterEach(function () {
-		env.networkDebugging = previousNetworkDebugging
+
+		saltData = createTestEntity(SaltDataTypeRef, { mailAddress: "someuser@example.org" }, { populateAggregates: true })
+		alarmServicePostData = createTestEntity(AlarmServicePostTypeRef, {
+			alarmNotifications: [createTestEntity(AlarmNotificationTypeRef, {}, { populateAggregates: true })],
+			userAlarmInfoData: [createTestEntity(UserAlarmInfoDataTypeRef, {}, { populateAggregates: true })],
+		})
+		alarmServicePostData.alarmNotifications[0].user = "some-user"
+
+		alarmServicePostDataJson = (await instancePipeline.mapAndEncrypt(alarmServicePostData._type, alarmServicePostData, sessionKey)).getJsonRepresentation()
+		saltDataJson = (await instancePipeline.mapAndEncrypt(saltData._type, saltData, sessionKey)).getJsonRepresentation()
+
+		alarmServicePostDataTypeModel = await typeModelResolver.resolveServerTypeReference(alarmServicePostData._type)
+		saltDataTypeModel = await typeModelResolver.resolveServerTypeReference(saltData._type)
+		assert(alarmServicePostDataTypeModel.encrypted, "AlarmServicePostTypeRef is used to test encrypted-related paths")
+		assert(!saltDataTypeModel.encrypted, "SaltDataTypeRef is used to test encrypted-related paths")
 	})
 
 	function assertThatNoRequestsWereMade() {
-		verify(restClient.request(anything(), anything()), { ignoreExtraArgs: true, times: 0 })
+		verify(restClient.request(anything(), anything(), anything()), { ignoreExtraArgs: true, times: 0 })
 	}
 
-	function respondWith(response) {
-		when(restClient.request(anything(), anything()), { ignoreExtraArgs: true }).thenResolve(response)
+	function respondWith(response: string | null) {
+		when(restClient.request(anything(), anything(), anything()), { ignoreExtraArgs: true }).thenResolve(response ?? undefined)
 	}
 
 	o("decryptResponse removes network debugging info", async function () {
+		const testService_GET = new GetService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+		const testService_POST = new PostService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+		const testService_PUT = new PutService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+		const testService_DELETE = new DeleteService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+
 		env.networkDebugging = true
 
-		const realInstancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
+		const dataWithDebug = await instancePipeline.mapAndEncrypt(saltData._type, saltData, sessionKey)
+		respondWith(dataWithDebug.getJsonRepresentation())
 
-		const getService: GetService & DeleteService & PutService & PostService = {
-			...service,
-			get: { data: null, return: SaltDataTypeRef },
-			post: { data: null, return: SaltDataTypeRef },
-			put: { data: null, return: SaltDataTypeRef },
-			delete: { data: null, return: SaltDataTypeRef },
-		}
-
-		const expectedInstance = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-		const dataWithDebug = await realInstancePipeline.mapAndEncrypt(SaltDataTypeRef, expectedInstance, null)
-
-		const dataAsUntypedInstance = AttributeModel.removeNetworkDebuggingInfoIfNeeded(dataWithDebug)
-		when(
-			instancePipeline.decryptAndMap(
-				SaltDataTypeRef,
-				// all field names should have been removed before doing description
-				matchers.argThat((i) => deepEqual(i, dataAsUntypedInstance)),
-				null,
-			),
-		).thenResolve(expectedInstance)
-
-		respondWith(JSON.stringify(dataWithDebug))
-
-		const getResponse = await executor.get(getService, null)
-		const postResponse = await executor.post(getService, null)
-		const putResponse = await executor.put(getService, null)
-		const deleteResponse = await executor.delete(getService, null)
-		o(getResponse).deepEquals(expectedInstance)
-		o(postResponse).deepEquals(expectedInstance)
-		o(putResponse).deepEquals(expectedInstance)
-		o(deleteResponse).deepEquals(expectedInstance)
-
-		env.networkDebugging = false
+		const getResponse = await executor.execute(testService_GET, NULL_ENTITY, null)
+		const postResponse = await executor.execute(testService_POST, NULL_ENTITY, null)
+		const putResponse = await executor.execute(testService_PUT, NULL_ENTITY, null)
+		const deleteResponse = await executor.execute(testService_DELETE, NULL_ENTITY, null)
+		o(getResponse).deepEquals(saltData)
+		o(postResponse).deepEquals(saltData)
+		o(putResponse).deepEquals(saltData)
+		o(deleteResponse).deepEquals(saltData)
 	})
 
 	o.spec("GET", function () {
 		o("encrypts data", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" }
-			when(instancePipeline.mapAndEncrypt(SaltDataTypeRef, data, null)).thenResolve(literal)
+			const getService = new GetService(service.app, service.name, AlarmServicePostTypeRef, NullEntityTypeRef)
+			respondWith(null)
 
-			respondWith(undefined)
+			const sessionKey = aes256RandomKey()
+			const response = await executor.execute(getService, alarmServicePostData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.get(getService, data)
+			o(response).equals(NULL_ENTITY)
 
-			o(response).equals(undefined)
-			verify(
-				restClient.request(
-					"/rest/testapp/testservice",
-					HttpMethod.GET,
-					matchers.argThat((options: RestClientOptions) => options.body === `{"literal":"1"}`),
-				),
+			const requestCaptor = matchers.captor()
+			verify(restClient.request("/rest/testapp/testservice", HttpMethod.GET, requestCaptor.capture()))
+
+			const requestedEntity = await instancePipeline.decryptAndMap<AlarmServicePost>(
+				IncomingServerJson.expectSingleInstance((requestCaptor.value.body as RestTextBody).payload, alarmServicePostDataTypeModel),
+				sessionKey,
 			)
+
+			o(removeOriginals(requestedEntity)).deepEquals(alarmServicePostData)
 		})
 
 		o("maps unencrypted response data to instance", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
+			const getService = new GetService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
 
-			respondWith(`{"literal":"1"}`)
+			respondWith(saltDataJson)
+			const response = await executor.execute(getService, NULL_ENTITY, null)
 
-			const response = await executor.get(getService, null)
-
-			o(response).equals(returnData)
+			o(removeOriginals(response!)).deepEquals(saltData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -156,22 +156,12 @@ o.spec("ServiceExecutor", function () {
 			)
 		})
 		o("maps encrypted response data to instance", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
+			const getService = new GetService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 
-			respondWith(`{"literal":"1"}`)
+			respondWith(alarmServicePostDataJson)
+			const response = await executor.execute(getService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.get(getService, null)
-
-			o(response).equals(returnData)
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -181,37 +171,20 @@ o.spec("ServiceExecutor", function () {
 			)
 		})
 		o("when get returns encrypted data and we are not logged in it throws an error", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: null,
-					return: AlarmServicePostTypeRef,
-				},
-			}
+			const getService = new GetService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 			fullyLoggedIn = false
-			await assertThrows(LoginIncompleteError, () => executor.get(getService, null))
+			await assertThrows(LoginIncompleteError, () => executor.execute(getService, NULL_ENTITY, null))
 			assertThatNoRequestsWereMade()
 		})
 
 		o("when get returns encrypted data and we are not logged in but we have a session key it returns decrypted data", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const sessionKey = [1, 2, 3]
+			const getService = new GetService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 			fullyLoggedIn = false
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, sessionKey)).thenResolve(returnData)
 
-			respondWith(`{"literal":"1"}`)
+			respondWith(alarmServicePostDataJson)
+			const response = await executor.execute(getService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.get(getService, null, { sessionKey })
-
-			o(response).equals(returnData)
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -222,23 +195,13 @@ o.spec("ServiceExecutor", function () {
 		})
 
 		o("when get returns unencrypted data and we are not logged in it does not throw an error", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
+			const getService = new GetService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
 			fullyLoggedIn = false
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
 
-			respondWith(`{"literal":"1"}`)
+			respondWith(saltDataJson)
+			const response = await executor.execute(getService, NULL_ENTITY, null)
 
-			const response = await executor.get(getService, null)
-
-			o(response).equals(returnData)
+			o(removeOriginals(response!)).deepEquals(saltData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -251,48 +214,27 @@ o.spec("ServiceExecutor", function () {
 
 	o.spec("POST", function () {
 		o("encrypts data", async function () {
-			const postService: PostService = {
-				...service,
-				post: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" }
-			when(instancePipeline.mapAndEncrypt(SaltDataTypeRef, data, null)).thenResolve(literal)
+			const postService = new PostService(service.app, service.name, AlarmServicePostTypeRef, NullEntityTypeRef)
 
-			respondWith(undefined)
+			respondWith(null)
+			const response = await executor.execute(postService, alarmServicePostData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.post(postService, data)
+			const requestOptionsCaptor = matchers.captor()
+			verify(restClient.request("/rest/testapp/testservice", HttpMethod.POST, requestOptionsCaptor.capture()))
+			const postedJson = IncomingServerJson.expectSingleInstance((requestOptionsCaptor.value.body as RestTextBody).payload, alarmServicePostDataTypeModel)
+			const requestedEntity = await instancePipeline.decryptAndMap<AlarmServicePost>(postedJson, sessionKey)
 
-			o(response).equals(undefined)
-			verify(
-				restClient.request(
-					"/rest/testapp/testservice",
-					HttpMethod.POST,
-					matchers.argThat((params: RestClientOptions) => params.body === `{"literal":"1"}`),
-				),
-			)
+			o(response).equals(NULL_ENTITY)
+			o(removeOriginals(requestedEntity!)).deepEquals(alarmServicePostData)
 		})
 
 		o("decrypts response data", async function () {
-			const postService: PostService = {
-				...service,
-				post: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
+			const postService = new PostService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 
-			respondWith(`{"literal":"1"}`)
+			respondWith(alarmServicePostDataJson)
 
-			const response = await executor.post(postService, null)
-
-			o(response).equals(returnData)
+			const response = await executor.execute(postService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -302,37 +244,20 @@ o.spec("ServiceExecutor", function () {
 			)
 		})
 		o("when post returns encrypted data and we are not logged in it throws an error", async function () {
-			const postService: PostService = {
-				...service,
-				post: {
-					data: null,
-					return: AlarmServicePostTypeRef,
-				},
-			}
+			const postService = new PostService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 			fullyLoggedIn = false
-			await assertThrows(LoginIncompleteError, () => executor.post(postService, null))
+			await assertThrows(LoginIncompleteError, () => executor.execute(postService, NULL_ENTITY, null))
 			assertThatNoRequestsWereMade()
 		})
 
 		o("when post returns encrypted data and we are not logged in but we have a session key it returns decrypted data", async function () {
-			const getService: PostService = {
-				...service,
-				post: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const sessionKey = [1, 2, 3]
+			const postService = new PostService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
+
 			fullyLoggedIn = false
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, sessionKey)).thenResolve(returnData)
+			respondWith(alarmServicePostDataJson)
 
-			respondWith(`{"literal":"1"}`)
-
-			const response = await executor.post(getService, null, { sessionKey })
-
-			o(response).equals(returnData)
+			const response = await executor.execute(postService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -345,48 +270,25 @@ o.spec("ServiceExecutor", function () {
 
 	o.spec("PUT", function () {
 		o("encrypts data", async function () {
-			const putService: PutService = {
-				...service,
-				put: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" }
-			when(instancePipeline.mapAndEncrypt(SaltDataTypeRef, data, null)).thenResolve(literal)
+			const putService = new PutService(service.app, service.name, AlarmServicePostTypeRef, NullEntityTypeRef)
 
-			respondWith(undefined)
+			respondWith(null)
+			const response = await executor.execute(putService, alarmServicePostData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.put(putService, data)
-
-			o(response).equals(undefined)
-			verify(
-				restClient.request(
-					"/rest/testapp/testservice",
-					HttpMethod.PUT,
-					matchers.argThat((params: RestClientOptions) => params.body === `{"literal":"1"}`),
-				),
-			)
+			const optionsCaptor = matchers.captor()
+			verify(restClient.request("/rest/testapp/testservice", HttpMethod.PUT, optionsCaptor.capture()))
+			const putJson = IncomingServerJson.expectSingleInstance((optionsCaptor.value.body as RestTextBody).payload, alarmServicePostDataTypeModel)
+			const putEntity = await instancePipeline.decryptAndMap<AlarmServicePost>(putJson, sessionKey)
+			o(removeOriginals(putEntity!)).deepEquals(alarmServicePostData)
+			o(response).equals(NULL_ENTITY)
 		})
 
 		o("decrypts response data", async function () {
-			const putService: PutService = {
-				...service,
-				put: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
+			const putService = new PutService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
+			respondWith(alarmServicePostDataJson)
 
-			respondWith(`{"literal":"1"}`)
-
-			const response = await executor.put(putService, null)
-
-			o(response).equals(returnData)
+			const response = await executor.execute(putService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -396,63 +298,34 @@ o.spec("ServiceExecutor", function () {
 			)
 		})
 		o("when put returns encrypted data and we are not logged in it throws an error", async function () {
-			const putService: PutService = {
-				...service,
-				put: {
-					data: null,
-					return: AlarmServicePostTypeRef,
-				},
-			}
+			const putService = new PutService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 			fullyLoggedIn = false
-			await assertThrows(LoginIncompleteError, () => executor.put(putService, null))
+			await assertThrows(LoginIncompleteError, () => executor.execute(putService, NULL_ENTITY, null))
 			assertThatNoRequestsWereMade()
 		})
 	})
 
 	o.spec("DELETE", function () {
 		o("encrypts data", async function () {
-			const deleteService: DeleteService = {
-				...service,
-				delete: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" }
-			when(instancePipeline.mapAndEncrypt(SaltDataTypeRef, data, null)).thenResolve(literal)
+			const deleteService = new DeleteService(service.app, service.name, AlarmServicePostTypeRef, NullEntityTypeRef)
+			respondWith(null)
 
-			respondWith(undefined)
+			const response = await executor.execute(deleteService, alarmServicePostData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.delete(deleteService, data)
-
-			o(response).equals(undefined)
-			verify(
-				restClient.request(
-					"/rest/testapp/testservice",
-					HttpMethod.DELETE,
-					matchers.argThat((params: RestClientOptions) => params.body === `{"literal":"1"}`),
-				),
-			)
+			const optionsCaptor = matchers.captor()
+			verify(restClient.request("/rest/testapp/testservice", HttpMethod.DELETE, optionsCaptor.capture()))
+			const deleteJson = IncomingServerJson.expectSingleInstance((optionsCaptor.value.body as RestTextBody).payload, alarmServicePostDataTypeModel)
+			const deleteEntity = await instancePipeline.decryptAndMap<AlarmServicePost>(deleteJson, sessionKey)
+			o(removeOriginals(deleteEntity)).deepEquals(alarmServicePostData)
+			o(response).equals(NULL_ENTITY)
 		})
 
 		o("decrypts response data", async function () {
-			const deleteService: DeleteService = {
-				...service,
-				delete: {
-					data: null,
-					return: SaltDataTypeRef,
-				},
-			}
-			const returnData = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const literal = { literal: "1" } as unknown as ServerModelUntypedInstance
-			when(instancePipeline.decryptAndMap(SaltDataTypeRef, literal, null)).thenResolve(returnData)
+			const deleteService = new DeleteService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
+			respondWith(alarmServicePostDataJson)
+			const response = await executor.execute(deleteService, NULL_ENTITY, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			respondWith(`{"literal":"1"}`)
-
-			const response = await executor.delete(deleteService, null)
-
-			o(response).equals(returnData)
+			o(removeOriginals(response!)).deepEquals(alarmServicePostData)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -463,36 +336,22 @@ o.spec("ServiceExecutor", function () {
 		})
 
 		o("when delete returns encrypted data and we are not logged in it throws an error", async function () {
-			const deleteService: DeleteService = {
-				...service,
-				delete: {
-					data: null,
-					return: AlarmServicePostTypeRef,
-				},
-			}
+			const deleteService = new DeleteService(service.app, service.name, NullEntityTypeRef, AlarmServicePostTypeRef)
 			fullyLoggedIn = false
-			await assertThrows(LoginIncompleteError, () => executor.delete(deleteService, null))
+			await assertThrows(LoginIncompleteError, () => executor.execute(deleteService, NULL_ENTITY, null))
 			assertThatNoRequestsWereMade()
 		})
 	})
 
 	o.spec("params", function () {
 		o("adds query params", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
+			const getService = new GetService(service.app, service.name, SaltDataTypeRef, NullEntityTypeRef)
 			const query = Object.freeze({ myQueryParam: "2" })
-			when(instancePipeline.mapAndEncrypt(anything(), anything(), anything())).thenResolve({})
-			respondWith(undefined)
 
-			const response = await executor.get(getService, data, { queryParams: query })
+			respondWith(null)
+			const response = await executor.execute(getService, saltData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, queryParams: query, sessionKey })
 
-			o(response).equals(undefined)
+			o(response).equals(NULL_ENTITY)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
@@ -503,22 +362,11 @@ o.spec("ServiceExecutor", function () {
 		})
 
 		o("adds extra headers", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
-			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
-			const headers = Object.freeze({ myHeader: "2" })
-			const saltTypeModel = await typeModelResolver.resolveClientTypeReference(SaltDataTypeRef)
-			when(instancePipeline.mapAndEncrypt(anything(), anything(), anything())).thenResolve({})
-			respondWith(undefined)
+			const getService = new GetService(service.app, service.name, SaltDataTypeRef, NullEntityTypeRef)
 
-			const response = await executor.get(getService, data, { extraHeaders: headers })
-
-			o(response).equals(undefined)
+			respondWith(null)
+			const response = await executor.execute(getService, saltData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, extraHeaders: { myHeader: "2" } })
+			o(response).equals(NULL_ENTITY)
 
 			verify(
 				restClient.request(
@@ -526,7 +374,7 @@ o.spec("ServiceExecutor", function () {
 					HttpMethod.GET,
 					matchers.argThat((opts: RestClientOptions) =>
 						deepEqual(opts.headers, {
-							v: String(saltTypeModel.version),
+							v: String(saltDataTypeModel.version),
 							myHeader: "2",
 						}),
 					),
@@ -535,30 +383,22 @@ o.spec("ServiceExecutor", function () {
 		})
 
 		o("adds auth headers", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: SaltDataTypeRef,
-					return: null,
-				},
-			}
+			const getService = new GetService(service.app, service.name, SaltDataTypeRef, NullEntityTypeRef)
 			const data = createTestEntity(SaltDataTypeRef, { mailAddress: "test" })
 			const accessToken = "myAccessToken"
 			authHeaders = { accessToken }
-			const saltTypeModel = await typeModelResolver.resolveClientTypeReference(SaltDataTypeRef)
-			when(instancePipeline.mapAndEncrypt(anything(), anything(), anything())).thenResolve({})
-			respondWith(undefined)
 
-			const response = await executor.get(getService, data)
+			respondWith(null)
+			const response = await executor.execute(getService, data, null)
 
-			o(response).equals(undefined)
+			o(response).equals(NULL_ENTITY)
 			verify(
 				restClient.request(
 					"/rest/testapp/testservice",
 					HttpMethod.GET,
 					matchers.argThat((opts: RestClientOptions) =>
 						deepEqual(opts.headers, {
-							v: String(saltTypeModel.version),
+							v: String(saltDataTypeModel.version),
 							accessToken,
 						}),
 					),
@@ -569,8 +409,7 @@ o.spec("ServiceExecutor", function () {
 
 	o.spec("keys decrypt", function () {
 		o.beforeEach(() => {
-			instancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
-			executor = new ServiceExecutor(restClient, authDataProvider, instancePipeline, () => cryptoFacade, typeModelResolver)
+			executor = new ServiceExecutor(restClient, authDataProvider, instancePipeline, () => cryptoFacade, clientInitializedTypeModelResolver())
 		})
 
 		o("uses resolved key to decrypt response x", async function () {
@@ -584,12 +423,10 @@ o.spec("ServiceExecutor", function () {
 			const untypedInstance = await instancePipeline.mapAndEncrypt(CustomerAccountReturnTypeRef, customerAccountReturn, sk)
 			when(cryptoFacade.resolveServiceSessionKey(anything())).thenResolve(sk)
 
-			respondWith(JSON.stringify(untypedInstance))
+			respondWith(untypedInstance.getJsonRepresentation())
+			const response = await executor.execute(CustomerAccountService_GET, NULL_ENTITY, null)
 
-			const response = await executor.get(CustomerAccountService, null)
-
-			removeOriginals(response)
-			o(response).deepEquals(customerAccountReturn)
+			o(removeOriginals(response!)).deepEquals(customerAccountReturn)
 			verify(
 				restClient.request(
 					"/rest/accounting/customeraccountservice",
@@ -610,13 +447,13 @@ o.spec("ServiceExecutor", function () {
 			const untypedInstance = await instancePipeline.mapAndEncrypt(CustomerAccountReturnTypeRef, customerAccountReturn, sessionKey)
 			when(cryptoFacade.resolveServiceSessionKey(anything())).thenResolve(null)
 
-			respondWith(JSON.stringify(untypedInstance))
+			respondWith(untypedInstance.getJsonRepresentation())
 
-			const response = await executor.get(CustomerAccountService, null, { sessionKey })
-
-			removeOriginals(response)
-
-			o(response).deepEquals(customerAccountReturn)
+			const response = await executor.execute(CustomerAccountService_GET, NULL_ENTITY, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
+				sessionKey,
+			})
+			o(removeOriginals(response!)).deepEquals(customerAccountReturn)
 			verify(
 				restClient.request(
 					"/rest/accounting/customeraccountservice",
@@ -629,44 +466,55 @@ o.spec("ServiceExecutor", function () {
 
 	o.spec("keys encrypt", function () {
 		o("uses passed key to encrypt request data", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: GiftCardCreateDataTypeRef,
-					return: null,
-				},
-			}
+			const getService = new GetService(service.app, service.name, GiftCardCreateDataTypeRef, NullEntityTypeRef)
+			const giftCardTypeModel = await typeModelResolver.resolveServerTypeReference(GiftCardCreateDataTypeRef)
 			const giftCardCreateData = createTestEntity(GiftCardCreateDataTypeRef, { message: "test" })
-			const sessionKey = [1, 2, 3]
-			const encrypted = { encrypted: "1" }
-			when(instancePipeline.mapAndEncrypt(GiftCardCreateDataTypeRef, giftCardCreateData, sessionKey)).thenResolve(encrypted)
 
-			respondWith(undefined)
+			respondWith(null)
+			const response = await executor.execute(getService, giftCardCreateData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
-			const response = await executor.get(getService, giftCardCreateData, { sessionKey })
-
-			o(response).equals(undefined)
-			verify(
-				restClient.request(
-					"/rest/testapp/testservice",
-					HttpMethod.GET,
-					matchers.argThat((p) => p.body === `{"encrypted":"1"}`),
-				),
-			)
+			const optionsCaptor = matchers.captor()
+			verify(restClient.request("/rest/testapp/testservice", HttpMethod.GET, optionsCaptor.capture()))
+			const getJson = IncomingServerJson.expectSingleInstance((optionsCaptor.value.body as RestTextBody).payload, giftCardTypeModel)
+			const getEntity = await instancePipeline.decryptAndMap<GiftCardCreateData>(getJson, sessionKey)
+			o(removeOriginals(getEntity)).deepEquals(giftCardCreateData)
+			o(response).equals(NULL_ENTITY)
 		})
 
 		o("when data is encrypted and the key is not passed it throws", async function () {
-			const getService: GetService = {
-				...service,
-				get: {
-					data: GiftCardCreateDataTypeRef,
-					return: null,
-				},
-			}
+			const getService = new GetService(service.app, service.name, GiftCardCreateDataTypeRef, NullEntityTypeRef)
 			const giftCardCreateData = createTestEntity(GiftCardCreateDataTypeRef, { message: "test" })
 
-			await o(() => executor.get(getService, giftCardCreateData)).asyncThrows(ProgrammingError)
-			verify(restClient.request(anything(), anything()), { ignoreExtraArgs: true, times: 0 })
+			await o(() => executor.execute(getService, giftCardCreateData, null)).asyncThrows(ProgrammingError)
+			verify(restClient.request(anything(), anything(), DEFAULT_REST_CLIENT_OPTIONS), { ignoreExtraArgs: true, times: 0 })
+		})
+	})
+
+	o.spec("no entity is replaced with NonExistantDataTransfer", () => {
+		o("when input data is NonExistantDataTransferTypeRef then nothing is sent as body", async () => {
+			const getServiceTakesNothing = new GetService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+			const postServiceTakesNothing = new PostService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+			const putServiceTakesNothing = new PutService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+			const deleteServiceTakesNothing = new DeleteService(service.app, service.name, NullEntityTypeRef, SaltDataTypeRef)
+
+			respondWith((await instancePipeline.mapAndEncrypt(saltData._type, saltData, sessionKey)).getJsonRepresentation())
+
+			await executor.execute(getServiceTakesNothing, NULL_ENTITY, null)
+			await executor.execute(postServiceTakesNothing, NULL_ENTITY, null)
+			await executor.execute(putServiceTakesNothing, NULL_ENTITY, null)
+			await executor.execute(deleteServiceTakesNothing, NULL_ENTITY, null)
+
+			verify(
+				restClient.request(
+					anything(),
+					anything(),
+					matchers.argThat((options: RestClientOptions) => {
+						o(options.body).equals(null)
+						return true
+					}),
+				),
+				{ times: 4 },
+			)
 		})
 	})
 })

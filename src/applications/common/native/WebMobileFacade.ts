@@ -1,18 +1,18 @@
 import m from "mithril"
-import { assertMainOrNode, CancelledError, SECOND_IN_MILLIS, UpgradePromptType } from "@tutao/app-env"
+import { CancelledError, EnvProvider, TimeConstants, UpgradePromptType } from "@tutao/app-env"
 import { locator } from "../api/main/CommonLocator.js"
 import { modal } from "../../../ui/base/Modal"
 import { showUpgradeDialog } from "../gui/nav/NavFunctions.js"
 import { CALENDAR_PREFIX, CONTACTS_PREFIX, SEARCH_PREFIX, SETTINGS_PREFIX } from "../../../ui/utils/RouteChange"
 import { last } from "@tutao/utils"
 import { MobileFacade } from "@tutao/native-bridge/generatedIpc/types"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { WebsocketConnectivityModel } from "../misc/WebsocketConnectivityModel.js"
 import { TopLevelView } from "../../../ui/base/TopLevelView.js"
 import stream from "mithril/stream"
 import { CloseEventBusOption } from "../../../platform-kit/network/Constants"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class WebMobileFacade implements MobileFacade {
 	private disconnectTimeoutId: TimeoutID | null
@@ -55,7 +55,7 @@ export class WebMobileFacade implements MobileFacade {
 			} else if (
 				viewSlider &&
 				viewSlider.focusedColumn !== viewSlider.getMainColumn() &&
-				styles.isSingleColumnLayout() &&
+				Styles.get().isSingleColumnLayout() &&
 				viewSlider.isFocusPreviousPossible()
 			) {
 				// current view can navigate back, a region column is focused (not main) and is in singleColumnLayout
@@ -93,7 +93,7 @@ export class WebMobileFacade implements MobileFacade {
 		} else {
 			this.disconnectTimeoutId = setTimeout(() => {
 				this.connectivityModel.close(CloseEventBusOption.Pause)
-			}, 30 * SECOND_IN_MILLIS)
+			}, 30 * TimeConstants.SECOND_IN_MILLIS)
 		}
 	}
 

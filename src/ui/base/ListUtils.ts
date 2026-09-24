@@ -1,9 +1,11 @@
 import { Shortcut } from "../utils/KeyManager.js"
-import { isBrowser, Keys } from "../../platform-kit/app-env"
-import { mapLazily, NBSP } from "../../platform-kit/utils"
+import { EnvProvider } from "../../platform-kit/app-env"
+import { NBSP } from "../../platform-kit/utils"
+import { mapLazily } from "./MaybeLazy"
 import { ListState, MultiselectMode } from "./List.js"
 import { Children } from "mithril"
 import { SearchToken, splitTextForHighlighting } from "../utils/QueryTokenUtils"
+import { Keys } from "../utils/KeyboardKeys"
 
 export const ACTION_DISTANCE = 150
 export const PageSize = 100
@@ -21,7 +23,7 @@ export interface VirtualRow<ElementType> {
 }
 
 export interface ListFetchResult<ElementType> {
-	items: Array<ElementType>
+	items: readonly ElementType[]
 	/** Complete means that we loaded the whole list and additional requests will not yield any results. */
 	complete: boolean
 }
@@ -31,6 +33,13 @@ export interface ListSelectionCallbacks {
 	areAllSelected(): boolean
 	selectNone(): void
 	selectAll(): void
+}
+
+export interface ListItemSelectionCallbacks<T> extends ListSelectionCallbacks {
+	onSingleSelection: (item: T) => unknown
+	onSingleExclusiveSelection: (item: T) => unknown
+	onSingleInclusiveSelection: (item: T) => unknown
+	onRangeSelectionTowards: (item: T) => unknown
 }
 
 export function listSelectionKeyboardShortcuts(multiselectMode: MultiselectMode, callbacks: () => ListSelectionCallbacks | null): Array<Shortcut> {
@@ -92,7 +101,7 @@ export function listSelectionKeyboardShortcuts(multiselectMode: MultiselectMode,
 			help: "selectAllLoaded_action",
 			// this specific shortcut conflicts with a chrome shortcut. it was chosen because it's adjacent to ctrl + A
 			// for select all.
-			enabled: () => multiselectionEnabled() && !isBrowser(),
+			enabled: () => multiselectionEnabled() && !EnvProvider.get().isBrowser(),
 		},
 	]
 }

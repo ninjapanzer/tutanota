@@ -38,6 +38,7 @@ import {
 import { UserTypeRef } from "@tutao/entities/sys"
 import { CalendarAttendeeStatus, Recipient, RecipientType } from "../../../../src/entities/tutanota/Utils"
 import { AccountType } from "../../../../src/entities/sys/Utils"
+import { idToElementId } from "../../../../src/platform-kit/meta"
 
 o.spec("CalendarEventWhoModel", function () {
 	const passwordStrengthModel = () => 1
@@ -66,7 +67,7 @@ o.spec("CalendarEventWhoModel", function () {
 
 	const getNewModel = (initialValues: Partial<CalendarEvent>) =>
 		new CalendarEventWhoModel(
-			initialValues,
+			createTestEntity(CalendarEventTypeRef, initialValues),
 			EventType.OWN,
 			CalendarOperation.Create,
 			calendars,
@@ -81,7 +82,7 @@ o.spec("CalendarEventWhoModel", function () {
 		)
 	const getOldModel = (initialValues: Partial<CalendarEvent>, eventType = EventType.OWN) =>
 		new CalendarEventWhoModel(
-			initialValues,
+			createTestEntity(CalendarEventTypeRef, initialValues),
 			eventType,
 			CalendarOperation.EditAll,
 			calendars,
@@ -97,7 +98,7 @@ o.spec("CalendarEventWhoModel", function () {
 
 	const getOldSharedModel = (initialValues: Partial<CalendarEvent>, eventType = EventType.SHARED_RW) =>
 		new CalendarEventWhoModel(
-			initialValues,
+			createTestEntity(CalendarEventTypeRef, initialValues),
 			eventType,
 			CalendarOperation.EditAll,
 			calendars,
@@ -113,7 +114,7 @@ o.spec("CalendarEventWhoModel", function () {
 
 	const getOldModelWithSingleEdit = (initialValues: Partial<CalendarEvent>, eventType = EventType.OWN) =>
 		new CalendarEventWhoModel(
-			initialValues,
+			createTestEntity(CalendarEventTypeRef, initialValues),
 			eventType,
 			CalendarOperation.EditThis,
 			calendars,
@@ -129,29 +130,13 @@ o.spec("CalendarEventWhoModel", function () {
 
 	const getOldInviteModel = (initialValues: Partial<CalendarEvent>) =>
 		new CalendarEventWhoModel(
-			initialValues,
+			createTestEntity(CalendarEventTypeRef, initialValues),
 			EventType.INVITE,
 			CalendarOperation.EditAll,
 			calendars,
 			calendars.get("ownCalendar")!,
 			userController,
 			false,
-			ownAddresses,
-			recipients,
-			null,
-			passwordStrengthModel,
-			() => sendMailModel,
-		)
-
-	const getNewInviteModel = (initialValues: Partial<CalendarEvent>) =>
-		new CalendarEventWhoModel(
-			initialValues,
-			EventType.INVITE,
-			CalendarOperation.Create,
-			calendars,
-			calendars.get("ownCalendar")!,
-			userController,
-			true,
 			ownAddresses,
 			recipients,
 			null,
@@ -614,7 +599,7 @@ o.spec("CalendarEventWhoModel", function () {
 					}),
 				)
 				replace(userController, "userSettingsGroupRoot", Object.assign({}, userController.userSettingsGroupRoot, userSettingsGroupRoot))
-				replace(userController, "user", createTestEntity(UserTypeRef, { _id: "ownerId" }))
+				replace(userController, "user", createTestEntity(UserTypeRef, { _id: idToElementId("ownerId") }))
 				addCapability(userController.user, "ownExternalCalendar", ShareCapability.Read) // External calendars are actually normal user owned calendars handled as Read Only
 			})
 			o("it returns the owned calendars and shared calendars we have write access to when there are no attendees", function () {

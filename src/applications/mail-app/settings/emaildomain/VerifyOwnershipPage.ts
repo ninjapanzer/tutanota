@@ -1,4 +1,4 @@
-import { assertMainOrNode, CustomDomainValidationResult, UpgradePromptType } from "../../../../platform-kit/app-env"
+import { CustomDomainValidationResult, EnvProvider, UpgradePromptType } from "../../../../platform-kit/app-env"
 import m, { Children, Vnode, VnodeDOM } from "mithril"
 import type { AddDomainData } from "./AddDomainWizard"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
@@ -6,9 +6,9 @@ import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { Dialog } from "../../../../ui/base/Dialog"
 import type { WizardPageAttrs, WizardPageN } from "../../../../ui/base/WizardDialog.js"
 import { emitWizardEvent, WizardEventType } from "../../../../ui/base/WizardDialog.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { PreconditionFailedError } from "../../../../platform-kit/rest-client/error"
 import { showPlanUpgradeRequiredDialog } from "../../../common/misc/SubscriptionDialogs.js"
-import { isEmpty, ofClass } from "../../../../platform-kit/utils"
+import { isEmpty } from "../../../../platform-kit/utils"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { createDnsRecordTable } from "./DnsRecordTable.js"
 import { getAvailableMatchingPlans } from "../../../common/subscription/utils/SubscriptionUtils.js"
@@ -16,8 +16,9 @@ import { getCustomMailDomains } from "../../../common/api/common/utils/CustomerU
 import { assertEnumValue } from "../../../../platform-kit/meta"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
 import { CustomDomainType, CustomDomainTypeCount } from "../../../../entities/sys/Utils"
+import { ofClassAsync } from "../../../../platform-kit/utils/PromiseUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export enum CustomDomainFailureReasons {
 	LIMIT_REACHED = "customdomainservice.limit_reached",
@@ -115,7 +116,7 @@ export class VerifyOwnershipPageAttrs implements WizardPageAttrs<AddDomainData> 
 				return true
 			})
 			.catch(
-				ofClass(restError.PreconditionFailedError, async (e) => {
+				ofClassAsync(PreconditionFailedError, async (e) => {
 					if (e.data === CustomDomainFailureReasons.LIMIT_REACHED) {
 						const nbrOfCustomDomains = this.data.customerInfo.domainInfos.filter((domainInfo) => domainInfo.whitelabelConfig == null).length
 						const plans = await getAvailableMatchingPlans(locator.serviceExecutor, (config) => {

@@ -3,6 +3,12 @@ import { ElectronExports, FsExports } from "../ElectronExportTypes.js"
 import { CryptoFunctions } from "../CryptoFns.js"
 import { base64ToBase64Url, uint8ArrayToBase64, uint8ArrayToHex } from "@tutao/utils"
 import { ProgrammingError } from "@tutao/app-env"
+import { FileNotFoundError } from "../../api/common/error/FileNotFoundError"
+import { Readable } from "node:stream"
+import fs from "node:fs"
+import { readStreamToBuffer } from "./DesktopFileFacade"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { fileUrlFromString } from "./fileUtils"
 
 type TmpSub = "reg" | "encrypted" | "decrypted"
 
@@ -19,6 +25,9 @@ export class TempFs {
 	private readonly topLevelTempDir = "tutanota"
 	/** we store all temporary files in a directory with a random name, so that the download location is not predictable */
 	private readonly randomDirectoryName: string
+
+	private inMemoryFiles = new Map<TmpFilename, Uint8Array<ArrayBuffer>>()
+	private openStreams: Map<string, fs.ReadStream> = new Map()
 
 	constructor(
 		private readonly fs: FsExports,
@@ -38,8 +47,8 @@ export class TempFs {
 					this.fs.rmSync(tmpSubPath, { recursive: true })
 				} catch (e) {
 					// ignore if the file was deleted between readdir and delete
-					// or if it's not our tmp dir
-					if (e.code !== "ENOENT" && e.code !== "EACCES") throw e
+					// or if it's not our tmp dir, or we do not have the correct permission
+					if (e.code !== "ENOENT" && e.code !== "EACCES" && e.code !== "EPERM") throw e
 				}
 			}
 		} catch (e) {
@@ -112,18 +121,18 @@ export class TempFs {
 	 * @param contents the contents of the file to write
 	 * @param subfolder the subfolder of the tmp files to write to
 	 * @param option the options for write file as encoding and file permissions
-	 * @returns path to the written file
+	 * @returns URL to the written file
 	 */
 	async writeToDisk(contents: string | Uint8Array, subfolder: TmpSub, option?: { encoding: BufferEncoding; mode: number }): Promise<string> {
 		const tmpPath = path.join(this.getTutanotaTempPath(), subfolder)
 		await this.fs.promises.mkdir(tmpPath, { recursive: true })
 
-		const filename = uint8ArrayToHex(this.cryptoFunctions.randomBytes(12))
+		const filename = this.generateFilename()
 		const filePath = path.join(tmpPath, filename)
 
 		await this.fs.promises.writeFile(filePath, contents, option)
 
-		return filePath
+		return pathToFileURL(filePath).toString()
 	}
 
 	/** removes the given subfolder of our tmp directory with all its contents */
@@ -144,11 +153,148 @@ export class TempFs {
 		return downloadDirectory
 	}
 
-	assertInTmpDir(unresolvedPath: string) {
+	assertInTmpDir(unresolvedFileUrl: string): URL {
+		const url = fileUrlFromString(unresolvedFileUrl)
+		const unresolvedPath = fileURLToPath(url)
 		const resolvedTarget = path.resolve(unresolvedPath)
 		if (!resolvedTarget.startsWith(this.getTutanotaTempPath() + path.sep)) {
-			throw new ProgrammingError("Invalid file path: " + unresolvedPath)
+			throw new ProgrammingError("Invalid file url: " + unresolvedFileUrl)
 		}
+		return url
+	}
+
+	createInMemoryFile(content: Uint8Array<ArrayBuffer>): string {
+		const filename = this.generateFilename()
+		this.inMemoryFiles.set(filename, content)
+		return tutaUrlToString({ type: "tmp", name: filename })
+	}
+
+	private deleteInMemoryFile(name: TmpFilename) {
+		this.inMemoryFiles.delete(name)
+	}
+
+	async deleteFile(uri: string) {
+		const tutaUrl = tutaUrlFromString(uri)
+		switch (tutaUrl.type) {
+			case "tmp":
+				this.deleteInMemoryFile(tutaUrl.name)
+				break
+			case "file":
+				this.assertInTmpDir(uri)
+				await this.fs.promises.unlink(tutaUrl.url)
+				break
+			case "stream":
+				throw new ProgrammingError(`Cannot delete stream ${uri}`)
+		}
+	}
+
+	/**
+	 *  Open specified resource as a stream.
+	 *
+	 *  Important: if this resource was not opened before it must be closed with {@link TempFs#closeFileStream()}
+	 */
+	fileStream(uri: string): Readable {
+		const tutaUrl = tutaUrlFromString(uri)
+		switch (tutaUrl.type) {
+			case "tmp": {
+				const data = this.inMemoryFiles.get(tutaUrl.name) ?? null
+				if (data == null) {
+					throw new FileNotFoundError(uri)
+				}
+				return new TypedArrayReadableStream(data)
+			}
+			case "file":
+				this.assertInTmpDir(uri)
+				return this.fs.createReadStream(tutaUrl.url)
+			case "stream": {
+				const stream = this.openStreams.get(tutaUrl.name)
+				if (stream == null) {
+					throw new FileNotFoundError(uri)
+				}
+				return stream
+			}
+		}
+	}
+
+	async getFileSize(uri: string): Promise<number> {
+		const tutaUrl = tutaUrlFromString(uri)
+		switch (tutaUrl.type) {
+			case "tmp": {
+				const data = this.inMemoryFiles.get(tutaUrl.name)
+				if (data == null) {
+					throw new FileNotFoundError(uri)
+				}
+				return data.length
+			}
+			case "file":
+				return (await this.fs.promises.stat(tutaUrl.url)).size
+			case "stream":
+				throw new ProgrammingError(`Cannot get size of a stream ${uri}`)
+		}
+	}
+
+	closeFileStream(stream: NodeJS.ReadableStream) {
+		if (stream instanceof this.fs.ReadStream) {
+			stream.close()
+		} else {
+			// no-op for TypedArrayReadableStream
+		}
+	}
+
+	public openFileForReading(fileUri: string): string {
+		const url = fileUrlFromString(fileUri)
+		const stream = this.fs.createReadStream(url)
+		const fileName = this.generateFilename()
+		this.openStreams.set(fileName, stream)
+		return tutaUrlToString({ type: "stream", name: fileName })
+	}
+
+	public closeFile(streamUri: string) {
+		const url = tutaUrlFromString(streamUri)
+		switch (url.type) {
+			case "stream": {
+				const stream = this.openStreams.get(streamUri)
+				stream?.close()
+				this.openStreams.delete(streamUri)
+				return
+			}
+			default:
+				throw new ProgrammingError(`Cannot close with url ${streamUri}`)
+		}
+	}
+
+	public async readAsData(uri: string): Promise<Uint8Array<ArrayBuffer>> {
+		const tutaUrl = tutaUrlFromString(uri)
+		switch (tutaUrl.type) {
+			case "tmp": {
+				const data = this.inMemoryFiles.get(tutaUrl.name)
+				if (data == null) {
+					throw new FileNotFoundError(uri)
+				}
+				return data
+			}
+			case "stream": {
+				const stream = this.openStreams.get(tutaUrl.name)
+				if (stream == null) {
+					throw new FileNotFoundError(uri)
+				}
+				return await readStreamToBuffer(stream)
+			}
+			case "file":
+				try {
+					return await this.fs.promises.readFile(tutaUrl.url)
+				} catch (e) {
+					if (e.code === "ENOENT") {
+						throw new FileNotFoundError(uri)
+					} else {
+						throw e
+					}
+				}
+		}
+	}
+
+	private generateFilename(): TmpFilename {
+		return uint8ArrayToHex(this.cryptoFunctions.randomBytes(12)) as TmpFilename
 	}
 
 	private getEncryptedTempDir() {
@@ -157,5 +303,57 @@ export class TempFs {
 
 	private getUnencryptedTempDir() {
 		return path.join(this.getTutanotaTempPath(), "decrypted")
+	}
+}
+
+type TmpFilename = string & { readonly __brand: unique symbol }
+
+class TypedArrayReadableStream extends Readable {
+	private position: number = 0
+
+	constructor(private readonly array: Uint8Array) {
+		super()
+	}
+	_read(size: number) {
+		if (this.position >= this.array.length) {
+			this.push(null)
+		} else {
+			const chunk = this.array.slice(this.position, this.position + size)
+			this.position += size
+			this.push(chunk)
+		}
+	}
+}
+
+type TutaUrl = { type: "file"; url: URL } | { type: "tmp"; name: TmpFilename } | { type: "stream"; name: TmpFilename }
+
+function tutaUrlFromString(urlString: string): TutaUrl {
+	let url: URL
+	try {
+		url = new URL(urlString)
+	} catch (e) {
+		throw new ProgrammingError(`Invalid url: ${urlString}`)
+	}
+
+	switch (url.protocol) {
+		case "file:":
+			return { type: "file", url }
+		case "tuta-tmp:":
+			return { type: "tmp", name: url.pathname as TmpFilename }
+		case "tuta-stream:":
+			return { type: "stream", name: url.pathname as TmpFilename }
+		default:
+			throw new ProgrammingError(`Invalid url: ${urlString}`)
+	}
+}
+
+function tutaUrlToString(tutaUrl: TutaUrl): string {
+	switch (tutaUrl.type) {
+		case "file":
+			return tutaUrl.url.toString()
+		case "tmp":
+			return `tuta-tmp:${tutaUrl.name}`
+		case "stream":
+			return `tuta-stream:${tutaUrl.name}`
 	}
 }

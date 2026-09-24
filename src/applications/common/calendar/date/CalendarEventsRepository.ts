@@ -16,13 +16,13 @@ import {
 	isBirthdayEvent,
 	isLongEvent,
 } from "./CalendarUtils.js"
-import { elementIdPart, getElementId, getListId, isSameId, listIdPart, OperationType } from "@tutao/meta"
+import { elementIdPart, getElementId, getListId, idToElementId, isSameId, isSameSingleId, listIdPart, OperationType } from "@tutao/meta"
 import { DateTime } from "luxon"
 import { CalendarFacade } from "../../api/worker/facades/lazy/CalendarFacade.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { deepEqual, findAllAndRemove, isNotEmpty, mapAndFilterNull, stringToBase64 } from "@tutao/utils"
 import { BIRTHDAY_CALENDAR_BASE_ID, DEFAULT_BIRTHDAY_CALENDAR_COLOR, DEFAULT_CALENDAR_COLOR, RepeatPeriod } from "@tutao/app-env"
-import * as restError from "@tutao/rest-client/error"
+import { NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 import { EventController } from "../../api/main/EventController.js"
 
 import { generateLocalEventElementId } from "../../api/common/utils/CommonCalendarUtils.js"
@@ -41,7 +41,7 @@ import {
 	UserSettingsGroupRoot,
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 const LIMIT_PAST_EVENTS_YEARS = 100
 
@@ -71,6 +71,7 @@ export class CalendarEventsRepository {
 	private readonly loadedMonths: Map<number, string[]> = new Map() // First day of the month at midnight -> CalendarID
 	private daysToEvents: Stream<DaysToEvents> = stream(new Map())
 	private pendingLoadRequest: Promise<void> = Promise.resolve()
+	/** number of the month (zero indexed) to birthday data */
 	private monthsToBirthdayEvents: Map<number, BirthdayEventRegistry[]> = new Map()
 	private calendarMemberships: string[]
 
@@ -83,9 +84,10 @@ export class CalendarEventsRepository {
 		private readonly contactModel: ContactModel,
 		private readonly logins: LoginController,
 	) {
-		eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.entityEventsReceived(updates, eventOwnerGroupId),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		eventController.addEntityUpdatesListener({
+			id: "CalendarEventsRepository",
+			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.onEntityUpdatesReceived(updates, eventOwnerGroupId),
+			priority: ListenerPriority.NORMAL,
 		})
 		this.calendarMemberships = this.logins
 			.getUserController()
@@ -136,16 +138,28 @@ export class CalendarEventsRepository {
 
 	async loadMonthsIfNeeded(
 		daysInMonths: Array<Date>,
-		canceled: Stream<boolean>,
+		canceled: AbortSignal,
 		progressMonitor: ProgressMonitorInterface | null,
 		calendarToLoad?: string,
+		isForceReload: boolean = false,
 	): Promise<void> {
+		if (isForceReload) {
+			this.pendingLoadRequest = Promise.resolve()
+		}
 		const promiseForThisLoadRequest = this.pendingLoadRequest.then(async () => {
 			for (const dayInMonth of daysInMonths) {
-				if (canceled()) return
+				if (canceled.aborted) return
 
 				const monthRange = getMonthRange(dayInMonth, this.zone)
-				if (!this.loadedMonths.has(monthRange.start) || (calendarToLoad != null && !this.isCalendarLoadedForRange(monthRange.start, calendarToLoad))) {
+				if (isForceReload) {
+					let calendarInfos = await this.calendarModel.getCalendarInfos()
+					const eventsMap = await this.calendarFacade.updateEventMap(monthRange, calendarInfos, this.daysToEvents(), this.zone)
+					this.replaceEvents(eventsMap)
+					this.addBirthdaysEventsIfNeeded(dayInMonth, monthRange)
+				} else if (
+					!this.loadedMonths.has(monthRange.start) ||
+					(calendarToLoad != null && !this.isCalendarLoadedForRange(monthRange.start, calendarToLoad))
+				) {
 					try {
 						let calendarInfos = await this.calendarModel.getCalendarInfos()
 
@@ -193,7 +207,8 @@ export class CalendarEventsRepository {
 
 		const eventListId = getListId(eventWrapper.event)
 		const shouldGoIntoLongEventsList =
-			isSameId(calendarInfo.groupRoot.longEvents, eventListId) || isLongEvent(eventWrapper.event, eventWrapper.event.repeatRule?.timeZone ?? this.zone)
+			isSameSingleId(calendarInfo.groupRoot.longEvents, eventListId) ||
+			isLongEvent(eventWrapper.event, eventWrapper.event.repeatRule?.timeZone ?? this.zone)
 		if (shouldGoIntoLongEventsList) {
 			this.removeExistingEvent(eventWrapper.event)
 
@@ -320,7 +335,7 @@ export class CalendarEventsRepository {
 		this.replaceEvents(newMap)
 	}
 
-	private async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: string) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: string) {
 		const calendarInfos = await this.calendarModel.getCalendarInfos()
 		for (const update of updates) {
 			if (isUpdateForTypeRef(CalendarEventTypeRef, update)) {
@@ -335,7 +350,7 @@ export class CalendarEventsRepository {
 	}
 
 	private async handleCalendarGroupSettingsUpdate(update: EntityUpdateData, calendarInfos: ReadonlyMap<Id, CalendarInfo>) {
-		const userSettingsGroupRoot = await this.entityClient.load(UserSettingsGroupRootTypeRef, update.instanceId)
+		const userSettingsGroupRoot = await this.entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(update.instanceId))
 		//get all loaded events and update them with new event wrappers that have the new color passed in
 		const newDayToEventsMap = new Map<number, ReadonlyArray<EventWrapper>>()
 		const dayToEventsEntries = Array.from(this.daysToEvents().entries())
@@ -385,7 +400,7 @@ export class CalendarEventsRepository {
 				}
 				await this.addOrUpdateEvent(calendarInfos.get(eventOwnerGroupId) ?? null, wrapper)
 			} catch (e) {
-				if (e instanceof restError.NotFoundError || e instanceof restError.NotAuthorizedError) {
+				if (e instanceof NotFoundError || e instanceof NotAuthorizedError) {
 					console.log(TAG, e.name, "updated event is not accessible anymore")
 				}
 				throw e
@@ -402,7 +417,7 @@ export class CalendarEventsRepository {
 			const removedCalendars = this.calendarMemberships.filter((membership) => !updatedMemberships.some((it) => it.group === membership))
 			const dates = Array.from(this.loadedMonths.keys()).map((it) => new Date(it))
 
-			await Promise.all(newCalendars.map((calendar) => this.loadMonthsIfNeeded(dates, stream(false), null, calendar.group)))
+			await Promise.all(newCalendars.map((calendar) => this.loadMonthsIfNeeded(dates, new AbortController().signal, null, calendar.group)))
 			for (const calendar of removedCalendars) {
 				this.removeEventForCalendar(calendar)
 			}
@@ -452,6 +467,8 @@ export class CalendarEventsRepository {
 			repeatRule: createRepeatRuleWithValues(RepeatPeriod.ANNUALLY, 1),
 			uid,
 			pendingInvitation: null,
+			startTimeZone: null,
+			endTimeZone: null,
 		})
 
 		newEvent._id = [calendarId, `${generateLocalEventElementId(newEvent.startTime.getTime(), contact._id.join("/"))}#${encodedContactId}`]

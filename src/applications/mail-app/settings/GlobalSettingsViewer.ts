@@ -18,12 +18,13 @@ import m, { Children } from "mithril"
 import { LazyLoaded, neverNull, noOp, ofClass, promiseMap } from "../../../platform-kit/utils"
 import { InfoLink, lang } from "../../../ui/utils/LanguageViewModel"
 import { getSpamRuleFieldToName, getSpamRuleTypeNameMapping, showAddSpamRuleDialog } from "./AddSpamRuleDialog"
-import { assertMainOrNode, DAY_IN_MILLIS, UpgradePromptType } from "../../../platform-kit/app-env"
+import { EnvProvider, TimeConstants, UpgradePromptType } from "../../../platform-kit/app-env"
 import {
 	EntityIdEncoding,
 	GENERATED_MAX_ID,
 	generatedIdToTimestamp,
 	getElementId,
+	idToElementId,
 	OperationType,
 	sortCompareByReverseId,
 	timestampToGeneratedId,
@@ -31,7 +32,7 @@ import {
 import stream from "mithril/stream"
 import { formatDateTime } from "../../../ui/utils/Formatter"
 import { Dialog } from "../../../ui/base/Dialog"
-import * as restError from "../../../platform-kit/rest-client/error"
+import { LockedError, PreconditionFailedError } from "../../../platform-kit/rest-client/error"
 import { GroupData, loadEnabledTeamMailGroups, loadEnabledUserMailGroups, loadGroupDisplayName } from "./LoadingUtils"
 import { Icons } from "../../../ui/base/icons/Icons"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
@@ -54,9 +55,9 @@ import { ExpandableTable } from "../../common/settings/ExpandableTable.js"
 import { getSpamRuleField } from "../mail/MailUtils"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 // Number of days for that we load rejected senders
-const REJECTED_SENDERS_TO_LOAD_MS = 5 * DAY_IN_MILLIS
+const REJECTED_SENDERS_TO_LOAD_MS = 5 * TimeConstants.DAY_IN_MILLIS
 // Max number of rejected sender entries that we display in the ui
 const REJECTED_SENDERS_MAX_NUMBER = 100
 
@@ -78,8 +79,8 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 	private readonly domainDnsStatus: Record<string, DomainDnsStatus> = {}
 	private readonly customerProperties = new LazyLoaded(() =>
 		locator.entityClient
-			.load(CustomerTypeRef, neverNull(locator.logins.getUserController().user.customer))
-			.then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties))),
+			.load(CustomerTypeRef, idToElementId(neverNull(locator.logins.getUserController().user.customer)))
+			.then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties)))),
 	)
 
 	constructor() {
@@ -95,7 +96,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "addSpamRule_action",
+				label: "addSpamRule_action",
 				click: () => showAddSpamRuleDialog(null),
 				icon: Icons.Plus,
 				size: ButtonSize.Compact,
@@ -107,7 +108,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "refresh_action",
+				label: "refresh_action",
 				click: () => {
 					this.updateRejectedSenderTable()
 				},
@@ -121,7 +122,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "addCustomDomain_action",
+				label: "addCustomDomain_action",
 				click: async () => {
 					const customerInfo = await this.customerInfo.getAsync()
 					if (locator.logins.getUserController().isFreeAccount()) {
@@ -188,7 +189,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 					actionButtonAttrs: createRowActions(
 						{
 							getArray: () => props.emailSenderList,
-							updateInstance: () => locator.entityClient.update(props).catch(ofClass(restError.LockedError, noOp)),
+							updateInstance: () => locator.entityClient.update(props).catch(ofClass(LockedError, noOp)),
 						},
 						rule,
 						index,
@@ -244,11 +245,11 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 							},
 							actionButtonAttrs: attachDropdown({
 								mainButtonAttrs: {
-									title: "showMore_action",
+									label: "showMore_action",
 									icon: Icons.More,
 									size: ButtonSize.Compact,
 								},
-								childAttrs: () => [
+								childAttrs: async () => [
 									{
 										label: "showRejectReason_action",
 										click: () => showRejectedSendersInfoDialog(rejectedSender),
@@ -320,7 +321,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 						},
 					],
 					actionButtonAttrs: {
-						title: "action_label" as const,
+						label: "action_label" as const,
 						icon: Icons.More,
 						size: ButtonSize.Compact,
 						click: createDropdown({
@@ -399,10 +400,10 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 		const allMailGroups = teamMailGroups.concat(userMailGroups)
 		let catchAllMailGroupId: Id | null = null
 		if (domainInfo.catchAllMailGroup) {
-			const catchAllGroup = await locator.entityClient.load(GroupTypeRef, domainInfo.catchAllMailGroup)
+			const catchAllGroup = await locator.entityClient.load(GroupTypeRef, idToElementId(domainInfo.catchAllMailGroup))
 			if (catchAllGroup.type === GroupType.User) {
 				// the catch all group may be a user group, so load the mail group in that case
-				const user = await locator.entityClient.load(UserTypeRef, neverNull(catchAllGroup.user))
+				const user = await locator.entityClient.load(UserTypeRef, idToElementId(neverNull(catchAllGroup.user)))
 				catchAllMailGroupId = getUserGroupMemberships(user, GroupType.Mail)[0].group // the first is the users personal mail group
 			} else {
 				catchAllMailGroupId = domainInfo.catchAllMailGroup
@@ -425,7 +426,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 				locator.customerFacade
 					.removeDomain(domainInfo.domain)
 					.catch(
-						ofClass(restError.PreconditionFailedError, () => {
+						ofClass(PreconditionFailedError, () => {
 							Dialog.message(
 								lang.getTranslation("customDomainDeletePreconditionFailed_msg", {
 									"{domainName}": domainInfo.domain,
@@ -433,12 +434,11 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 							)
 						}),
 					)
-					.catch(ofClass(restError.LockedError, () => Dialog.message("operationStillActive_msg")))
+					.catch(ofClass(LockedError, () => Dialog.message("operationStillActive_msg")))
 			}
 		})
 	}
-
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		this.accountMaintenanceUpdateNotifier?.(updates)
 
 		return promiseMap(updates, (update) => {
@@ -452,6 +452,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 				this.customerProperties.reset()
 				this.customerProperties.getAsync().then(m.redraw)
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

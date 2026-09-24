@@ -4,15 +4,15 @@ import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
 import { Button, ButtonType } from "../../../../../ui/base/Button.js"
 import { NewsModel } from "../NewsModel.js"
 import { Dialog, DialogType } from "../../../../../ui/base/Dialog.js"
-import * as restError from "@tutao/rest-client/error"
 import { LazyLoaded, noOp, ofClass } from "@tutao/utils"
 import { copyToClipboard } from "../../../../../ui/utils/ClipboardUtils.js"
 import { UserController } from "../../../api/main/UserController.js"
 import { progressIcon } from "../../../../../ui/base/Icon.js"
 import { showRequestPasswordDialog } from "../../passwords/PasswordRequestDialog.js"
 import { RecoverCodeFacade } from "../../../../../platform-kit/base/facades/lazy/RecoverCodeFacade.js"
-import { daysToMillis, isApp } from "@tutao/app-env"
+import { EnvProvider, TimeConstants } from "@tutao/app-env"
 import m, { Children } from "mithril"
+import { AccessBlockedError, NotAuthenticatedError } from "@tutao/rest-client/error"
 
 /**
  * News item that informs admin users about their recovery code.
@@ -33,7 +33,7 @@ export class RecoveryCodeNews implements NewsListItem {
 
 	isShown(newsId: NewsId): Promise<boolean> {
 		const customerCreationTime = this.userController.userGroupInfo.created.getTime()
-		return Promise.resolve(this.userController.isGlobalAdmin() && Date.now() - customerCreationTime > daysToMillis(14))
+		return Promise.resolve(this.userController.isGlobalAdmin() && Date.now() - customerCreationTime > TimeConstants.daysToMillis(14))
 	}
 
 	render(newsId: NewsId): Children {
@@ -92,7 +92,7 @@ export class RecoveryCodeNews implements NewsListItem {
 	}
 
 	private renderPrintButton(): Children {
-		if (isApp() || typeof window.print !== "function") {
+		if (EnvProvider.get().isApp() || typeof window.print !== "function") {
 			return null
 		}
 
@@ -147,8 +147,8 @@ export class RecoveryCodeNews implements NewsListItem {
 						this.recoveryCode = recoverCode
 						return ""
 					})
-					.catch(ofClass(restError.NotAuthenticatedError, () => lang.get("invalidPassword_msg")))
-					.catch(ofClass(restError.TooManyRequestsError, () => lang.get("tooManyAttempts_msg")))
+					.catch(ofClass(NotAuthenticatedError, () => lang.get("invalidPassword_msg")))
+					.catch(ofClass(AccessBlockedError, () => lang.get("tooManyAttempts_msg")))
 					.finally(m.redraw)
 			},
 			cancel: {

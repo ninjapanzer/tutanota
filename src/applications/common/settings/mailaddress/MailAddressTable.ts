@@ -2,24 +2,24 @@ import m, { Children, Component, Vnode } from "mithril"
 import { Dialog } from "../../../../ui/base/Dialog.js"
 import type { TableLineAttrs } from "../../../../ui/base/Table.js"
 import { ColumnWidth, Table } from "../../../../ui/base/Table.js"
-import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
-import * as restError from "@tutao/rest-client/error"
+import { lang, Translation, TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
+import { LimitReachedError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { ofClass } from "@tutao/utils"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { ExpanderButton, ExpanderPanel } from "../../../../ui/base/Expander.js"
 import { attachDropdown, DropdownButtonAttrs } from "../../../../ui/base/Dropdown.js"
 import { showPlanUpgradeRequiredDialog } from "../../misc/SubscriptionDialogs.js"
-import { assertMainOrNode, UnsubscribeFailureReason, UpgradePromptType } from "@tutao/app-env"
+import { EnvProvider, UnsubscribeFailureReason, UpgradePromptType } from "@tutao/app-env"
 import { IconButtonAttrs } from "../../../../ui/base/IconButton.js"
 import { ButtonSize } from "../../../../ui/base/ButtonSize.js"
 import { AddressInfo, AddressStatus, MailAddressTableModel } from "./MailAddressTableModel.js"
-import { showAddAliasDialog } from "./AddAliasDialog.js"
+import { FAILURE_USER_DISABLED, showAddAliasDialog } from "./AddAliasDialog.js"
 import { locator } from "../../api/main/CommonLocator.js"
 import { UpgradeRequiredError } from "../../api/main/UpgradeRequiredError.js"
 import { NewPaidPlans } from "../../../../entities/sys/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type MailAddressTableAttrs = {
 	model: MailAddressTableModel
@@ -31,15 +31,18 @@ export type MailAddressTableAttrs = {
 export class MailAddressTable implements Component<MailAddressTableAttrs> {
 	view({ attrs }: Vnode<MailAddressTableAttrs>): Children {
 		const { model } = attrs
-		// If the table is expanded we need to init the model.
-		// It is no-op to init multiple times so it's safe.
-		if (attrs.expanded) {
-			model.init()
-		}
+		model.init()
+
 		const addAliasButtonAttrs: IconButtonAttrs | null = model.userCanModifyAliases()
 			? {
-					title: "addEmailAlias_label",
-					click: () => this.onAddAlias(attrs),
+					label: "addEmailAlias_label",
+					click: () => {
+						if (model.isGroupActive()) {
+							this.onAddAlias(attrs)
+						} else {
+							Dialog.message("addAliasUserDisabled_msg")
+						}
+					},
 					icon: Icons.Plus,
 					size: ButtonSize.Compact,
 				}
@@ -48,7 +51,7 @@ export class MailAddressTable implements Component<MailAddressTableAttrs> {
 			m(".flex-space-between.items-center.mt-32.mb-8", [
 				m(".h4", lang.get("mailAddresses_label")),
 				m(ExpanderButton, {
-					label: "show_action",
+					label: attrs.expanded ? "hide_action" : "show_action",
 					expanded: attrs.expanded,
 					onExpandedChange: (v) => {
 						attrs.onExpanded(v)
@@ -71,14 +74,14 @@ export class MailAddressTable implements Component<MailAddressTableAttrs> {
 			model.aliasCount
 				? [
 						m(
-							".mt-8",
+							".mt-16",
 							lang.get("amountUsedAndActivatedOf_label", {
 								"{used}": model.aliasCount.usedAliases,
 								"{active}": model.aliasCount.enabledAliases,
 								"{totalAmount}": model.aliasCount.totalAliases,
 							}),
 						),
-						m(".small.mt-8", lang.get(model.aliasLimitIncludesCustomDomains() ? "mailAddressInfoLegacy_msg" : "mailAddressInfo_msg")),
+						m(".small.mt-8.mb-16", lang.get(model.aliasLimitIncludesCustomDomains() ? "mailAddressInfoLegacy_msg" : "mailAddressInfo_msg")),
 					]
 				: null,
 		]
@@ -107,6 +110,21 @@ function setNameDropdownButton(model: MailAddressTableModel, addressInfo: Addres
 }
 
 function addressDropdownButtons(attrs: MailAddressTableAttrs, addressInfo: AddressInfo): DropdownButtonAttrs[] {
+	if (!attrs.model.isGroupActive()) {
+		if (addressInfo.status === AddressStatus.Alias && attrs.model.userCanModifyAliases()) {
+			// if the user is deactivated and the alias is somehow active, only give option to deactivate
+			return [
+				{
+					label: "deactivate_action",
+					click: () => {
+						switchAliasStatus(addressInfo, attrs)
+					},
+				},
+			]
+		} else {
+			return []
+		}
+	}
 	switch (addressInfo.status) {
 		case AddressStatus.Primary:
 			return [setNameDropdownButton(attrs.model, addressInfo)]
@@ -119,12 +137,14 @@ function addressDropdownButtons(attrs: MailAddressTableAttrs, addressInfo: Addre
 						switchAliasStatus(addressInfo, attrs)
 					},
 				})
-				buttons.push({
-					label: "setPrimaryMailAddress_label",
-					click: () => {
-						makeAliasPrimary(addressInfo, attrs.model)
-					},
-				})
+				if (attrs.model.canSetPrimaryAddress()) {
+					buttons.push({
+						label: "setPrimaryMailAddress_label",
+						click: () => {
+							makeAliasPrimary(addressInfo, attrs.model)
+						},
+					})
+				}
 			}
 			return buttons
 		}
@@ -149,12 +169,14 @@ function addressDropdownButtons(attrs: MailAddressTableAttrs, addressInfo: Addre
 						switchAliasStatus(addressInfo, attrs)
 					},
 				})
-				buttons.push({
-					label: "setPrimaryMailAddress_label",
-					click: () => {
-						makeAliasPrimary(addressInfo, attrs.model)
-					},
-				})
+				if (attrs.model.canSetPrimaryAddress()) {
+					buttons.push({
+						label: "setPrimaryMailAddress_label",
+						click: () => {
+							makeAliasPrimary(addressInfo, attrs.model)
+						},
+					})
+				}
 			}
 			return buttons
 		}
@@ -182,13 +204,13 @@ export function getAliasLineAttrs(attrs: MailAddressTableAttrs): Array<TableLine
 				? null
 				: attachDropdown({
 						mainButtonAttrs: {
-							title: "edit_action",
+							label: "edit_action",
 							icon: Icons.More,
 							size: ButtonSize.Compact,
 						},
 						showDropdown: () => true,
 						width: 250,
-						childAttrs: () => dropdownButtons,
+						childAttrs: async () => dropdownButtons,
 					})
 		return {
 			cells: () => [{ main: addressInfo.address, info: [addressInfo.name] }, { main: statusLabel(addressInfo) }],
@@ -214,8 +236,8 @@ async function switchAliasStatus(alias: AddressInfo, attrs: MailAddressTableAttr
 
 	const updateModel = attrs.model
 		.setAliasStatus(alias.address, !deactivateOrDeleteAlias)
-		.catch(ofClass(restError.PreconditionFailedError, handleSetAliasStatusPreconditionFailed))
-		.catch(ofClass(restError.TooManyRequestsError, () => attrs.model.handleTooManyAliases()))
+		.catch(ofClass(PreconditionFailedError, handleSetAliasStatusPreconditionFailed))
+		.catch(ofClass(LimitReachedError, () => attrs.model.handleTooManyAliases()))
 		.catch(ofClass(UpgradeRequiredError, (e) => showPlanUpgradeRequiredDialog(UpgradePromptType.ALIASES, e.plans, e.message)))
 	await showProgressDialog("pleaseWait_msg", updateModel)
 }
@@ -233,27 +255,30 @@ function showSenderNameChangeDialog(model: MailAddressTableModel, alias: { addre
 	}).then((newName) => showProgressDialog("pleaseWait_msg", model.setAliasName(alias.address, newName)))
 }
 
-function handleSetAliasStatusPreconditionFailed(e: restError.PreconditionFailedError): void {
+function handleSetAliasStatusPreconditionFailed(e: PreconditionFailedError): void {
 	const reason = e.data
 
 	if (reason == null) {
 		Dialog.message("unknownError_msg")
 	} else {
-		let detailMsg: string
+		let detailMsg: Translation
 
 		switch (reason) {
 			case UnsubscribeFailureReason.HAS_SCHEDULED_MAILS:
-				detailMsg = lang.getTranslationText("removeScheduledMails_msg")
+				detailMsg = lang.getTranslation("aliasDeactivationNotPossible_msg", {
+					"{detailMsg}": lang.getTranslationText("removeScheduledMails_msg"),
+				})
+
+				break
+
+			case FAILURE_USER_DISABLED:
+				detailMsg = lang.getTranslation("userAccountDeactivated_msg")
 				break
 
 			default:
 				throw e
 		}
 
-		Dialog.message(
-			lang.getTranslation("aliasDeactivationNotPossible_msg", {
-				"{detailMsg}": detailMsg,
-			}),
-		)
+		Dialog.message(detailMsg)
 	}
 }

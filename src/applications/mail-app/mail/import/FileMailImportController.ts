@@ -1,0 +1,503 @@
+import { assertNotNull, first, isEmpty } from "../../../../platform-kit/utils"
+import { NativeMailImportFacade } from "@tutao/native-bridge/generatedIpc/types"
+import { CredentialsProvider } from "../../../common/misc/credentials/CredentialsProvider"
+import { DomainConfigProvider } from "../../../common/api/common/DomainConfigProvider"
+import { LoginController } from "../../../common/api/main/LoginController"
+import m from "mithril"
+import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/MailboxModel.js"
+import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
+import { EstimatingProgressMonitor } from "../../../common/api/common/utils/EstimatingProgressMonitor.js"
+import { EnvProvider, ProgrammingError } from "../../../../platform-kit/app-env"
+import { ImportFileMailState, ImportFileMailStateTypeRef, MailBox, MailSet, MailSetTypeRef } from "@tutao/entities/tutanota"
+import { FileImportStatus, MailSetKind } from "../../../../entities/tutanota/Utils"
+import { EventController } from "../../../common/api/main/EventController"
+import { ImportErrorCategories, MailImportError } from "../../../common/api/common/error/MailImportError.js"
+import { showSnackBar, SnackBarButtonAttrs } from "../../../../ui/base/SnackBar.js"
+import { OpenSettingsHandler } from "../../../common/native/OpenSettingsHandler.js"
+import { Dialog } from "../../../../ui/base/Dialog"
+import { FolderSystem } from "../../../common/api/common/mail/FolderSystem"
+import { mailLocator } from "../../mailLocator"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { elementIdPart, elementIdToId, GENERATED_MIN_ID, isSameId, isSameSingleId } from "../../../../platform-kit/meta"
+
+// keep in sync with napi binding.d.cts
+export const enum ImportProgressAction {
+	Continue = 0,
+	Pause = 1,
+	Stop = 2,
+}
+
+const DEFAULT_TOTAL_WORK: number = 10000
+type ActiveImport = {
+	mailboxId: Id
+	remoteStateId: IdTuple
+	uiStatus: UiImportStatus
+	progressMonitor: EstimatingProgressMonitor
+}
+
+export class FileMailImportController {
+	private mailboxToFinalisedImportStates: Map<Id, Map<Id, ImportFileMailState>> = new Map()
+	public mailboxToFolders: Map<Id, FolderSystem> = new Map()
+
+	private activeImport: ActiveImport | null = null
+	public mailboxDetails: MailboxDetail[] = []
+	public selectedMailBoxDetail: MailboxDetail | null = null
+	private _selectedTargetFolder: MailSet | null = null
+
+	public get selectedTargetFolder(): MailSet | null {
+		return this._selectedTargetFolder
+	}
+
+	public set selectedTargetFolder(newTargetFolder: MailSet | null) {
+		this._selectedTargetFolder = newTargetFolder
+		if (newTargetFolder?._ownerGroup !== this.selectedMailBoxDetail?.mailbox._ownerGroup) {
+			this.selectedMailBoxDetail = this.mailboxDetails.find((mailboxDetail) => mailboxDetail.mailbox._ownerGroup === newTargetFolder?._ownerGroup) ?? null
+		}
+	}
+
+	constructor(
+		private readonly domainConfigProvider: DomainConfigProvider,
+		private readonly loginController: LoginController,
+		private readonly mailboxModel: MailboxModel,
+		private readonly entityClient: EntityClient,
+		eventController: EventController,
+		private readonly credentialsProvider: CredentialsProvider,
+		private readonly nativeMailImportFacade: NativeMailImportFacade,
+		private readonly openSettingsHandler: OpenSettingsHandler,
+	) {
+		eventController.addEntityUpdatesListener({
+			id: "FileMailImportController",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.NORMAL,
+		})
+	}
+
+	async initImportMailStates(): Promise<void> {
+		this.mailboxDetails = await this.mailboxModel.getMailboxDetails()
+
+		for (const mailboxDetail of this.mailboxDetails) {
+			const mailbox = mailboxDetail.mailbox
+			this.mailboxToFolders.set(elementIdToId(mailbox._id), this.getFoldersForMailGroup(assertNotNull(mailbox._ownerGroup)))
+
+			if (!this.activeImport) {
+				await this.checkForResumableImport(mailbox)
+			}
+
+			const importMailStatesCollection = await this.entityClient.loadAll(ImportFileMailStateTypeRef, mailbox.importFileMailStates)
+			for (const importMailState of importMailStatesCollection) {
+				if (this.isFinalisedImport(importMailState)) {
+					this.updateFinalisedImport(elementIdToId(mailbox._id), elementIdPart(importMailState._id), importMailState)
+				}
+			}
+		}
+
+		if (!this.activeImport) {
+			this.selectedMailBoxDetail = first(this.mailboxDetails)
+			const selectedMailboxId = this.selectedMailBoxDetail?.mailbox._id
+			if (selectedMailboxId) {
+				this.selectedTargetFolder = this.mailboxToFolders.get(elementIdToId(selectedMailboxId))?.getSystemFolderByType(MailSetKind.ARCHIVE) ?? null
+			}
+		}
+
+		m.redraw()
+	}
+
+	private async checkForResumableImport(mailbox: MailBox): Promise<void> {
+		const importFacade = assertNotNull(this.nativeMailImportFacade)
+
+		let activeImportId: IdTuple | null = null
+		if (this.activeImport === null) {
+			const mailOwnerGroupId = assertNotNull(mailbox._ownerGroup)
+			const userId = this.loginController.getUserController().userId
+			const unencryptedCredentials = assertNotNull(await this.credentialsProvider?.getDecryptedCredentialsByUserId(userId))
+			const apiUrl = EnvProvider.get().getApiBaseUrl(this.domainConfigProvider.getCurrentDomainConfig())
+
+			try {
+				activeImportId = await importFacade.getResumableImport(elementIdToId(mailbox._id), mailOwnerGroupId, unencryptedCredentials, apiUrl)
+			} catch (e) {
+				if (e instanceof MailImportError) this.handleError(e).catch()
+				else throw e
+			}
+
+			this.listenForError(importFacade, elementIdToId(mailbox._id)).then()
+		}
+
+		if (activeImportId) {
+			// we can't use the result of loadAll (see below) as that might only read from offline cache and
+			// not include a new ImportMailState that was created without sending an entity event
+			const importMailState = await this.entityClient.load(ImportFileMailStateTypeRef, activeImportId)
+			const remoteStatus = parseInt(importMailState.status) as FileImportStatus
+
+			switch (remoteStatus) {
+				case FileImportStatus.Canceled:
+				case FileImportStatus.Finished:
+					activeImportId = null
+					this.activeImport = null
+					break
+
+				case FileImportStatus.Paused:
+				case FileImportStatus.Running: {
+					let progressMonitor = this.activeImport?.progressMonitor ?? null
+					if (!progressMonitor) {
+						const totalCount = parseInt(importMailState.totalMails)
+						const doneCount = parseInt(importMailState.failedMails) + parseInt(importMailState.successfulMails)
+						progressMonitor = this.createEstimatingProgressMonitor(totalCount)
+						progressMonitor.totalWorkDone(doneCount)
+					}
+
+					this.activeImport = {
+						mailboxId: elementIdToId(mailbox._id),
+						remoteStateId: activeImportId,
+						uiStatus: UiImportStatus.Paused,
+						progressMonitor,
+					}
+					this.selectedTargetFolder = await this.entityClient.load(MailSetTypeRef, importMailState.targetFolder)
+				}
+			}
+		}
+	}
+
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+		for (const update of updates) {
+			if (isUpdateForTypeRef(ImportFileMailStateTypeRef, update)) {
+				const updatedState = await this.entityClient.load(ImportFileMailStateTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
+				await this.newImportStateFromServer(updatedState)
+			}
+		}
+	}
+
+	async newImportStateFromServer(serverState: ImportFileMailState) {
+		const remoteStatus = parseInt(serverState.status) as FileImportStatus
+
+		const wasUpdatedForThisImport = this.activeImport !== null && isSameId(this.activeImport.remoteStateId, serverState._id)
+		if (wasUpdatedForThisImport) {
+			const activeImport = assertNotNull(this.activeImport)
+			if (isFinalisedImport(remoteStatus)) {
+				this.resetStatus()
+				this.updateFinalisedImport(activeImport.mailboxId, elementIdPart(serverState._id), serverState)
+			} else {
+				activeImport.uiStatus = importStatusToUiImportStatus(remoteStatus)
+				const newTotalWork = parseInt(serverState.totalMails)
+				const newDoneWork = parseInt(serverState.successfulMails) + parseInt(serverState.failedMails)
+				activeImport.progressMonitor.updateTotalWork(newTotalWork)
+				activeImport.progressMonitor.totalWorkDone(newDoneWork)
+				if (remoteStatus === FileImportStatus.Paused) {
+					activeImport.progressMonitor.pauseEstimation()
+				} else {
+					activeImport.progressMonitor.continueEstimation()
+				}
+			}
+		} else {
+			const mailboxDetail = this.mailboxDetails.find((detail) => isSameSingleId(elementIdToId(detail.mailGroup._id), serverState._ownerGroup))
+			if (mailboxDetail) {
+				this.updateFinalisedImport(elementIdToId(mailboxDetail.mailbox._id), elementIdPart(serverState._id), serverState)
+			}
+		}
+
+		m.redraw()
+	}
+
+	private createEstimatingProgressMonitor(totalWork: number = DEFAULT_TOTAL_WORK) {
+		return new EstimatingProgressMonitor(totalWork, (_) => {
+			m.redraw()
+		})
+	}
+
+	private isFinalisedImport(importMailState: ImportFileMailState) {
+		return parseInt(importMailState.status) === FileImportStatus.Finished || parseInt(importMailState.status) === FileImportStatus.Canceled
+	}
+
+	private getFoldersForMailGroup(mailGroupId: Id): FolderSystem {
+		if (mailGroupId) {
+			const folderSystem = mailLocator.mailModel.getFolderSystemByGroupId(mailGroupId)
+			if (folderSystem) {
+				return folderSystem
+			}
+		}
+		throw new Error("could not load folder list")
+	}
+
+	/// start a loop that listens to an arbitrary amount of errors that can happen during the import process.
+	private async listenForError(importFacade: NativeMailImportFacade, mailboxId: string) {
+		while (true) {
+			try {
+				await importFacade.setAsyncErrorHook(mailboxId)
+			} catch (e) {
+				if (e instanceof MailImportError) {
+					this.handleError(e).catch()
+					continue
+				}
+				throw e
+			}
+			throw new ProgrammingError("setAsyncErrorHook should never complete normally!")
+		}
+	}
+
+	private async handleError(err: MailImportError) {
+		if (this.activeImport) {
+			this.activeImport.uiStatus = UiImportStatus.Paused
+			this.activeImport.progressMonitor.pauseEstimation()
+		}
+
+		if (this.activeImport) {
+			this.activeImport.uiStatus = UiImportStatus.Paused
+			this.activeImport.progressMonitor.pauseEstimation()
+		}
+
+		const navigateToImportSettings: SnackBarButtonAttrs = {
+			label: "show_action",
+			click: () => this.openSettingsHandler.openSettings("mailImport"),
+		}
+		if (err.data.category === ImportErrorCategories.ImportFeatureDisabled) {
+			await Dialog.message("mailImportErrorServiceUnavailable_msg")
+		} else if (err.data.category === ImportErrorCategories.ConcurrentImport) {
+			showSnackBar({ message: "importFailedConcurrentImport_msg", button: navigateToImportSettings })
+		} else if (err.data.category === ImportErrorCategories.ImportTargetFolderDeleted) {
+			showSnackBar({ message: "importTargetFolderDeleted_msg", button: navigateToImportSettings })
+		} else {
+			showSnackBar({ message: "someMailFailedImport_msg", button: navigateToImportSettings })
+		}
+	}
+
+	/**
+	 * Call to the nativeMailImportFacade in worker to start a mail import from .eml or .mbox files.
+	 * @param fileUris to the .eml/.mbox files to import mails from
+	 */
+	async onStartBtnClick(fileUris: Array<string>) {
+		if (isEmpty(fileUris)) return
+		if (!this.shouldRenderStartButton()) throw new ProgrammingError("can't change state to starting")
+
+		const apiUrl = EnvProvider.get().getApiBaseUrl(this.domainConfigProvider.getCurrentDomainConfig())
+		const mailbox = assertNotNull(this.selectedMailBoxDetail).mailbox
+		const mailboxId = elementIdToId(mailbox._id)
+		const mailOwnerGroupId = assertNotNull(mailbox._ownerGroup)
+		const userId = this.loginController.getUserController().userId
+		const importFacade = assertNotNull(this.nativeMailImportFacade)
+		const selectedTargetFolder = assertNotNull(this.selectedTargetFolder)
+		const unencryptedCredentials = assertNotNull(await this.credentialsProvider?.getDecryptedCredentialsByUserId(userId))
+
+		this.resetStatus()
+		let progressMonitor = this.createEstimatingProgressMonitor()
+		this.activeImport = {
+			mailboxId,
+			remoteStateId: [GENERATED_MIN_ID, GENERATED_MIN_ID],
+			uiStatus: UiImportStatus.Starting,
+			progressMonitor,
+		}
+		this.activeImport?.progressMonitor?.continueEstimation()
+		m.redraw()
+
+		try {
+			this.activeImport.remoteStateId = await importFacade.prepareNewImport(
+				mailboxId,
+				mailOwnerGroupId,
+				selectedTargetFolder._id,
+				fileUris,
+				unencryptedCredentials,
+				apiUrl,
+			)
+
+			await importFacade.setProgressAction(mailboxId, ImportProgressAction.Continue)
+		} catch (e) {
+			this.resetStatus()
+			m.redraw()
+
+			if (e instanceof MailImportError) {
+				this.handleError(e).catch()
+			} else {
+				throw e
+			}
+		}
+	}
+
+	async onPauseBtnClick() {
+		let activeImport = assertNotNull(this.activeImport)
+
+		if (activeImport.uiStatus !== UiImportStatus.Running) throw new ProgrammingError("can't change state to pausing")
+
+		activeImport.uiStatus = UiImportStatus.Pausing
+		activeImport.progressMonitor.pauseEstimation()
+		m.redraw()
+
+		const mailboxId = activeImport.mailboxId
+		const nativeImportFacade = assertNotNull(this.nativeMailImportFacade)
+		await nativeImportFacade.setProgressAction(mailboxId, ImportProgressAction.Pause)
+	}
+
+	async onResumeBtnClick() {
+		if (!this.shouldRenderResumeButton()) throw new ProgrammingError("can't change state to resuming")
+
+		let activeImport = assertNotNull(this.activeImport)
+		activeImport.uiStatus = UiImportStatus.Resuming
+
+		activeImport.progressMonitor.continueEstimation()
+		m.redraw()
+
+		const mailboxId = activeImport.mailboxId
+		const nativeImportFacade = assertNotNull(this.nativeMailImportFacade)
+		await nativeImportFacade.setProgressAction(mailboxId, ImportProgressAction.Continue)
+	}
+
+	async onCancelBtnClick() {
+		if (!this.shouldRenderCancelButton()) throw new ProgrammingError("can't change state to cancelling")
+
+		let activeImport = assertNotNull(this.activeImport)
+		activeImport.uiStatus = UiImportStatus.Cancelling
+
+		activeImport.progressMonitor.pauseEstimation()
+		m.redraw()
+
+		const mailboxId = activeImport.mailboxId
+		const nativeImportFacade = assertNotNull(this.nativeMailImportFacade)
+		await nativeImportFacade.setProgressAction(mailboxId, ImportProgressAction.Stop)
+	}
+
+	shouldRenderStartButton() {
+		return this.activeImport === null
+	}
+
+	shouldRenderImportStatus(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return (
+			activeImportStatus === UiImportStatus.Starting ||
+			activeImportStatus === UiImportStatus.Running ||
+			activeImportStatus === UiImportStatus.Pausing ||
+			activeImportStatus === UiImportStatus.Paused ||
+			activeImportStatus === UiImportStatus.Cancelling ||
+			activeImportStatus === UiImportStatus.Resuming
+		)
+	}
+
+	shouldRenderPauseButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return activeImportStatus === UiImportStatus.Running || activeImportStatus === UiImportStatus.Starting || activeImportStatus === UiImportStatus.Pausing
+	}
+
+	shouldDisablePauseButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return activeImportStatus === UiImportStatus.Pausing || activeImportStatus === UiImportStatus.Starting
+	}
+
+	shouldRenderResumeButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return activeImportStatus === UiImportStatus.Paused || activeImportStatus === UiImportStatus.Resuming
+	}
+
+	shouldDisableResumeButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return activeImportStatus === UiImportStatus.Resuming || activeImportStatus === UiImportStatus.Starting
+	}
+
+	shouldRenderCancelButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		if (activeImportStatus === null) return false
+
+		return (
+			activeImportStatus === UiImportStatus.Paused ||
+			activeImportStatus === UiImportStatus.Running ||
+			activeImportStatus === UiImportStatus.Pausing ||
+			activeImportStatus === UiImportStatus.Cancelling
+		)
+	}
+
+	shouldDisableCancelButton(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		return (
+			activeImportStatus === UiImportStatus.Cancelling || activeImportStatus === UiImportStatus.Pausing || activeImportStatus === UiImportStatus.Starting
+		)
+	}
+
+	shouldRenderProcessedMails(): boolean {
+		const activeImportStatus = this.getUiStatus()
+		return (
+			this.activeImport?.progressMonitor?.totalWork !== DEFAULT_TOTAL_WORK &&
+			(activeImportStatus === UiImportStatus.Running ||
+				activeImportStatus === UiImportStatus.Resuming ||
+				activeImportStatus === UiImportStatus.Pausing ||
+				activeImportStatus === UiImportStatus.Paused)
+		)
+	}
+
+	getTotalMailsCount() {
+		return assertNotNull(this.activeImport).progressMonitor.totalWork
+	}
+
+	getProcessedMailsCount() {
+		const progressMonitor = assertNotNull(this.activeImport).progressMonitor
+		return Math.min(Math.round(progressMonitor.workCompleted), progressMonitor.totalWork)
+	}
+
+	getProgress() {
+		const progressMonitor = assertNotNull(this.activeImport).progressMonitor
+		return Math.ceil(progressMonitor.percentage())
+	}
+
+	getFinalisedImports(mailboxId: Id): Array<ImportFileMailState> {
+		const finalisedImportStates = this.mailboxToFinalisedImportStates.get(mailboxId)
+		if (finalisedImportStates) {
+			return Array.from(finalisedImportStates.values())
+		}
+		return []
+	}
+
+	updateFinalisedImport(mailboxId: Id, importMailStateElementId: Id, importMailState: ImportFileMailState) {
+		let finalisedImportStates = this.mailboxToFinalisedImportStates.get(mailboxId)
+		if (!finalisedImportStates) {
+			this.mailboxToFinalisedImportStates.set(mailboxId, new Map())
+			finalisedImportStates = this.mailboxToFinalisedImportStates.get(mailboxId)
+		}
+		assertNotNull(finalisedImportStates).set(importMailStateElementId, importMailState)
+	}
+
+	private resetStatus() {
+		this.activeImport?.progressMonitor?.pauseEstimation()
+		this.activeImport = null
+	}
+
+	getUiStatus() {
+		return this.activeImport?.uiStatus ?? null
+	}
+
+	onNewMailboxSelected(newMailboxDetail: MailboxDetail) {
+		this.selectedMailBoxDetail = newMailboxDetail
+		this.selectedTargetFolder = this.mailboxToFolders.get(elementIdToId(newMailboxDetail.mailbox._id))?.getSystemFolderByType(MailSetKind.ARCHIVE) ?? null
+	}
+}
+
+export const enum UiImportStatus {
+	Starting,
+	Resuming,
+	Running,
+	Pausing,
+	Paused,
+	Cancelling,
+}
+
+function importStatusToUiImportStatus(importStatus: FileImportStatus) {
+	// We do not render ImportStatus.Finished and ImportStatus.Canceled
+	// in the UI, and therefore return the corresponding previous states.
+	switch (importStatus) {
+		case FileImportStatus.Finished:
+			return UiImportStatus.Running
+		case FileImportStatus.Canceled:
+			return UiImportStatus.Cancelling
+		case FileImportStatus.Paused:
+			return UiImportStatus.Paused
+		case FileImportStatus.Running:
+			return UiImportStatus.Running
+	}
+}
+
+export function isFinalisedImport(remoteImportStatus: FileImportStatus): boolean {
+	return remoteImportStatus === FileImportStatus.Canceled || remoteImportStatus === FileImportStatus.Finished
+}

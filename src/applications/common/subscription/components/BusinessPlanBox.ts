@@ -10,7 +10,7 @@ import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { getFeaturePlaceholderReplacement, PlanTypeToName } from "../utils/SubscriptionUtils"
 import { PlanConfig } from "./BusinessPlanContainer"
 import { DefaultAnimationTime } from "../../../../ui/animation/Animations"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { boxShadowHigh, boxShadowLow } from "../../../../ui/main-styles"
 import { PlanBadge } from "./PlanBadge"
 import { DiscountDetail, getCampaignTheme, getHasCampaign } from "../utils/PlanSelectorUtils"
@@ -41,7 +41,7 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 	private isHovered = false
 
 	private isMobileLayout(attrs: BusinessPlanBoxAttrs): boolean {
-		return attrs.forceMobileLayout === true ? true : styles.isMobileLayout()
+		return attrs.forceMobileLayout === true ? true : Styles.get().isMobileLayout()
 	}
 
 	private measureCollapsed() {
@@ -107,7 +107,7 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 		if (hasCampaign) {
 			localTheme = getCampaignTheme(campaignName)
 		}
-		const renderFeature = this.generateRenderFeature(attrs.planConfig.type, attrs.priceAndConfigProvider, localTheme)
+		const renderFeature = this.generateRenderFeature(attrs.planConfig.type, attrs.priceAndConfigProvider, localTheme, hasCampaign)
 		const canHover = !isDisabled && !isSelected
 		const showHover = canHover && this.isHovered
 		const handleSelect = (event: Event) => {
@@ -198,28 +198,8 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 								}),
 							]),
 							m(`div.flex-grow${isMobileLayout ? ".left" : ".center"}`, [
-								m(
-									"div.font-mdio",
-									{
-										style: {
-											lineHeight: 1,
-											fontWeight: "bold",
-											fontSize: px(isMobileLayout ? 18 : 20),
-											color: isSelected ? localTheme.primary : localTheme.on_surface,
-										},
-									},
-									PlanTypeToName[planConfig.type],
-								),
-								m(
-									"div",
-									{
-										style: {
-											display: isMobileLayout ? "none" : "block",
-											fontSize: px(12),
-										},
-									},
-									lang.getTranslationText(planConfig.tagLine),
-								),
+								this.renderPlanName(isMobileLayout, isSelected, hasCampaign, localTheme, planConfig),
+								this.renderTagLine(isMobileLayout, hasCampaign, localTheme, planConfig),
 							]),
 						]),
 						m(
@@ -238,6 +218,10 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 											"div.small",
 											{ style: { color: localTheme.on_surface_variant } },
 											lang.getTranslationText(priceHintLabel ?? "pricing.perUserMonth_label"),
+											(discountDetail?.discountType === "GlobalFirstYear" ||
+												discountDetail?.discountType === "BonusMonthsAndGlobalFirstYear") &&
+												isYearly &&
+												m("sup", { style: { "font-size": px(8) } }, "1"),
 										),
 									]),
 						),
@@ -299,8 +283,42 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 			),
 		)
 	}
+	private renderTagLine(isMobileLayout: boolean, hasCampaign: boolean, localTheme: Theme, planConfig: PlanConfig) {
+		return m(
+			"div",
+			{
+				style: {
+					display: isMobileLayout ? "none" : "block",
+					fontSize: px(12),
+					color: hasCampaign ? localTheme.primary : undefined,
+				},
+			},
+			lang.getTranslationText(planConfig.tagLine),
+		)
+	}
 
-	private generateRenderFeature(planType: PlanType, provider: PriceAndConfigProvider, localTheme: Theme) {
+	private renderPlanName(isMobileLayout: boolean, isSelected: boolean, hasCampaign: boolean, localTheme: Theme, planConfig: PlanConfig) {
+		let color
+		if (hasCampaign) {
+			color = localTheme.primary
+		} else {
+			color = isSelected ? localTheme.primary : localTheme.on_surface
+		}
+		return m(
+			"div.font-mdio",
+			{
+				style: {
+					lineHeight: 1,
+					fontWeight: "bold",
+					fontSize: px(isMobileLayout ? 18 : 20),
+					color,
+				},
+			},
+			PlanTypeToName[planConfig.type],
+		)
+	}
+
+	private generateRenderFeature(planType: PlanType, provider: PriceAndConfigProvider, localTheme: Theme, hasCampaign: boolean) {
 		return (langKey: TranslationKeyType, icon: Icons, replacement?: ReplacementKey) => {
 			return m(
 				".flex.feature-row",
@@ -315,7 +333,11 @@ export class BusinessPlanBox implements Component<BusinessPlanBoxAttrs> {
 						fill: localTheme.secondary,
 					},
 				}),
-				m(".smaller", lang.getTranslation(langKey, getFeaturePlaceholderReplacement(replacement, planType, provider)).text),
+				m(
+					".smaller",
+					{ style: { color: hasCampaign ? localTheme.secondary : undefined } },
+					lang.getTranslation(langKey, getFeaturePlaceholderReplacement(replacement, planType, provider)).text,
+				),
 			)
 		}
 	}

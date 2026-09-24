@@ -3,7 +3,7 @@ import { lang } from "../../../ui/utils/LanguageViewModel"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
 import { UpdatableSettingsViewer } from "../../common/settings/Interfaces.js"
 import { mailLocator } from "../mailLocator.js"
-import { isBrowser } from "../../../platform-kit/app-env"
+import { EnvProvider } from "../../../platform-kit/app-env"
 import { EntityUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 /**
@@ -11,17 +11,21 @@ import { EntityUpdateData } from "../../../platform-kit/instance-pipeline/utils/
  * See {@link DesktopMailImportSettingsViewer} for the Desktop client.
  */
 export class WebMailImportSettingsViewer implements UpdatableSettingsViewer {
-	constructor() {}
+	constructor(private readonly isFileImport: boolean) {}
 
 	view(): Children {
-		return m(".fill-absolute.scroll.plr-24.pb-48", [m(".h4.mt-32", lang.get("mailImportSettings_label")), this.renderNoImportOnWebText()])
+		const title = this.isFileImport ? "mailImportSettings_label" : "migration_title"
+		return m(".fill-absolute.scroll.plr-24.pb-48", [m(".h4.mt-32", lang.getTranslationText(title)), this.renderNoImportOnWebText()])
 	}
 
 	private renderNoImportOnWebText() {
 		return [
 			m(
 				".flex-column.mt-16",
-				m(".p", lang.get("mailImportNoImportOnWeb_label")),
+				m(
+					".p",
+					this.isFileImport ? lang.getTranslationText("mailImportNoImportOnWeb_label") : lang.getTranslationText("migrationNoMigrationOnWeb_label"),
+				),
 				m(
 					".flex-start.mt-32",
 					m(PrimaryButton, {
@@ -29,7 +33,7 @@ export class WebMailImportSettingsViewer implements UpdatableSettingsViewer {
 						label: "mailImportDownloadDesktopClient_label",
 						onclick: () => {
 							const desktopClientDownloadUri = "https://tuta.com#download"
-							if (isBrowser()) {
+							if (EnvProvider.get().isBrowser()) {
 								open(desktopClientDownloadUri)
 							} else {
 								mailLocator.systemFacade.openLink(desktopClientDownloadUri)
@@ -52,5 +56,5 @@ export class WebMailImportSettingsViewer implements UpdatableSettingsViewer {
 		]
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {}
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {}
 }

@@ -9,10 +9,10 @@
 import { Dialog } from "../../../../../ui/base/Dialog.js"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
 import { ButtonAttrs, ButtonType } from "../../../../../ui/base/Button.js"
-import { Keys, ProgrammingError, UpgradePromptType } from "../../../../../platform-kit/app-env"
+import { ProgrammingError, UpgradePromptType } from "../../../../../platform-kit/app-env"
 import { AlarmInterval, parseAlarmInterval } from "../../../../common/calendar/date/CalendarUtils.js"
-import { client } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
-import { assertNotNull, newPromise, noOp, Thunk } from "../../../../../platform-kit/utils"
+import { ClientDetector } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { assertNotNull, convertTextToHtml, newPromise, noOp, Thunk } from "../../../../../platform-kit/utils"
 import type { HtmlEditor } from "../../../../../ui/editor/HtmlEditor.js"
 import { locator } from "../../../../common/api/main/CommonLocator.js"
 import { CalendarEventEditView, EditorPages } from "./CalendarEventEditView.js"
@@ -20,7 +20,6 @@ import { askIfShouldSendCalendarUpdatesToAttendees } from "../CalendarGuiUtils.j
 import { CalendarEventIdentity, CalendarEventModel, EventSaveResult } from "../eventeditor-model/CalendarEventModel.js"
 import { UpgradeRequiredError } from "../../../../common/api/main/UpgradeRequiredError.js"
 import { showPlanUpgradeRequiredDialog } from "../../../../common/misc/SubscriptionDialogs.js"
-import { convertTextToHtml } from "../../../../../ui/utils/Formatter.js"
 import { UserError } from "../../../../common/api/main/UserError.js"
 import { showUserError } from "../../../../common/misc/ErrorHandlerImpl.js"
 import { theme } from "../../../../../ui/theme.js"
@@ -28,6 +27,7 @@ import stream from "mithril/stream"
 import { getStartOfTheWeekOffsetForUser } from "../../../../common/misc/weekOffset"
 import { getTimeFormatForUser } from "../../../../common/api/common/utils/UserUtils"
 import { PosRect } from "../../../../../ui/utils/PosRect"
+import { Keys } from "../../../../../ui/utils/KeyboardKeys"
 
 const enum ConfirmationResult {
 	Cancel,
@@ -160,7 +160,7 @@ export class EventEditorDialog {
 				help: "save_action",
 			})
 
-		if (client.isMobileDevice()) {
+		if (ClientDetector.get().isMobileDevice()) {
 			// Prevent focusing text field automatically on mobile. It opens keyboard and you don't see all details.
 			dialog.setFocusOnLoadFunction(noOp)
 		}
@@ -246,8 +246,7 @@ export class EventEditorDialog {
 					resolve()
 				} catch (e) {
 					if (e instanceof UserError) {
-						// noinspection ES6MissingAwait
-						showUserError(e)
+						await showUserError(e)
 					} else if (e instanceof UpgradeRequiredError) {
 						await showPlanUpgradeRequiredDialog(UpgradePromptType.EDIT_CALENDAR_EVENT_REQUIRING_SUBSCRIPTION, e.plans)
 					} else {

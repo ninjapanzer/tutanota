@@ -32,7 +32,6 @@ import {
 import { lang } from "../../../src/ui/utils/LanguageViewModel.js"
 
 import { EndType, RepeatPeriod, ShareCapability } from "../../../src/platform-kit/app-env"
-import { timeStringFromParts } from "../../../src/ui/utils/Formatter.js"
 import { DateTime } from "luxon"
 import {
 	generateEventElementId,
@@ -41,7 +40,6 @@ import {
 	serializeAlarmInterval,
 } from "../../../src/applications/common/api/common/utils/CommonCalendarUtils.js"
 import { getStartOfDay, identity, lastThrow, neverNull } from "../../../src/platform-kit/utils"
-import { replace } from "testdouble"
 import { CalendarEventAlteredInstance, CalendarEventProgenitor } from "../../../src/applications/common/api/worker/facades/lazy/CalendarFacade.js"
 import { getDateInUTC, getDateInZone, makeEventWrapper, makeUserController } from "./CalendarTestUtils.js"
 import { ParserError } from "../../../src/applications/common/misc/parsing/ParserCombinator.js"
@@ -50,11 +48,9 @@ import { createTestEntity } from "../TestUtils.js"
 import { getCalendarMonth, getEventType } from "../../../src/applications/calendar-app/calendar/gui/CalendarGuiUtils.js"
 import { EventType } from "../../../src/applications/calendar-app/calendar/gui/eventeditor-model/CalendarEventModel.js"
 import { CalendarInfo } from "../../../src/applications/calendar-app/calendar/model/CalendarModel.js"
-import { Time } from "../../../src/applications/common/calendar/date/Time.js"
 import type { UserController } from "../../../src/applications/common/api/main/UserController.js"
 import { EventWrapper } from "../../../src/applications/calendar-app/calendar/view/CalendarViewModel"
 import {
-	AdvancedRepeatRule,
 	CalendarEvent,
 	CalendarEventAttendeeTypeRef,
 	CalendarEventTypeRef,
@@ -64,8 +60,8 @@ import {
 	EncryptedMailAddressTypeRef,
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
-import { DateWrapperTypeRef, GroupMembershipTypeRef, GroupTypeRef, RepeatRule, UserTypeRef } from "@tutao/entities/sys"
-import { clone, StrippedEntity } from "../../../src/platform-kit/meta"
+import { DateWrapperTypeRef, Group, GroupMembership, GroupMembershipTypeRef, GroupTypeRef, RepeatRule, User, UserTypeRef } from "@tutao/entities/sys"
+import { clone, elementIdToId, idToElementId } from "../../../src/platform-kit/meta"
 import { AccountType, GroupType, hasCapabilityOnGroup } from "../../../src/entities/sys/Utils"
 
 const zone = "Europe/Berlin"
@@ -259,6 +255,13 @@ o.spec("CalendarUtilsTest", function () {
 			const result = getStartOfDayWithZone(date, "America/New_York")
 			o(result.toISOString()).equals(expected)(`${result.toISOString()} vs ${expected}`)
 		})
+
+		o("given a midnight date, it produces a date at the start of the previous day according to the time zone", function () {
+			const date = new Date("2023-01-29T00:00:00.000Z")
+			const expected = "2023-01-28T05:00:00.000Z"
+			const result = getStartOfDayWithZone(date, "America/New_York")
+			o(result.toISOString()).equals(expected)(`${result.toISOString()} vs ${expected}`)
+		})
 	})
 
 	o.spec("getAllDayDateForTimezone", function () {
@@ -426,353 +429,6 @@ o.spec("CalendarUtilsTest", function () {
 			)
 		})
 	})
-	o.spec("Time Class", function () {
-		o.spec("parseTimeTo", function () {
-			function parseTimeString(timeString: string): { hours: number; minutes: number } {
-				return neverNull(Time.parseFromString(timeString)?.toObject() ?? null)
-			}
-
-			o("parses full 24H time", function () {
-				o(parseTimeString("12:45")).deepEquals({
-					hours: 12,
-					minutes: 45,
-				})
-				o(parseTimeString("1245")).deepEquals({
-					hours: 12,
-					minutes: 45,
-				})
-				o(parseTimeString("2359")).deepEquals({
-					hours: 23,
-					minutes: 59,
-				})
-				o(parseTimeString("0000")).deepEquals({
-					hours: 0,
-					minutes: 0,
-				})
-				o(parseTimeString("0623")).deepEquals({
-					hours: 6,
-					minutes: 23,
-				})
-				o(parseTimeString("08:09")).deepEquals({
-					hours: 8,
-					minutes: 9,
-				})
-			})
-			o("parses partial 24H time", function () {
-				o(parseTimeString("12")).deepEquals({
-					hours: 12,
-					minutes: 0,
-				})
-				o(parseTimeString("1:2")).deepEquals({
-					hours: 1,
-					minutes: 2,
-				})
-				o(parseTimeString("102")).deepEquals({
-					hours: 1,
-					minutes: 2,
-				})
-				o(parseTimeString("17")).deepEquals({
-					hours: 17,
-					minutes: 0,
-				})
-				o(parseTimeString("6")).deepEquals({
-					hours: 6,
-					minutes: 0,
-				})
-				o(parseTimeString("955")).deepEquals({
-					hours: 9,
-					minutes: 55,
-				})
-				o(parseTimeString("12:3")).deepEquals({
-					hours: 12,
-					minutes: 3,
-				})
-				o(parseTimeString("809")).deepEquals({
-					hours: 8,
-					minutes: 9,
-				})
-			})
-			o("not parses incorrect time", function () {
-				o(parseTimeString("12:3m")).equals(null)
-				o(parseTimeString("A:3")).equals(null)
-				o(parseTimeString("")).equals(null)
-				o(parseTimeString(":2")).equals(null)
-				o(parseTimeString("25:03")).equals(null)
-				o(parseTimeString("22:93")).equals(null)
-				o(parseTimeString("24")).equals(null)
-				o(parseTimeString("13pm")).equals(null)
-				o(parseTimeString("263PM")).equals(null)
-				o(parseTimeString("1403PM")).equals(null)
-				o(parseTimeString("14:03:33PM")).equals(null)
-				o(parseTimeString("9:37 acme")).equals(null)
-			})
-			o("parses AM/PM time", function () {
-				o(parseTimeString("7PM")).deepEquals({
-					hours: 19,
-					minutes: 0,
-				})
-				o(parseTimeString("11PM")).deepEquals({
-					hours: 23,
-					minutes: 0,
-				})
-				o(parseTimeString("12PM")).deepEquals({
-					hours: 12,
-					minutes: 0,
-				})
-				o(parseTimeString("11:30PM")).deepEquals({
-					hours: 23,
-					minutes: 30,
-				})
-				o(parseTimeString("12AM")).deepEquals({
-					hours: 0,
-					minutes: 0,
-				})
-				o(parseTimeString("12:30AM")).deepEquals({
-					hours: 0,
-					minutes: 30,
-				})
-				o(parseTimeString("3:30AM")).deepEquals({
-					hours: 3,
-					minutes: 30,
-				})
-				o(parseTimeString("3:30PM")).deepEquals({
-					hours: 15,
-					minutes: 30,
-				})
-				o(parseTimeString("9:37am")).deepEquals({
-					hours: 9,
-					minutes: 37,
-				})
-				o(parseTimeString("1:59pm")).deepEquals({
-					hours: 13,
-					minutes: 59,
-				})
-				o(parseTimeString("3:30 AM")).deepEquals({
-					hours: 3,
-					minutes: 30,
-				})
-				o(parseTimeString("3:30 PM")).deepEquals({
-					hours: 15,
-					minutes: 30,
-				})
-				o(parseTimeString("9:37 am")).deepEquals({
-					hours: 9,
-					minutes: 37,
-				})
-				o(parseTimeString("1:59 pm")).deepEquals({
-					hours: 13,
-					minutes: 59,
-				})
-				o(parseTimeString("9:37 a.m.")).deepEquals({
-					hours: 9,
-					minutes: 37,
-				})
-				o(parseTimeString("1:59 p.m.")).deepEquals({
-					hours: 13,
-					minutes: 59,
-				})
-				o(parseTimeString("1052 P.M.")).deepEquals({
-					hours: 22,
-					minutes: 52,
-				})
-				o(parseTimeString("1052 A.M.")).deepEquals({
-					hours: 10,
-					minutes: 52,
-				})
-				o(parseTimeString("948 P.M.")).deepEquals({
-					hours: 21,
-					minutes: 48,
-				})
-				o(parseTimeString("948 A.M.")).deepEquals({
-					hours: 9,
-					minutes: 48,
-				})
-			})
-		})
-		o.spec("timeStringFromParts", function () {
-			o("works", function () {
-				o(timeStringFromParts(0, 0, true)).equals("12:00 am")
-				o(timeStringFromParts(12, 0, true)).equals("12:00 pm")
-				o(timeStringFromParts(10, 55, true)).equals("10:55 am")
-				o(timeStringFromParts(10, 55, false)).equals("10:55")
-				o(timeStringFromParts(22, 55, true)).equals("10:55 pm")
-				o(timeStringFromParts(22, 55, false)).equals("22:55")
-			})
-		})
-		o.spec("timeDiff", function () {
-			o("A minor than B, with 15 min diff", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(8, 50)
-				o(timeA.diff(timeB)).equals(15)
-			})
-			o("A greater than B", function () {
-				const timeA = new Time(8, 50)
-				const timeB = new Time(8, 35)
-				o(timeA.diff(timeB)).equals(1425)
-			})
-			o("A minor than B, with one hour diff", function () {
-				const timeA = new Time(8, 0)
-				const timeB = new Time(9, 0)
-				o(timeA.diff(timeB)).equals(60)
-			})
-			o("diff with midnight", function () {
-				const timeA = new Time(23, 0)
-				const timeB = new Time(0, 0)
-				o(timeA.diff(timeB)).equals(60)
-			})
-			o("diff between two days - over midnight", function () {
-				const timeA = new Time(23, 0)
-				const timeB = new Time(1, 0)
-				o(timeA.diff(timeB)).equals(120)
-			})
-		})
-		o.spec("timeAdd", function () {
-			o("add 15 minutes", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(8, 50)
-				o(timeA.add({ minutes: 15 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("add 1 hours", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(9, 35)
-				o(timeA.add({ hours: 1 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("add 1 hour and 15 minutes", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(9, 50)
-				o(timeA.add({ hours: 1, minutes: 15 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("add 600 minutes overflowing to 'next day'", function () {
-				const timeA = new Time(14, 0)
-				const timeB = new Time(0, 0)
-				o(timeA.add({ minutes: 600 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("add 10 hours overflowing to 'next day'", function () {
-				const timeA = new Time(14, 0)
-				const timeB = new Time(0, 0)
-				o(timeA.add({ hours: 10 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("add 70 minutes and 11 hours overflowing to 'next day'", function () {
-				const timeA = new Time(14, 0)
-				const timeB = new Time(2, 10)
-				o(timeA.add({ hours: 11, minutes: 70 }).toObject()).deepEquals(timeB.toObject())
-			})
-		})
-		o.spec("timeSub", function () {
-			o("sub 15 minutes", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(8, 20)
-				o(timeA.sub({ minutes: 15 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 30 minutes from minute 0", function () {
-				const timeA = new Time(8, 0)
-				const timeB = new Time(7, 30)
-				o(timeA.sub({ minutes: 30 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 1 hours", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(7, 35)
-				o(timeA.sub({ hours: 1 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 1 hour and 15 minutes", function () {
-				const timeA = new Time(8, 35)
-				const timeB = new Time(7, 20)
-				o(timeA.sub({ hours: 1, minutes: 15 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 90 minutes", function () {
-				const timeA = new Time(8, 30)
-				const timeB = new Time(7, 0)
-				o(timeA.sub({ hours: 0, minutes: 90 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 600 minutes overflowing to 'previous day'", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(23, 0)
-				o(timeA.sub({ minutes: 600 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 10 hours overflowing to 'previous day'", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(23, 0)
-				o(timeA.sub({ hours: 10 }).toObject()).deepEquals(timeB.toObject())
-			})
-			o("sub 70 minutes and 11 hours overflowing to 'previous day'", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(20, 50)
-				o(timeA.sub({ hours: 11, minutes: 70 }).toObject()).deepEquals(timeB.toObject())
-			})
-		})
-		o.spec("compareTimes", function () {
-			o("A is before B (isBefore)", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(23, 0)
-				o(timeA.isBefore(timeB)).equals(true)
-			})
-			o("A is after B (isBefore)", function () {
-				const timeA = new Time(23, 0)
-				const timeB = new Time(9, 0)
-				o(timeA.isBefore(timeB)).equals(false)
-			})
-			o("A is before B (isAfter)", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(23, 0)
-				o(timeA.isAfter(timeB)).equals(false)
-			})
-			o("A is after B (isAfter)", function () {
-				const timeA = new Time(23, 0)
-				const timeB = new Time(9, 0)
-				o(timeA.isAfter(timeB)).equals(true)
-			})
-			o("A is equal B", function () {
-				const timeA = new Time(9, 0)
-				const timeB = new Time(9, 0)
-				o(timeA.isAfter(timeB)).equals(false)
-				o(timeA.isBefore(timeB)).equals(false)
-			})
-		})
-		o.spec("fromMinutes", function () {
-			o.test("negative minutes", function () {
-				const time = Time.fromMinutes(-65)
-
-				o.check(time.hour).equals(1)
-				o.check(time.minute).equals(5)
-			})
-
-			o.test("positive minutes", function () {
-				const time = Time.fromMinutes(65)
-
-				o.check(time.hour).equals(1)
-				o.check(time.minute).equals(5)
-			})
-
-			o.test("zero minutes", function () {
-				const time = Time.fromMinutes(0)
-
-				o.check(time.hour).equals(0)
-				o.check(time.minute).equals(0)
-			})
-		})
-
-		o.spec("toString", function () {
-			const time = new Time(15, 25)
-
-			o.test("24hrs", function () {
-				const timeAsStr = time.toString()
-
-				o.check(timeAsStr).equals("15:25")
-			})
-
-			o.test("amPm", function () {
-				const timeAsStr = time.toString({ withAmPmSuffix: true })
-
-				o.check(timeAsStr).equals("3:25 pm")
-			})
-
-			o.test("amPm without suffix", function () {
-				const timeAsStr = time.toString({ withAmPmSuffix: false })
-
-				o.check(timeAsStr).equals("3:25")
-			})
-		})
-	})
 	o.spec("getStartOfWeek", function () {
 		o("works", function () {
 			o(getStartOfWeek(new Date(2019, 6, 7), 0).toISOString()).equals(new Date(2019, 6, 7).toISOString())
@@ -789,30 +445,29 @@ o.spec("CalendarUtilsTest", function () {
 		})
 	})
 	o.spec("capability", function () {
-		let user
-		let ownerUser
-		let group
-		let groupMembership
-		let groupOwnerMembership
+		let user: User
+		let ownerUser: User
+		let group: Group
+		let groupMembership: GroupMembership
+		let groupOwnerMembership: GroupMembership
 		o.before(function () {
-			// @ts-ignore
 			group = createTestEntity(GroupTypeRef, {
-				_id: "g1",
+				_id: idToElementId("g1"),
 				type: GroupType.Calendar,
 				user: "groupOwner",
 			})
 			groupMembership = createTestEntity(GroupMembershipTypeRef, {
-				group: group._id,
+				group: elementIdToId(group._id),
 			})
 			groupOwnerMembership = createTestEntity(GroupMembershipTypeRef, {
-				group: group._id,
+				group: elementIdToId(group._id),
 			})
 			ownerUser = createTestEntity(UserTypeRef, {
-				_id: "groupOwner",
+				_id: idToElementId("groupOwner"),
 				memberships: [groupOwnerMembership],
 			})
 			user = createTestEntity(UserTypeRef, {
-				_id: "groupMember",
+				_id: idToElementId("groupMember"),
 				memberships: [groupMembership],
 			})
 		})
@@ -1011,11 +666,11 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "TU",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 						createAdvancedRepeatRule({
 							interval: "MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -1114,11 +769,11 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "TU",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 						createAdvancedRepeatRule({
 							interval: "MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -1217,7 +872,7 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "1MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -1413,7 +1068,7 @@ o.spec("CalendarUtilsTest", function () {
 						endTime: new Date("1990"),
 					}),
 				),
-			).equals(CalendarEventValidity.InvalidContainsInvalidDate)
+			).equals(CalendarEventValidity.InvalidDate)
 			o(
 				checkEventValidity(
 					createTestEntity(CalendarEventTypeRef, {
@@ -1421,7 +1076,7 @@ o.spec("CalendarUtilsTest", function () {
 						endTime: new Date("nan"),
 					}),
 				),
-			).equals(CalendarEventValidity.InvalidContainsInvalidDate)
+			).equals(CalendarEventValidity.InvalidDate)
 			o(
 				checkEventValidity(
 					createTestEntity(CalendarEventTypeRef, {
@@ -1429,7 +1084,7 @@ o.spec("CalendarUtilsTest", function () {
 						endTime: new Date("nan"),
 					}),
 				),
-			).equals(CalendarEventValidity.InvalidContainsInvalidDate)
+			).equals(CalendarEventValidity.InvalidDate)
 		})
 		o("events with start date not before end date are detected", function () {
 			o(
@@ -1473,7 +1128,7 @@ o.spec("CalendarUtilsTest", function () {
 						endTime: new Date("1966"),
 					}),
 				),
-			).equals(CalendarEventValidity.InvalidEndBeforeStart)
+			).equals(CalendarEventValidity.InvalidPre1970)
 		})
 		o("valid events are detected", function () {
 			o(
@@ -2433,7 +2088,7 @@ o.spec("CalendarUtilsTest", function () {
 	o.spec("getEventType", function () {
 		let userController: UserController
 		o.beforeEach(() => {
-			const user = createTestEntity(UserTypeRef, { _id: "user-id" })
+			const user = createTestEntity(UserTypeRef, { _id: idToElementId("user-id") })
 			const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 			userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		})
@@ -2441,7 +2096,7 @@ o.spec("CalendarUtilsTest", function () {
 			const event = {}
 			const calendars: Map<string, CalendarInfo> = new Map()
 			const ownMailAddresses = []
-			replace(userController.user, "accountType", AccountType.EXTERNAL)
+			userController.user.accountType = AccountType.EXTERNAL
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.EXTERNAL)
 		})
 
@@ -2488,19 +2143,19 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: true,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "otherUser",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
-			replace(userController.user, "_id", ["userList", "userId"])
-			replace(userController.user, "memberships", [
+			userController.user._id = idToElementId("userId")
+			userController.user.memberships = [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
 					capability: ShareCapability.Write,
 				}),
-			])
+			]
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.SHARED_RW)
 		})
 
@@ -2518,20 +2173,21 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: true,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "otherUser",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
 
-			replace(userController.user, "_id", ["userList", "userId"])
-			replace(userController.user, "memberships", [
+			userController.user._id = idToElementId("userId")
+			userController.user.memberships = [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
 					capability: ShareCapability.Write,
 				}),
-			])
+			]
+
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.LOCKED)
 		})
 
@@ -2549,13 +2205,13 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: false,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "userId",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
-			replace(userController.user, "_id", ["userList", "userId"])
+			userController.user._id = idToElementId("userId")
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.OWN)
 		})
 	})
@@ -2577,14 +2233,14 @@ o.spec("CalendarUtilsTest", function () {
 		calendars.set("ownergroup", {
 			hasMultipleMembers: true,
 			group: createTestEntity(GroupTypeRef, {
-				_id: "calendarGroup",
+				_id: idToElementId("calendarGroup"),
 				type: GroupType.Calendar,
 				user: "otherUser",
 			}),
 		})
 		const ownMailAddresses = ["my@address.to"]
 		const user = createTestEntity(UserTypeRef, {
-			_id: "user-id",
+			_id: idToElementId("user-id"),
 			memberships: [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
@@ -2592,7 +2248,7 @@ o.spec("CalendarUtilsTest", function () {
 				}),
 			],
 		})
-		replace(user, "_id", ["userList", "userId"])
+		user._id = idToElementId("userId")
 		const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 		const userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.SHARED_RO)
@@ -2615,16 +2271,16 @@ o.spec("CalendarUtilsTest", function () {
 		calendars.set("ownergroup", {
 			hasMultipleMembers: false,
 			group: createTestEntity(GroupTypeRef, {
-				_id: "calendarGroup",
+				_id: idToElementId("calendarGroup"),
 				type: GroupType.Calendar,
 				user: "userId",
 			}),
 		})
 		const ownMailAddresses = ["my@address.to"]
 		const user = createTestEntity(UserTypeRef, {
-			_id: "user-id",
+			_id: idToElementId("user-id"),
 		})
-		replace(user, "_id", ["userList", "userId"])
+		user._id = idToElementId("userId")
 		const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 		const userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.INVITE)

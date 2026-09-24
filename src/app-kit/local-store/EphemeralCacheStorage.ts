@@ -1,28 +1,45 @@
 import {
-	AttributeModel,
 	BlobElementEntity,
-	clone,
+	CUSTOM_MIN_ID,
+	elementIdPart,
+	elementIdToId,
 	Entity,
+	EntityTypeEnum,
 	expandId,
 	firstBiggerThanSecondBase64Ext,
+	GENERATED_MIN_ID,
 	getTypeString,
-	hasError,
+	idToElementId,
+	isCustomIdType,
 	ListElementEntity,
+	listIdPart,
 	localToServerIdEncoding,
 	parseTypeString,
-	ServerModelParsedInstance,
+	PersistentEntity,
 	serverToLocalIdEncoding,
-	SomeEntity,
-	Type as TypeId,
 	TypeModel,
 	TypeRef,
 } from "../../platform-kit/meta"
-import { assertNotNull, filterNull, getFromMap, Nullable, remove } from "../../platform-kit/utils"
+import { assertNotNull, filterNull, getFromMap, isEmpty, Nullable, remove } from "@tutao/utils"
 import { CustomCacheHandlerMap } from "./CustomCacheHandler.js"
-import { ProgrammingError } from "../../platform-kit/app-env"
-import { ModelMapper, ServerTypeModelResolver } from "../../platform-kit/instance-pipeline"
+import { ProgrammingError } from "@tutao/app-env"
+import { DecryptedParsedInstance, ModelMapper, ServerTypeModelResolver } from "../../platform-kit/instance-pipeline"
 import { CacheStorage, LastUpdateTime } from "./CacheStorage"
-import { EphemeralStorageInitArgs } from "./Types"
+
+import { EphemeralStorageArgs } from "../../platform-kit/base/facades/CacheStorageLateInitializer"
+import { CacheSyncStatus } from "../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+
+type MaxCacheElementsConfig = {
+	maxElementEntities: number
+	maxListElementEntitiesPerList: number
+	maxBlobElementEntitiesPerList: number
+}
+
+const DEFAULT_CACHE_MAX_ELEMENTS: MaxCacheElementsConfig = {
+	maxElementEntities: 25_000,
+	maxListElementEntitiesPerList: 25_000,
+	maxBlobElementEntitiesPerList: 25_000,
+}
 
 /** Cache for a single list. */
 type ListCache = {
@@ -31,7 +48,7 @@ type ListCache = {
 	lowerRangeId: Id
 	upperRangeId: Id
 	/** All the entities loaded, inside or outside the range (e.g. load for a single entity). */
-	elements: Map<Id, ServerModelParsedInstance>
+	elements: Map<Id, DecryptedParsedInstance>
 }
 
 /** Map from list id to list cache. */
@@ -39,7 +56,7 @@ type ListTypeCache = Map<Id, ListCache>
 
 type BlobElementCache = {
 	/** All the entities loaded, inside or outside the range (e.g. load for a single entity). */
-	elements: Map<Id, ServerModelParsedInstance>
+	elements: Map<Id, DecryptedParsedInstance>
 }
 
 /** Map from list id to list cache. */
@@ -47,30 +64,32 @@ type BlobElementTypeCache = Map<Id, BlobElementCache>
 
 export class EphemeralCacheStorage implements CacheStorage {
 	/** Path to id to entity map. */
-	private readonly entities: Map<string, Map<Id, ServerModelParsedInstance>> = new Map()
-	private readonly lists: Map<string, ListTypeCache> = new Map()
+	private readonly elementEntities: Map<string, Map<Id, DecryptedParsedInstance>> = new Map()
+	private readonly listElementEntities: Map<string, ListTypeCache> = new Map()
 	private readonly blobEntities: Map<string, BlobElementTypeCache> = new Map()
 	private lastUpdateTime: number | null = null
 	private userId: Id | null = null
 	private lastBatchIdPerGroup = new Map<Id, Id>()
+
 	constructor(
 		private readonly modelMapper: ModelMapper,
 		private readonly typeModelResolver: ServerTypeModelResolver,
 		private readonly customCacheHandlerMap: CustomCacheHandlerMap,
+		private readonly maxElementsConfig: MaxCacheElementsConfig = DEFAULT_CACHE_MAX_ELEMENTS,
 	) {}
 
 	isInitialized(): boolean {
 		return this.userId != null
 	}
 
-	init({ userId }: EphemeralStorageInitArgs) {
+	init({ userId }: EphemeralStorageArgs) {
 		this.userId = userId
 	}
 
 	async deinit(): Promise<void> {
 		this.userId = null
-		this.entities.clear()
-		this.lists.clear()
+		this.elementEntities.clear()
+		this.listElementEntities.clear()
 		this.blobEntities.clear()
 		this.lastUpdateTime = null
 		this.lastBatchIdPerGroup.clear()
@@ -79,34 +98,35 @@ export class EphemeralCacheStorage implements CacheStorage {
 	/**
 	 * Get a given entity from the cache, expects that you have already checked for existence
 	 */
-	async getParsed(typeRef: TypeRef<unknown>, listId: Id | null, id: Id): Promise<ServerModelParsedInstance | null> {
+	async getParsed(typeRef: TypeRef<Entity>, listId: Id | null, id: Id): Promise<DecryptedParsedInstance | null> {
 		// We downcast because we can't prove that map has correct entity on the type level
 		const type = getTypeString(typeRef)
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		id = serverToLocalIdEncoding(typeModel, id)
 		switch (typeModel.type) {
-			case TypeId.Element:
-				return clone(this.entities.get(type)?.get(id) ?? null)
-			case TypeId.ListElement:
-				return clone(this.lists.get(type)?.get(assertNotNull(listId))?.elements.get(id) ?? null)
-			case TypeId.BlobElement:
-				return clone(this.blobEntities.get(type)?.get(assertNotNull(listId))?.elements.get(id) ?? null)
-			default:
+			case EntityTypeEnum.Element:
+				return this.elementEntities.get(type)?.get(id)?.clone() ?? null
+			case EntityTypeEnum.ListElement:
+				return this.listElementEntities.get(type)?.get(assertNotNull(listId))?.elements.get(id)?.clone() ?? null
+			case EntityTypeEnum.BlobElement:
+				return this.blobEntities.get(type)?.get(assertNotNull(listId))?.elements.get(id)?.clone() ?? null
+			case EntityTypeEnum.DataTransfer:
+			case EntityTypeEnum.Aggregated:
 				throw new ProgrammingError("must be a persistent type")
 		}
 	}
 
 	async provideFromRangeParsed(
-		typeRef: TypeRef<unknown>,
+		typeRef: TypeRef<Entity>,
 		listId: string,
 		startElementId: string,
 		count: number,
 		reverse: boolean,
-	): Promise<ServerModelParsedInstance[]> {
+	): Promise<DecryptedParsedInstance[]> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		startElementId = serverToLocalIdEncoding(typeModel, startElementId)
 
-		const listCache = this.lists.get(getTypeString(typeRef))?.get(listId)
+		const listCache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 
 		if (listCache == null) {
 			return []
@@ -136,18 +156,18 @@ export class EphemeralCacheStorage implements CacheStorage {
 			const i = range.findIndex((id) => firstBiggerThanSecondBase64Ext(id, startElementId))
 			ids = range.slice(i, i + count)
 		}
-		let result: ServerModelParsedInstance[] = []
+		let result = new Array<DecryptedParsedInstance>()
 		for (let a = 0; a < ids.length; a++) {
 			const cachedInstance = listCache.elements.get(ids[a])
 			if (cachedInstance != null) {
-				const clonedInstance = clone(cachedInstance)
+				const clonedInstance = cachedInstance.clone()
 				result.push(clonedInstance)
 			}
 		}
 		return result
 	}
 
-	async provideMultipleParsed(typeRef: TypeRef<unknown>, listId: Nullable<string>, elementIds: string[]): Promise<ServerModelParsedInstance[]> {
+	async provideMultipleParsed(typeRef: TypeRef<Entity>, listId: Nullable<string>, elementIds: string[]): Promise<Array<DecryptedParsedInstance>> {
 		const result = await Promise.all(
 			elementIds.map((elementId) => {
 				return this.getParsed(typeRef, listId, elementId)
@@ -156,50 +176,46 @@ export class EphemeralCacheStorage implements CacheStorage {
 		return filterNull(result)
 	}
 
-	async getWholeListParsed(typeRef: TypeRef<unknown>, listId: string): Promise<ServerModelParsedInstance[]> {
-		const listCache = this.lists.get(getTypeString(typeRef))?.get(listId)
+	async getWholeListParsed(typeRef: TypeRef<Entity>, listId: string): Promise<Array<DecryptedParsedInstance>> {
+		const listCache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 
 		if (listCache == null) {
 			return []
 		}
 
-		return listCache.allRange.map((id) => clone(listCache.elements.get(id)!))
+		return listCache.allRange.map((id) => listCache.elements.get(id)!.clone())
 	}
 
-	async get<T extends Entity>(typeRef: TypeRef<T>, listId: string | null, id: string): Promise<T | null> {
+	async get<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: string | null, id: string): Promise<T | null> {
 		const parsedInstance = await this.getParsed(typeRef, listId, id)
 		if (parsedInstance == null) {
 			return null
 		}
-		return await this.modelMapper.mapToInstance<T>(typeRef, parsedInstance)
+		return await this.modelMapper.mapToInstance<T>(parsedInstance)
 	}
 
-	async deleteIfExists<T extends SomeEntity>(
-		typeRef: TypeRef<T>,
-		listId: T extends ListElementEntity | BlobElementEntity ? Id : null,
-		elementId: Id,
-	): Promise<void> {
+	async deleteIfExists<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id | null, elementId: Id): Promise<void> {
 		const type = getTypeString(typeRef)
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		elementId = serverToLocalIdEncoding(typeModel, elementId)
 
 		const handler = this.customCacheHandlerMap.get(typeRef)
-		const id: T["_id"] = listId == null ? elementId : [listId, elementId]
+		const id: T["_id"] = [listId, elementId]
 		await handler?.onBeforeCacheDeletion?.(id)
 
 		switch (typeModel.type) {
-			case TypeId.Element:
-				this.entities.get(type)?.delete(elementId)
+			case EntityTypeEnum.Element:
+				this.elementEntities.get(type)?.delete(elementId)
 				break
-			case TypeId.ListElement: {
-				const cache = this.lists.get(type)?.get(assertNotNull(listId) as Id)
+			case EntityTypeEnum.ListElement: {
+				const cache = this.listElementEntities.get(type)?.get(assertNotNull(listId) as Id)
 				if (cache != null) {
 					cache.elements.delete(elementId)
 					remove(cache.allRange, elementId)
 				}
 				break
 			}
-			case TypeId.BlobElement:
+			case EntityTypeEnum.BlobElement:
 				this.blobEntities
 					.get(type)
 					?.get(assertNotNull(listId) as Id)
@@ -210,32 +226,76 @@ export class EphemeralCacheStorage implements CacheStorage {
 		}
 	}
 
+	async deleteMultiple<T extends PersistentEntity>(typeRef: TypeRef<T>, ids: T["_id"][]) {
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
+		switch (typeModel.type) {
+			case EntityTypeEnum.Element: {
+				for (const id of ids) {
+					await this.deleteIfExists(typeRef, null, elementIdToId(id))
+				}
+				break
+			}
+			case EntityTypeEnum.BlobElement:
+			case EntityTypeEnum.ListElement: {
+				for (const id of ids as IdTuple[]) {
+					await this.deleteIfExists(typeRef, listIdPart(id), elementIdPart(id))
+				}
+				break
+			}
+			default: {
+				throw new ProgrammingError("must be a persistent type")
+			}
+		}
+	}
+
 	async deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void> {
 		const typeId = getTypeString(typeRef)
-		const cache = this.lists.get(typeId)
+		const cache = this.listElementEntities.get(typeId)
 		if (cache) {
 			cache.delete(listId)
 		}
 	}
 
-	private putElementEntity(typeRef: TypeRef<unknown>, id: Id, entity: ServerModelParsedInstance) {
-		getFromMap(this.entities, getTypeString(typeRef), () => new Map()).set(id, entity)
+	async deleteAllRanges(): Promise<void> {
+		Array.from(this.listElementEntities.entries()).map(async ([typeIdentifier, cache]) => {
+			const typeModel = await this.typeModelResolver.resolveServerTypeReference(parseTypeString(typeIdentifier))
+			Array.from(cache.values()).map((listCache) => {
+				listCache.allRange = []
+				listCache.lowerRangeId = isCustomIdType(typeModel) ? CUSTOM_MIN_ID : GENERATED_MIN_ID
+				listCache.upperRangeId = isCustomIdType(typeModel) ? CUSTOM_MIN_ID : GENERATED_MIN_ID
+			})
+		})
 	}
 
-	async isElementIdInCacheRange(typeRef: TypeRef<unknown>, listId: Id, elementId: Id): Promise<boolean> {
+	async setCacheSyncStatus(cacheSyncStatus: CacheSyncStatus): Promise<void> {
+		// no-op
+	}
+
+	private putElementEntity(typeRef: TypeRef<PersistentEntity>, id: Id, entity: DecryptedParsedInstance) {
+		const typeString = getTypeString(typeRef)
+		const elementEntitiesForType = getFromMap(this.elementEntities, typeString, () => new Map())
+		if (elementEntitiesForType.size > this.maxElementsConfig.maxElementEntities) {
+			// clear the list if it gets too big
+			console.log(`clearing ephemeralCacheStorage for element type ${typeString}`)
+			this.elementEntities.delete(typeString)
+		}
+		elementEntitiesForType.set(id, entity)
+	}
+
+	async isElementIdInCacheRange(typeRef: TypeRef<PersistentEntity>, listId: Id, elementId: Id): Promise<boolean> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		elementId = serverToLocalIdEncoding(typeModel, elementId)
 
-		const cache = this.lists.get(getTypeString(typeRef))?.get(listId)
+		const cache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 		return cache != null && !firstBiggerThanSecondBase64Ext(elementId, cache.upperRangeId) && !firstBiggerThanSecondBase64Ext(cache.lowerRangeId, elementId)
 	}
 
-	async put(typeRef: TypeRef<unknown>, instance: ServerModelParsedInstance): Promise<void> {
-		const instanceClone = clone(instance)
+	async put(typeRef: TypeRef<PersistentEntity>, instance: DecryptedParsedInstance): Promise<void> {
+		const instanceClone = instance.clone()
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
-		const instanceId = AttributeModel.getAttribute<IdTuple | Id>(instanceClone, "_id", typeModel)
+		const instanceId = instanceClone.getAttributeByName("_id").asAnyEntityId()
 		let { listId, elementId } = expandId(instanceId)
-		if (hasError(instance)) {
+		if (instance.hasError()) {
 			console.warn(
 				`Trying to put parsed instance with _errors to ephemeral cache. Type: ${typeModel.app}/${typeModel.name}, Id: ["${listId}", "${elementId}"]`,
 			)
@@ -243,25 +303,25 @@ export class EphemeralCacheStorage implements CacheStorage {
 		}
 		elementId = serverToLocalIdEncoding(typeModel, elementId)
 
-		const handler = this.customCacheHandlerMap.get(typeRef as TypeRef<SomeEntity>)
+		const handler = this.customCacheHandlerMap.get(typeRef as TypeRef<PersistentEntity>)
 		if (handler?.onBeforeCacheUpdate) {
-			const typedInstance = await this.modelMapper.mapToInstance(typeRef, instance)
-			await handler.onBeforeCacheUpdate(typedInstance as SomeEntity)
+			const typedInstance = await this.modelMapper.mapToInstance<PersistentEntity>(instance)
+			await handler.onBeforeCacheUpdate(typedInstance)
 		}
 
 		switch (typeModel.type) {
-			case TypeId.Element: {
+			case EntityTypeEnum.Element: {
 				this.putElementEntity(typeRef, elementId, instanceClone)
 				break
 			}
-			case TypeId.ListElement: {
+			case EntityTypeEnum.ListElement: {
 				listId = listId as Id
 				await this.putListElement(typeRef, listId, elementId, instanceClone)
 				break
 			}
-			case TypeId.BlobElement: {
+			case EntityTypeEnum.BlobElement: {
 				listId = listId as Id
-				await this.putBlobElement(typeRef, listId, elementId, instanceClone)
+				await this.putBlobElement(typeRef as TypeRef<BlobElementEntity>, listId, elementId, instanceClone)
 				break
 			}
 			default:
@@ -269,30 +329,40 @@ export class EphemeralCacheStorage implements CacheStorage {
 		}
 	}
 
-	async putMultiple(typeRef: TypeRef<unknown>, instances: ServerModelParsedInstance[]): Promise<void> {
+	async putMultiple(typeRef: TypeRef<PersistentEntity>, instances: DecryptedParsedInstance[]): Promise<void> {
 		for (const instance of instances) {
 			await this.put(typeRef, instance)
 		}
 	}
 
-	private async putBlobElement(typeRef: TypeRef<unknown>, listId: Id, elementId: Id, entity: ServerModelParsedInstance) {
-		const cache = this.blobEntities.get(getTypeString(typeRef))?.get(listId)
+	private async putBlobElement(typeRef: TypeRef<BlobElementEntity>, listId: Id, elementId: Id, entity: DecryptedParsedInstance) {
+		const typeString = getTypeString(typeRef)
+		const cache = this.blobEntities.get(typeString)?.get(listId)
 		if (cache == null) {
 			// first element in this list
 			const newCache = {
 				elements: new Map([[elementId, entity]]),
 			}
-			getFromMap(this.blobEntities, getTypeString(typeRef), () => new Map()).set(listId, newCache)
+			getFromMap(this.blobEntities, typeString, () => new Map()).set(listId, newCache)
 		} else {
-			// if the element already exists in the cache, overwrite it
-			cache.elements.set(elementId, entity)
+			if (cache.elements.size > this.maxElementsConfig.maxBlobElementEntitiesPerList) {
+				// clear the list if it gets too big
+				console.log(`clearing ephemeralCacheStorage for blob element type ${typeString} and listId ${listId}`)
+				const newCache = {
+					elements: new Map([[elementId, entity]]),
+				}
+				getFromMap(this.blobEntities, typeString, () => new Map()).set(listId, newCache)
+			} else {
+				// if the element already exists in the cache, overwrite it
+				cache.elements.set(elementId, entity)
+			}
 		}
 	}
 
 	/** @pre: elementId is converted to base64ext if necessary */
-	private async putListElement(typeRef: TypeRef<unknown>, listId: Id, elementId: Id, entity: ServerModelParsedInstance) {
-		const typeId = getTypeString(typeRef)
-		const cache = this.lists.get(typeId)?.get(listId)
+	private async putListElement(typeRef: TypeRef<Entity>, listId: Id, elementId: Id, entity: DecryptedParsedInstance) {
+		const typeString = getTypeString(typeRef)
+		const cache = this.listElementEntities.get(typeString)?.get(listId)
 		if (cache == null) {
 			// first element in this list
 			const newCache = {
@@ -301,14 +371,26 @@ export class EphemeralCacheStorage implements CacheStorage {
 				upperRangeId: elementId,
 				elements: new Map([[elementId, entity]]),
 			}
-			getFromMap(this.lists, typeId, () => new Map()).set(listId, newCache)
+			getFromMap(this.listElementEntities, typeString, () => new Map()).set(listId, newCache)
 		} else {
-			// if the element already exists in the cache, overwrite it
-			// add new element to existing list if necessary
-			cache.elements.set(elementId, entity)
-			// always put the item into allRange(backing array only used by ephemeralCache), even if it has not updated
-			// the range yet. It is a better option to have the item and range not updated yet than the opposite
-			this.insertIntoAllRange(cache.allRange, elementId)
+			if (cache.elements.size > this.maxElementsConfig.maxListElementEntitiesPerList) {
+				// clear the list if it gets too big
+				console.log(`clearing ephemeralCacheStorage for list element type ${typeString} and listId ${listId}`)
+				const newCache = {
+					allRange: [elementId],
+					lowerRangeId: elementId,
+					upperRangeId: elementId,
+					elements: new Map([[elementId, entity]]),
+				}
+				getFromMap(this.listElementEntities, typeString, () => new Map()).set(listId, newCache)
+			} else {
+				// if the element already exists in the cache, overwrite it
+				// add new element to existing list if necessary
+				cache.elements.set(elementId, entity)
+				// always put the item into allRange(backing array only used by ephemeralCache), even if it has not updated
+				// the range yet. It is a better option to have the item and range not updated yet than the opposite
+				this.insertIntoAllRange(cache.allRange, elementId)
+			}
 		}
 	}
 
@@ -329,12 +411,12 @@ export class EphemeralCacheStorage implements CacheStorage {
 
 	async provideFromRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, startElementId: Id, count: number, reverse: boolean): Promise<T[]> {
 		const parsedInstances = await this.provideFromRangeParsed(typeRef, listId, startElementId, count, reverse)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	async provideMultiple<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Nullable<Id>, elementIds: Id[]): Promise<Array<T>> {
 		const parsedInstances = await this.provideMultipleParsed(typeRef, listId, elementIds)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	async getRangeForList<T extends ListElementEntity>(
@@ -344,9 +426,9 @@ export class EphemeralCacheStorage implements CacheStorage {
 		lower: Id
 		upper: Id
 	} | null> {
-		const listCache = this.lists.get(getTypeString(typeRef))?.get(listId)
+		const listCache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 
-		if (listCache == null) {
+		if (listCache == null || (isEmpty(listCache.allRange) && listCache.lowerRangeId === listCache.upperRangeId)) {
 			return null
 		}
 
@@ -360,9 +442,9 @@ export class EphemeralCacheStorage implements CacheStorage {
 	async setUpperRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, upperId: Id): Promise<void> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		upperId = serverToLocalIdEncoding(typeModel, upperId)
-		const listCache = this.lists.get(getTypeString(typeRef))?.get(listId)
+		const listCache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 		if (listCache == null) {
-			throw new Error("list does not exist")
+			return
 		}
 		listCache.upperRangeId = upperId
 	}
@@ -370,9 +452,9 @@ export class EphemeralCacheStorage implements CacheStorage {
 	async setLowerRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, lowerId: Id): Promise<void> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		lowerId = serverToLocalIdEncoding(typeModel, lowerId)
-		const listCache = this.lists.get(getTypeString(typeRef))?.get(listId)
+		const listCache = this.listElementEntities.get(getTypeString(typeRef))?.get(listId)
 		if (listCache == null) {
-			throw new Error("list does not exist")
+			return
 		}
 		listCache.lowerRangeId = lowerId
 	}
@@ -390,9 +472,9 @@ export class EphemeralCacheStorage implements CacheStorage {
 		upper = serverToLocalIdEncoding(typeModel, upper)
 
 		const typeId = getTypeString(typeRef)
-		const listCache = this.lists.get(typeId)?.get(listId)
+		const listCache = this.listElementEntities.get(typeId)?.get(listId)
 		if (listCache == null) {
-			getFromMap(this.lists, typeId, () => new Map()).set(listId, {
+			getFromMap(this.listElementEntities, typeId, () => new Map()).set(listId, {
 				allRange: [],
 				lowerRangeId: lower,
 				upperRangeId: upper,
@@ -408,7 +490,7 @@ export class EphemeralCacheStorage implements CacheStorage {
 	async getIdsInRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id): Promise<Array<Id>> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		return (
-			this.lists
+			this.listElementEntities
 				.get(getTypeString(typeRef))
 				?.get(listId)
 				?.allRange.map((elementId) => {
@@ -426,7 +508,7 @@ export class EphemeralCacheStorage implements CacheStorage {
 	}
 
 	purgeStorage(): Promise<void> {
-		return Promise.resolve()
+		return this.deinit()
 	}
 
 	async getLastUpdateTime(): Promise<LastUpdateTime> {
@@ -439,7 +521,7 @@ export class EphemeralCacheStorage implements CacheStorage {
 
 	async getWholeList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id): Promise<Array<T>> {
 		const parsedInstances = await this.getWholeListParsed(typeRef, listId)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	getCustomCacheHandlerMap(): CustomCacheHandlerMap {
@@ -451,20 +533,19 @@ export class EphemeralCacheStorage implements CacheStorage {
 	}
 
 	async deleteAllOwnedBy(owner: Id): Promise<void> {
-		for (const [typeString, typeMap] of this.entities.entries()) {
-			const typeRef = parseTypeString(typeString) as TypeRef<SomeEntity>
-			const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
+		for (const [typeString, typeMap] of this.elementEntities.entries()) {
+			const typeRef = parseTypeString<PersistentEntity>(typeString)
 			const handler = this.customCacheHandlerMap.get(typeRef)
 
 			for (const [id, entity] of typeMap.entries()) {
-				const ownerGroup = AttributeModel.getAttribute<Id>(entity, "_ownerGroup", typeModel)
+				const ownerGroup = entity.getAttributeByName("_ownerGroup").asId()
 				if (ownerGroup === owner) {
-					await handler?.onBeforeCacheDeletion?.(id)
+					await handler?.onBeforeCacheDeletion?.(idToElementId(id))
 					typeMap.delete(id)
 				}
 			}
 		}
-		for (const [typeString, cacheForType] of this.lists.entries()) {
+		for (const [typeString, cacheForType] of this.listElementEntities.entries()) {
 			const typeRef = parseTypeString(typeString)
 			const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 			await this.deleteAllOwnedByFromCache(typeModel, cacheForType, owner)
@@ -479,13 +560,13 @@ export class EphemeralCacheStorage implements CacheStorage {
 
 	private async deleteAllOwnedByFromCache(typeModel: TypeModel, cacheForType: Map<Id, ListCache | BlobElementCache>, owner: string): Promise<void> {
 		// If we find at least one element in the list that is owned by our target owner, we delete the entire list.
-		// This is OK in most cases because the vast majority of lists are single owner.
+		// This is OK in most cases because the vast majority of listEntities are single owner.
 		// For the other cases, we are just clearing the cache a bit sooner than needed.
 		const listIdsToDelete: string[] = []
-		const handler = this.customCacheHandlerMap.get(new TypeRef<SomeEntity>(typeModel.app, typeModel.id))
+		const handler = this.customCacheHandlerMap.get(new TypeRef<PersistentEntity>(typeModel.app, typeModel.id))
 		for (const [listId, listCache] of cacheForType.entries()) {
 			for (const [id, element] of listCache.elements.entries()) {
-				const ownerGroup = AttributeModel.getAttribute<Id>(element, "_ownerGroup", typeModel)
+				const ownerGroup = element.getAttributeByName("_ownerGroup").asId()
 				if (ownerGroup === owner) {
 					await handler?.onBeforeCacheDeletion?.([listId, id])
 					listIdsToDelete.push(listId)
@@ -496,9 +577,5 @@ export class EphemeralCacheStorage implements CacheStorage {
 		for (const listId of listIdsToDelete) {
 			cacheForType.delete(listId)
 		}
-	}
-
-	clearExcludedData(): Promise<void> {
-		return Promise.resolve()
 	}
 }

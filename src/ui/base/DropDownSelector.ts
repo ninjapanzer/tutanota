@@ -4,13 +4,13 @@ import type { AllIcons } from "./Icon"
 import { type lazy, noOp } from "../../platform-kit/utils"
 import { lang, MaybeTranslation } from "../utils/LanguageViewModel"
 import { ClickHandler, getOperatingClasses } from "./GuiUtils"
-import { assertMainOrNode } from "../../platform-kit/app-env"
+import { EnvProvider } from "../../platform-kit/app-env"
 import { IconButton } from "./IconButton"
 import { LegacyTextField } from "./LegacyTextField"
 import { ButtonSize } from "./ButtonSize"
 import { Icons } from "./icons/Icons"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type SelectorItem<T> = {
 	name: string
 	value: T
@@ -62,7 +62,7 @@ export class DropDownSelector<T> implements ClassComponent<DropDownSelectorAttrs
 							{ style: { width: "30px", height: "30px" } },
 							m(IconButton, {
 								icon: a.icon ? a.icon : Icons.PaddedArrowDown,
-								title: "show_action",
+								label: "show_action",
 								click: a.disabled ? noOp : this.createDropdown(a),
 								size: ButtonSize.Compact,
 							}),

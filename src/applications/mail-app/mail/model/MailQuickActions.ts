@@ -3,8 +3,8 @@ import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/M
 import { getMailboxName } from "../../../common/mailFunctionality/SharedMailUtils"
 import { LoginController } from "../../../common/api/main/LoginController"
 import { getPathToFolderString } from "./MailUtils"
-import { Router } from "../../../../ui/ScopedRouter"
-import { getElementId } from "../../../../platform-kit/meta"
+import { Router } from "../../../../ui/ScopedThrottledRouter"
+import { elementIdToId, getElementId } from "../../../../platform-kit/meta"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { MAIL_PREFIX } from "../../../../ui/utils/RouteChange"
 import { QuickAction } from "../../../common/misc/quickactions/QuickActionsModel"
@@ -34,19 +34,19 @@ export async function quickMailActions(
 			},
 		}
 
-		const fs = mailModel.getFolderSystemByGroupId(mailboxDetail.mailGroup._id)
+		const fs = mailModel.getFolderSystemByGroupId(elementIdToId(mailboxDetail.mailGroup._id))
 
 		let folderActions: readonly QuickAction[]
 		if (fs == null) {
 			folderActions = []
 		} else {
-			folderActions = fs.getIndentedList().map(({ folder }) => {
+			folderActions = fs.getIndentedList().map(({ mailSet }) => {
 				return {
 					// this is not the most performant thing, but we are doing this once so it's okay
-					description: `${mailboxName} ${getPathToFolderString(fs, folder)}`,
+					description: `${mailboxName} ${getPathToFolderString(fs, mailSet)}`,
 					// TODO: this is not ideal as this will forget the selected mail in that folder. We could pull it
 					//   up from somewhere.
-					exec: () => router.routeTo(`${MAIL_PREFIX}/:folder`, { folder: getElementId(folder) }),
+					exec: () => router.routeTo(`${MAIL_PREFIX}/:folder`, { folder: getElementId(mailSet) }),
 				}
 			})
 		}

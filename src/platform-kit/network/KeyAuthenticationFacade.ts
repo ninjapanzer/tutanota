@@ -1,32 +1,34 @@
 import { concat, KeyVersion } from "@tutao/utils"
-import { assertWorkerOrNode } from "@tutao/app-env"
-import { Aes256Key, AesKey, CryptoWrapper, Ed25519PublicKey, ed25519PublicKeyToBytes, keyToUint8Array, MacTag, PQPublicKeys } from "@tutao/crypto"
+import { EnvProvider } from "@tutao/app-env"
+import {
+	Aes256Key,
+	AesKey,
+	CryptoWrapper,
+	Ed25519PublicKey,
+	ed25519PublicKeyToBytes,
+	HkdfKeyDerivationDomains,
+	keyToUint8Array,
+	MacTag,
+	PQPublicKeys,
+} from "@tutao/crypto"
 import { KeyMac } from "@tutao/entities/sys"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
-type AuthenticationBindingData = {
+export type NewUserGroupKey = { newUserGroupKey: Aes256Key }
+export type CurrentUserGroupKey = { currentUserGroupKey: AesKey }
+export type UserGroupBindingData = {
 	userGroupId: Id
 	adminGroupId: Id
+	currentUserGroupKeyVersion: KeyVersion
+	newUserGroupKeyVersion: KeyVersion
+	newAdminGroupKeyVersion: KeyVersion
 }
-
-type BaseKeyAuthenticationParams = {
-	tagType: keyof typeof systemMap
-	sourceOfTrust: { [name: string]: AesKey }
-	// this can be a user group key, an admin group key, an admin group public key or a distribution public key
-	untrustedKey: { [name: string]: AesKey | PQPublicKeys | Ed25519PublicKey }
-	bindingData: AuthenticationBindingData
-}
-
-export type UserGroupKeyAuthenticationParams = BaseKeyAuthenticationParams & {
-	tagType: "USER_GROUP_KEY_TAG"
-	untrustedKey: { newUserGroupKey: Aes256Key }
-	sourceOfTrust: { currentUserGroupKey: AesKey }
-	bindingData: AuthenticationBindingData & {
-		currentUserGroupKeyVersion: KeyVersion
-		newUserGroupKeyVersion: KeyVersion
-		newAdminGroupKeyVersion: KeyVersion
-	}
+export type UserGroupKeyAuthenticationParams = {
+	tagType: SystemMapKind.USER_GROUP_KEY_TAG
+	untrustedKey: NewUserGroupKey
+	sourceOfTrust: CurrentUserGroupKey
+	bindingData: UserGroupBindingData
 }
 
 /**
@@ -37,7 +39,7 @@ type KeyAuthenticationSystem<T extends KeyAuthenticationParams> = {
 	 * Canonicalizes the data we want to authenticate, i.e., the new key and some binding data, into a byte array.
 	 * @param params
 	 */
-	generateAuthenticationData(params: T): Uint8Array
+	generateAuthenticationData(params: T): Uint8Array<ArrayBuffer>
 	/**
 	 * Derives the authentication key from a trusted key and some additional binding parameters.
 	 * @param params
@@ -59,7 +61,7 @@ const userGroupKeyAuthenticationSystem: KeyAuthenticationSystem<UserGroupKeyAuth
 		return cryptoWrapper.deriveKeyWithHkdf({
 			salt: `adminGroup: ${adminGroupId}, userGroup: ${userGroupId}, currentUserGroupKeyVersion: ${currentUserGroupKeyVersion}, newAdminGroupKeyVersion: ${newAdminGroupKeyVersion}, newUserGroupKeyVersion: ${newUserGroupKeyVersion}`,
 			key: sourceOfTrust.currentUserGroupKey,
-			context: "newUserGroupKeyAuthKeyForRotationAsNonAdminUser",
+			context: HkdfKeyDerivationDomains.NewUserGroupKeyAuthKeyForRotationAsNonAdminUser,
 		})
 	},
 	generateAuthenticationData({ untrustedKey: { newUserGroupKey } }) {
@@ -67,14 +69,20 @@ const userGroupKeyAuthenticationSystem: KeyAuthenticationSystem<UserGroupKeyAuth
 	},
 }
 
-export type NewAdminPubKeyAuthenticationParams = BaseKeyAuthenticationParams & {
-	tagType: "NEW_ADMIN_PUB_KEY_TAG"
-	untrustedKey: { newAdminPubKey: PQPublicKeys }
-	sourceOfTrust: { receivingUserGroupKey: AesKey } // this receiving user is an admin receiving the new admin group pub keys
-	bindingData: AuthenticationBindingData & {
-		newAdminGroupKeyVersion: KeyVersion
-		currentReceivingUserGroupKeyVersion: KeyVersion
-	}
+export type UntrustedKey = { newAdminPubKey: PQPublicKeys }
+export type SourceOfTrust = { receivingUserGroupKey: AesKey }
+type AdminBindingData = {
+	userGroupId: Id
+	adminGroupId: Id
+	currentReceivingUserGroupKeyVersion: KeyVersion
+	newAdminGroupKeyVersion: KeyVersion
+}
+
+export type NewAdminPubKeyAuthenticationParams = {
+	tagType: SystemMapKind.NEW_ADMIN_PUB_KEY_TAG
+	untrustedKey: UntrustedKey
+	sourceOfTrust: SourceOfTrust // this receiving user is an admin receiving the new admin group pub keys
+	bindingData: AdminBindingData
 }
 
 /**
@@ -87,7 +95,7 @@ const newAdminPubKeyAuthenticationSystem: KeyAuthenticationSystem<NewAdminPubKey
 		return cryptoWrapper.deriveKeyWithHkdf({
 			salt: `adminGroup: ${adminGroupId}, userGroup: ${userGroupId}, currentUserGroupKeyVersion: ${currentReceivingUserGroupKeyVersion}, newAdminGroupKeyVersion: ${newAdminGroupKeyVersion}`,
 			key: sourceOfTrust.receivingUserGroupKey,
-			context: "newAdminPubKeyAuthKeyForUserGroupKeyRotation",
+			context: HkdfKeyDerivationDomains.NewAdminPubKeyAuthKeyForUserGroupKeyRotation,
 		})
 	},
 	generateAuthenticationData({
@@ -99,14 +107,19 @@ const newAdminPubKeyAuthenticationSystem: KeyAuthenticationSystem<NewAdminPubKey
 	},
 }
 
-export type PubDistKeyAuthenticationParams = BaseKeyAuthenticationParams & {
-	tagType: "PUB_DIST_KEY_TAG"
-	untrustedKey: { distPubKey: PQPublicKeys }
-	sourceOfTrust: { currentAdminGroupKey: AesKey }
-	bindingData: AuthenticationBindingData & {
-		currentUserGroupKeyVersion: KeyVersion
-		currentAdminGroupKeyVersion: KeyVersion
-	}
+export type PubDistUntrustedKey = { distPubKey: PQPublicKeys }
+export type PubDistSourceOfTrust = { currentAdminGroupKey: AesKey }
+export type PubDistBindingData = {
+	userGroupId: Id
+	adminGroupId: Id
+	currentUserGroupKeyVersion: KeyVersion
+	currentAdminGroupKeyVersion: KeyVersion
+}
+export type PubDistKeyAuthenticationParams = {
+	tagType: SystemMapKind.PUB_DIST_KEY_TAG
+	untrustedKey: PubDistUntrustedKey
+	sourceOfTrust: PubDistSourceOfTrust
+	bindingData: PubDistBindingData
 }
 
 /**
@@ -119,7 +132,7 @@ const pubDistKeyAuthenticationSystem: KeyAuthenticationSystem<PubDistKeyAuthenti
 		return cryptoWrapper.deriveKeyWithHkdf({
 			salt: `adminGroup: ${adminGroupId}, userGroup: ${userGroupId}, currentUserGroupKeyVersion: ${currentUserGroupKeyVersion}, currentAdminGroupKeyVersion: ${currentAdminGroupKeyVersion}`,
 			key: sourceOfTrust.currentAdminGroupKey,
-			context: "adminGroupDistKeyPairAuthKeyForMultiAdminRotation",
+			context: HkdfKeyDerivationDomains.AdminGroupDistKeyPairAuthKeyForMultiAdminRotation,
 		})
 	},
 	generateAuthenticationData({
@@ -131,14 +144,13 @@ const pubDistKeyAuthenticationSystem: KeyAuthenticationSystem<PubDistKeyAuthenti
 	},
 }
 
-export type AdminSymKeyAuthenticationParams = BaseKeyAuthenticationParams & {
-	tagType: "ADMIN_SYM_KEY_TAG"
-	untrustedKey: { newAdminGroupKey: Aes256Key }
-	sourceOfTrust: { currentReceivingUserGroupKey: AesKey } // this receiving user is an admin receiving the new admin group sym key
-	bindingData: AuthenticationBindingData & {
-		newAdminGroupKeyVersion: KeyVersion
-		currentReceivingUserGroupKeyVersion: KeyVersion
-	}
+export type AdminSymKeyUntrustedKey = { newAdminGroupKey: Aes256Key }
+export type AdminSymKeySourceOfTrust = { currentReceivingUserGroupKey: AesKey }
+export type AdminSymKeyAuthenticationParams = {
+	tagType: SystemMapKind.ADMIN_SYM_KEY_TAG
+	untrustedKey: AdminSymKeyUntrustedKey
+	sourceOfTrust: AdminSymKeySourceOfTrust // this receiving user is an admin receiving the new admin group sym key
+	bindingData: AdminBindingData
 }
 
 /**
@@ -151,7 +163,7 @@ const adminSymKeyAuthenticationSystem: KeyAuthenticationSystem<AdminSymKeyAuthen
 		return cryptoWrapper.deriveKeyWithHkdf({
 			salt: `adminGroup: ${adminGroupId}, userGroup: ${userGroupId}, currentUserGroupKeyVersion: ${currentReceivingUserGroupKeyVersion}, newAdminGroupKeyVersion: ${newAdminGroupKeyVersion}`,
 			key: sourceOfTrust.currentReceivingUserGroupKey,
-			context: "newAdminSymKeyAuthKeyForMultiAdminRotationAsUser",
+			context: HkdfKeyDerivationDomains.NewAdminSymKeyAuthKeyForMultiAdminRotationAsUser,
 		})
 	},
 	generateAuthenticationData({ untrustedKey: { newAdminGroupKey } }) {
@@ -159,15 +171,18 @@ const adminSymKeyAuthenticationSystem: KeyAuthenticationSystem<AdminSymKeyAuthen
 	},
 }
 
+export type IdentityPubKeyUntrustedKey = { identityPubKey: Ed25519PublicKey }
+export type IdentityPubKeySourceOfTrust = { symmetricGroupKey: AesKey }
+export type IdentityPubKeyBindingData = {
+	publicIdentityKeyVersion: KeyVersion
+	groupKeyVersion: KeyVersion
+	groupId: Id
+}
 export type IdentityPubKeyAuthenticationParams = {
-	tagType: "IDENTITY_PUB_KEY_TAG"
-	untrustedKey: { identityPubKey: Ed25519PublicKey }
-	sourceOfTrust: { symmetricGroupKey: AesKey } // either the user group or the mail group key
-	bindingData: {
-		publicIdentityKeyVersion: KeyVersion
-		groupKeyVersion: KeyVersion
-		groupId: Id
-	}
+	tagType: SystemMapKind.IDENTITY_PUB_KEY_TAG
+	untrustedKey: IdentityPubKeyUntrustedKey
+	sourceOfTrust: IdentityPubKeySourceOfTrust // either the user group or the mail group key
+	bindingData: IdentityPubKeyBindingData
 }
 
 const identityPubKeyAuthenticationSystem: KeyAuthenticationSystem<IdentityPubKeyAuthenticationParams> = {
@@ -175,7 +190,7 @@ const identityPubKeyAuthenticationSystem: KeyAuthenticationSystem<IdentityPubKey
 		return cryptoWrapper.deriveKeyWithHkdf({
 			salt: `groupId: ${groupId}, groupKeyVersion: ${groupKeyVersion}, publicIdentityKeyVersion: ${publicIdentityKeyVersion}`,
 			key: sourceOfTrust.symmetricGroupKey,
-			context: "publicIdentityKey",
+			context: HkdfKeyDerivationDomains.PublicIdentityKey,
 		})
 	},
 	generateAuthenticationData({ untrustedKey: { identityPubKey } }) {
@@ -183,12 +198,17 @@ const identityPubKeyAuthenticationSystem: KeyAuthenticationSystem<IdentityPubKey
 	},
 }
 
-export type KeyAuthenticationParams =
-	| UserGroupKeyAuthenticationParams
-	| NewAdminPubKeyAuthenticationParams
-	| PubDistKeyAuthenticationParams
-	| AdminSymKeyAuthenticationParams
-	| IdentityPubKeyAuthenticationParams
+export interface KeyAuthenticationParams {
+	tagType: SystemMapKind
+}
+
+export const enum SystemMapKind {
+	USER_GROUP_KEY_TAG = "USER_GROUP_KEY_TAG",
+	NEW_ADMIN_PUB_KEY_TAG = "NEW_ADMIN_PUB_KEY_TAG",
+	PUB_DIST_KEY_TAG = "PUB_DIST_KEY_TAG",
+	ADMIN_SYM_KEY_TAG = "ADMIN_SYM_KEY_TAG",
+	IDENTITY_PUB_KEY_TAG = "IDENTITY_PUB_KEY_TAG",
+}
 
 const systemMap = {
 	USER_GROUP_KEY_TAG: userGroupKeyAuthenticationSystem,
@@ -208,8 +228,8 @@ export class KeyAuthenticationFacade {
 	 * Computes a MAC tag using an existing key authentication system.
 	 * @param keyAuthenticationParams Parameters for the chosen key authentication system, containing trusted key, key to be verified, and binding data
 	 */
-	public computeTag(keyAuthenticationParams: KeyAuthenticationParams): MacTag {
-		const keyAuthenticationSystem: KeyAuthenticationSystem<KeyAuthenticationParams> = systemMap[keyAuthenticationParams.tagType]
+	public computeTag<T extends KeyAuthenticationParams>(keyAuthenticationParams: T): MacTag {
+		const keyAuthenticationSystem = systemMap[keyAuthenticationParams.tagType] as unknown as KeyAuthenticationSystem<T>
 		const authKey = keyAuthenticationSystem.deriveKey(keyAuthenticationParams, this.cryptoWrapper)
 		const authData = keyAuthenticationSystem.generateAuthenticationData(keyAuthenticationParams)
 		return this.cryptoWrapper.hmacSha256(authKey, authData)
@@ -220,15 +240,16 @@ export class KeyAuthenticationFacade {
 	 * @param keyAuthenticationParams Parameters for the chosen key authentication system, containing trusted key, key to be verified, and binding data
 	 * @param tag The MAC tag to be verified. Must be a branded MacTag, which you can get with brandKeyMac() in most cases
 	 */
-	public verifyTag(keyAuthenticationParams: KeyAuthenticationParams, tag: MacTag): void {
-		const keyAuthenticationSystem: KeyAuthenticationSystem<KeyAuthenticationParams> = systemMap[keyAuthenticationParams.tagType]
+	public verifyTag<T extends KeyAuthenticationParams>(keyAuthenticationParams: T, tag: MacTag): void {
+		const keyAuthenticationSystem = systemMap[keyAuthenticationParams.tagType] as unknown as KeyAuthenticationSystem<T>
 		const authKey = keyAuthenticationSystem.deriveKey(keyAuthenticationParams, this.cryptoWrapper)
 		const authData = keyAuthenticationSystem.generateAuthenticationData(keyAuthenticationParams)
 		this.cryptoWrapper.verifyHmacSha256(authKey, authData, tag)
 	}
 }
 
-type BrandedKeyMac = Omit<KeyMac, "mac"> & { tag: MacTag }
+type MacTagAsTag = { tag: MacTag }
+type BrandedKeyMac = Omit<KeyMac, "mac"> & MacTagAsTag
 
 /**
  * Brands a KeyMac so that it has a branded MacTag, which can be used in authentication methods.

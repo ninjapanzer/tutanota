@@ -2,8 +2,8 @@ import m, { Children, Component, Vnode, VnodeDOM } from "mithril"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager.js"
-import { Keys } from "../../../../platform-kit/app-env"
 import { CalendarEvent } from "@tutao/entities/tutanota"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export interface CalendarViewToolbarAttrs {
 	event: CalendarEvent | null
@@ -26,7 +26,7 @@ export class CalendarViewerActions implements Component<CalendarViewToolbarAttrs
 			if (this.canEdit(event)) {
 				actionButtons.push(
 					m(IconButton, {
-						title: "edit_action",
+						label: "edit_action",
 						click: () => onEdit(event),
 						icon: Icons.PenFilled,
 					}),
@@ -36,7 +36,7 @@ export class CalendarViewerActions implements Component<CalendarViewToolbarAttrs
 			if (this.canExport(event)) {
 				actionButtons.push(
 					m(IconButton, {
-						title: "export_action",
+						label: "export_action",
 						click: () => onExport(event),
 						icon: Icons.CloudDownloadFilled,
 					}),
@@ -45,7 +45,7 @@ export class CalendarViewerActions implements Component<CalendarViewToolbarAttrs
 			if (this.canDelete(event)) {
 				actionButtons.push(
 					m(IconButton, {
-						title: "delete_action",
+						label: "delete_action",
 						click: () => onDelete(event),
 						icon: Icons.TrashFilled,
 					}),

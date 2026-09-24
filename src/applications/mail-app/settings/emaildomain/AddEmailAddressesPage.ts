@@ -12,16 +12,17 @@ import { ColumnWidth, Table } from "../../../../ui/base/Table.js"
 import type { WizardPageAttrs } from "../../../../ui/base/WizardDialog.js"
 import { emitWizardEvent, WizardEventType } from "../../../../ui/base/WizardDialog.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { assertMainOrNode, UpgradePromptType } from "../../../../platform-kit/app-env"
+import { InvalidDataError, LimitReachedError } from "../../../../platform-kit/rest-client/error"
+import { EnvProvider, UpgradePromptType } from "../../../../platform-kit/app-env"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { ButtonSize } from "../../../../ui/base/ButtonSize.js"
 import { UpgradeRequiredError } from "../../../common/api/main/UpgradeRequiredError.js"
 import { showPlanUpgradeRequiredDialog } from "../../../common/misc/SubscriptionDialogs.js"
 import { CustomerTypeRef, GroupInfoTypeRef } from "@tutao/entities/sys"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
+import { idToElementId } from "@tutao/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Part of the custom domain wizard where user can add mail addresses for the new domain.
@@ -64,7 +65,7 @@ export class AddEmailAddressesPage implements Component<AddEmailAddressesPageAtt
 			onDomainChanged: (domain) => (domainInfo = domain),
 			onBusyStateChanged: (isBusy) => (a.isMailVerificationBusy = isBusy),
 			injectionsRightButtonAttrs: {
-				title: "addEmailAlias_label",
+				label: "addEmailAlias_label",
 				icon: Icons.Plus,
 				size: ButtonSize.Compact,
 				click: () =>
@@ -127,8 +128,9 @@ export class AddEmailAddressesPageAttrs implements WizardPageAttrs<AddDomainData
 			if (hasAliases) {
 				return true
 			} else {
+				const customerId = neverNull(locator.logins.getUserController().user.customer)
 				return locator.entityClient
-					.load(CustomerTypeRef, neverNull(locator.logins.getUserController().user.customer))
+					.load(CustomerTypeRef, idToElementId(customerId))
 					.then((customer) => locator.entityClient.loadAll(GroupInfoTypeRef, customer.userGroups))
 					.then((allUserGroupInfos) => {
 						return allUserGroupInfos.some(
@@ -172,9 +174,9 @@ export class AddEmailAddressesPageAttrs implements WizardPageAttrs<AddDomainData
 				)
 				return true
 			} catch (e) {
-				if (e instanceof restError.InvalidDataError) {
+				if (e instanceof InvalidDataError) {
 					await Dialog.message("mailAddressNA_msg")
-				} else if (e instanceof restError.LimitReachedError) {
+				} else if (e instanceof LimitReachedError) {
 					// ignore
 				} else if (e instanceof UpgradeRequiredError) {
 					await showPlanUpgradeRequiredDialog(UpgradePromptType.MORE_ALIASES_NEEDED, e.plans, e.message)

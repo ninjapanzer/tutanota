@@ -8,16 +8,16 @@ import { EntityClient } from "../../../../src/platform-kit/network/EntityClient.
 import { lazyAsync, lazyMemoized } from "../../../../src/platform-kit/utils"
 import { MailFacade } from "../../../../src/applications/common/api/worker/facades/lazy/MailFacade.js"
 import { EventController } from "../../../../src/applications/common/api/main/EventController.js"
-import { KeyRotationFacade } from "../../../../src/platform-kit/base/crypto/KeyRotationFacade.js"
+import { KeyRotationFacade } from "../../../../src/platform-kit/base/base-crypto/KeyRotationFacade.js"
 import { CacheManagementFacade } from "../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { RolloutFacade } from "../../../../src/platform-kit/base/facades/RolloutFacade"
 import { GroupManagementFacade } from "../../../../src/platform-kit/base/facades/lazy/GroupManagementFacade"
 import { SyncTracker } from "../../../../src/applications/common/api/main/SyncTracker"
-import { IdentityKeyCreator } from "../../../../src/platform-kit/base/crypto/IdentityKeyCreator"
+import { IdentityKeyCreator } from "../../../../src/platform-kit/base/base-crypto/IdentityKeyCreator"
 import { noPatchesAndInstance } from "./EventBusClientTest"
-import { OperationType } from "../../../../src/platform-kit/meta"
+import { idToElementId, OperationType } from "../../../../src/platform-kit/meta"
 import { Group, GroupKeyUpdateTypeRef, GroupMembershipTypeRef, GroupTypeRef, User, UserGroupKeyDistributionTypeRef, UserTypeRef } from "@tutao/entities/sys"
-import { EntityUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CacheSyncStatus, CachingStatus, EntityUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 o.spec("EventBusEventCoordinatorTest", () => {
 	let eventBusEventCoordinator: EventBusEventCoordinator
@@ -41,7 +41,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 	o.beforeEach(function () {
 		user = createTestEntity(UserTypeRef, {
 			userGroup: createTestEntity(GroupMembershipTypeRef, { group: userGroupId }),
-			_id: userId,
+			_id: idToElementId(userId),
 		})
 		userFacade = object()
 		when(userFacade.getUser()).thenReturn(user)
@@ -50,10 +50,10 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		const userGroup: Group = object()
 		userGroup.currentKeys = object()
 		userGroup.groupKeyVersion = userGroupKeyVersion
-		when(entityClient.load(GroupTypeRef, userGroupId)).thenResolve(userGroup)
-		when(entityClient.load(UserTypeRef, userId)).thenResolve(user)
-		userGroupKeyDistribution = createTestEntity(UserGroupKeyDistributionTypeRef, { _id: userGroupId })
-		when(entityClient.load(UserGroupKeyDistributionTypeRef, userGroupId)).thenResolve(userGroupKeyDistribution)
+		when(entityClient.load(GroupTypeRef, idToElementId(userGroupId))).thenResolve(userGroup)
+		when(entityClient.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+		userGroupKeyDistribution = createTestEntity(UserGroupKeyDistributionTypeRef, { _id: idToElementId(userGroupId) })
+		when(entityClient.load(UserGroupKeyDistributionTypeRef, idToElementId(userGroupId))).thenResolve(userGroupKeyDistribution)
 		mailFacade = object()
 		let lazyMailFacade: lazyAsync<MailFacade> = lazyMemoized(async () => mailFacade)
 		eventController = object()
@@ -67,13 +67,14 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		when(groupManagementFacade.loadTeamGroupIds()).thenResolve(teamGroupIds)
 		eventBusEventCoordinator = new EventBusEventCoordinator(
 			lazyMailFacade,
+			lazyMemoized(async () => object()),
 			userFacade,
 			entityClient,
 			eventController,
 			object(),
 			keyRotationFacadeMock,
 			async () => cacheManagementFacade,
-			async (error: Error) => {},
+			async (_error: Error) => {},
 			(_) => {},
 			rolloutFacadeMock,
 			async () => groupManagementFacade,
@@ -84,14 +85,14 @@ o.spec("EventBusEventCoordinatorTest", () => {
 
 	o.spec("onSyncDone", function () {
 		o("sends signal to main thread", async function () {
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 
-			verify(syncTrackerMock.markSyncAsDone())
+			verify(syncTrackerMock.updateSyncStatus(CacheSyncStatus.OnlineSyncDone))
 		})
 
 		o("executes rollout onSyncDone", async function () {
 			when(userFacade.isLeader()).thenReturn(true)
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 			verify(rolloutFacadeMock.configureRollout(RolloutType.UserIdentityKeyCreation, matchers.anything()))
 			verify(rolloutFacadeMock.processRollout(RolloutType.UserIdentityKeyCreation))
 			verify(rolloutFacadeMock.configureRollout(RolloutType.SharedMailboxIdentityKeyCreation, matchers.anything()))
@@ -103,7 +104,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		o("executes UserIdentityKeyCreation rollout", async function () {
 			when(userFacade.isLeader()).thenReturn(true)
 
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 
 			const captor = matchers.captor()
 			verify(rolloutFacadeMock.configureRollout(RolloutType.UserIdentityKeyCreation, captor.capture()))
@@ -121,7 +122,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			const error = object<Error>()
 			when(identityKeyCreator.createIdentityKeyPairForExistingUsers()).thenReject(error)
 
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 			const captor = matchers.captor()
 			verify(rolloutFacadeMock.configureRollout(RolloutType.UserIdentityKeyCreation, captor.capture()))
 			verify(rolloutFacadeMock.processRollout(RolloutType.UserIdentityKeyCreation))
@@ -140,7 +141,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		o("does not stop if SharedMailboxIdentityKeyCreation rollout throws", async function () {
 			when(userFacade.isLeader()).thenReturn(true)
 
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 
 			const captor = matchers.captor()
 			verify(rolloutFacadeMock.configureRollout(RolloutType.SharedMailboxIdentityKeyCreation, captor.capture()))
@@ -162,7 +163,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		o("executes SharedMailboxIdentityKeyCreation rollout", async function () {
 			when(userFacade.isLeader()).thenReturn(true)
 
-			await eventBusEventCoordinator.onSyncDone()
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 
 			const captor = matchers.captor()
 			verify(rolloutFacadeMock.configureRollout(RolloutType.SharedMailboxIdentityKeyCreation, captor.capture()))
@@ -174,11 +175,12 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			verify(identityKeyCreator.createIdentityKeyPairForExistingTeamGroups(teamGroupIds))
 		})
 
-		o("does not execute rollouts if it is not the leader client", async function () {
+		o("does not execute rollouts, except for enabling AEAD encryption, if it is not the leader client", async function () {
 			when(userFacade.isLeader()).thenReturn(false)
 
-			await eventBusEventCoordinator.onSyncDone()
-			verify(rolloutFacadeMock.processRollout(matchers.anything()), { times: 0 })
+			await eventBusEventCoordinator.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
+			verify(rolloutFacadeMock.processRollout(matchers.anything()), { times: 1 })
+			verify(rolloutFacadeMock.processRollout(RolloutType.EncryptionOfAttributesViaAead))
 		})
 	})
 
@@ -200,12 +202,12 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			},
 		]
 
-		await eventBusEventCoordinator.onEntityEventsReceived(updates, "batchId", "groupId", null, false)
+		await eventBusEventCoordinator.onEntityUpdatesReceived(updates, "batchId", "groupId", false)
 
 		verify(userFacade.updateUser(user))
 		verify(cacheManagementFacade.tryUpdatingUserGroupKey())
-		verify(eventController.onEntityUpdateReceived(updates, "groupId", null, false))
-		verify(mailFacade.entityEventsReceived(updates))
+		verify(eventController.onEntityUpdatesReceived(updates, "groupId", false))
+		verify(mailFacade.onEntityUpdatesReceived(updates))
 	})
 
 	o("updateUser only user update", async function () {
@@ -219,12 +221,12 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			},
 		]
 
-		await eventBusEventCoordinator.onEntityEventsReceived(updates, "batchId", "groupId", null, false)
+		await eventBusEventCoordinator.onEntityUpdatesReceived(updates, "batchId", "groupId", false)
 
 		verify(userFacade.updateUser(user))
 		verify(cacheManagementFacade.tryUpdatingUserGroupKey(), { times: 0 })
-		verify(eventController.onEntityUpdateReceived(updates, "groupId", null, false))
-		verify(mailFacade.entityEventsReceived(updates))
+		verify(eventController.onEntityUpdatesReceived(updates, "groupId", false))
+		verify(mailFacade.onEntityUpdatesReceived(updates))
 	})
 
 	o("groupKeyUpdate", async function () {
@@ -239,15 +241,16 @@ o.spec("EventBusEventCoordinatorTest", () => {
 				instance: null,
 				patches: null,
 				blobInstance: null,
+				cachingStatus: CachingStatus.CacheNotUpdated,
 			},
 		]
 
-		await eventBusEventCoordinator.onEntityEventsReceived(updates, "batchId", "groupId", null, false)
+		await eventBusEventCoordinator.onEntityUpdatesReceived(updates, "batchId", "groupId", false)
 
 		verify(keyRotationFacadeMock.updateGroupMembershipsInOneList([[instanceListId, instanceId]]))
 		verify(userFacade.updateUser(user), { times: 0 })
 		verify(cacheManagementFacade.tryUpdatingUserGroupKey(), { times: 0 })
-		verify(eventController.onEntityUpdateReceived(updates, "groupId", null, false))
-		verify(mailFacade.entityEventsReceived(updates))
+		verify(eventController.onEntityUpdatesReceived(updates, "groupId", false))
+		verify(mailFacade.onEntityUpdatesReceived(updates))
 	})
 })

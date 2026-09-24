@@ -1,18 +1,20 @@
-import { AccountingInfoTypeRef, PriceData, PriceItemData, PriceServiceReturn } from "@tutao/entities/sys"
+import { AccountingInfoTypeRef } from "@tutao/entities/sys"
 import { BookingItemFeatureType } from "../../../entities/sys/Utils"
 import m, { Children, Component, Vnode } from "mithril"
-import { assertNotNull, filterInt, incrementDate, newPromise, ofClass } from "@tutao/utils"
+import { incrementDate, newPromise, ofClass } from "@tutao/utils"
 import { LegacyTextField, LegacyTextFieldType } from "../../../ui/base/LegacyTextField.js"
 import { Dialog, DialogType } from "../../../ui/base/Dialog.js"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
-import { assertMainOrNode, FeatureType } from "@tutao/app-env"
+import { EnvProvider, FeatureType } from "@tutao/app-env"
 import { formatDate } from "../../../ui/utils/Formatter.js"
-import * as restError from "@tutao/rest-client/error"
-import { asPaymentInterval, formatPrice, getPriceItem, PaymentInterval } from "./utils/PriceUtils.js"
+import { NotAuthorizedError } from "@tutao/rest-client/error"
+import { formatPrice } from "./utils/PriceUtils.js"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog.js"
 import { locator } from "../api/main/CommonLocator.js"
+import { PriceChangeModel } from "./PriceChangeModel"
+import { idToElementId } from "@tutao/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface BookingParams {
 	featureType: BookingItemFeatureType
@@ -49,8 +51,8 @@ async function prepareDialog({ featureType, count, reactivate }: BookingParams):
 	const priceChangeModel = new PriceChangeModel(price, featureType)
 	const customerInfo = await locator.logins.getUserController().loadCustomerInfo()
 	const accountingInfo = await locator.entityClient
-		.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
-		.catch(ofClass(restError.NotAuthorizedError, () => null))
+		.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
+		.catch(ofClass(NotAuthorizedError, () => null))
 	if (accountingInfo && accountingInfo.paymentMethod == null) {
 		const confirm = await Dialog.confirm("enterPaymentDataFirst_msg")
 		if (confirm) {
@@ -115,9 +117,17 @@ class ConfirmSubscriptionView implements Component<ConfirmAttrs> {
 			m(LegacyTextField, {
 				label: "price_label",
 				helpLabel: () => this.getPriceInfoText(priceChangeModel),
-				value: this.getPriceText(priceChangeModel),
+				value: this.getPriceText(priceChangeModel, !priceChangeModel.isUnbuy()),
 				isReadOnly: true,
 			}),
+			// this can be the case when there are active discounts that will disappear at the end of the period.
+			priceChangeModel.priceDeltaThisPeriod !== priceChangeModel.priceDeltaNextPeriod && !priceChangeModel.isUnbuy()
+				? m(LegacyTextField, {
+						label: "priceForNextYear_label",
+						value: this.getPriceText(priceChangeModel, false),
+						isReadOnly: true,
+					})
+				: null,
 		])
 	}
 
@@ -129,18 +139,15 @@ class ConfirmSubscriptionView implements Component<ConfirmAttrs> {
 		}
 	}
 
-	private getPriceText(model: PriceChangeModel): string {
+	private getPriceText(model: PriceChangeModel, thisPeriod: boolean): string {
 		let netGrossText = model.taxIncluded() ? lang.get("gross_label") : lang.get("net_label")
 		let periodText = model.isYearly() ? lang.get("pricing.perYear_label") : lang.get("pricing.perMonth_label")
 
-		const futurePriceNextPeriod = model.futurePrice
-		let currentPriceNextPeriod = model.currentPrice
-
 		if (model.isSinglePriceType()) {
-			const priceDiff = futurePriceNextPeriod - currentPriceNextPeriod
-			return `${formatPrice(priceDiff, true)} ${periodText} (${netGrossText})`
+			const delta = thisPeriod ? model.priceDeltaThisPeriod : model.priceDeltaNextPeriod
+			return `${formatPrice(delta, true)} ${periodText} (${netGrossText})`
 		} else {
-			return `${formatPrice(futurePriceNextPeriod, true)} ${periodText} (${netGrossText})`
+			return `${formatPrice(model.futureTotalPriceThisPeriod, true)} ${periodText} (${netGrossText})`
 		}
 	}
 
@@ -149,114 +156,12 @@ class ConfirmSubscriptionView implements Component<ConfirmAttrs> {
 			return lang.get("priceChangeValidFrom_label", {
 				"{1}": formatDate(model.periodEndDate()),
 			})
-		} else if (model.addedPriceForCurrentPeriod() > 0) {
+		} else if (model.currentPeriodProratedPrice != null && model.currentPeriodProratedPrice !== model.priceDeltaThisPeriod) {
 			return lang.get("priceForCurrentAccountingPeriod_label", {
-				"{1}": formatPrice(model.addedPriceForCurrentPeriod(), true),
+				"{1}": formatPrice(model.currentPeriodProratedPrice, true),
 			})
 		} else {
 			return ""
 		}
-	}
-}
-
-class PriceChangeModel {
-	readonly currentItem: PriceItemData | null
-	readonly futureItem: PriceItemData | null
-	readonly currentPrice: number
-	readonly futurePrice: number
-	readonly additionalFeatures: ReadonlySet<BookingItemFeatureType>
-
-	constructor(
-		private readonly price: PriceServiceReturn,
-		readonly featureType: BookingItemFeatureType,
-	) {
-		this.currentItem = getPriceItem(price.currentPriceNextPeriod, featureType)
-		this.futureItem = getPriceItem(price.futurePriceNextPeriod, featureType)
-		this.currentPrice = this.getPriceFromPriceData(price.currentPriceNextPeriod, featureType)
-		this.futurePrice = this.getPriceFromPriceData(price.futurePriceNextPeriod, featureType)
-
-		if (this.featureType === BookingItemFeatureType.LegacyUsers) {
-			this.additionalFeatures = new Set(
-				[BookingItemFeatureType.Whitelabel, BookingItemFeatureType.Sharing, BookingItemFeatureType.Business].filter((f) => this.getFuturePrice(f) > 0),
-			)
-		} else {
-			this.additionalFeatures = new Set()
-		}
-	}
-
-	getActionLabel(): TranslationKey {
-		if (!this.isPriceChange()) {
-			return "accept_action"
-		}
-		if (this.isBuy()) {
-			return "buy_action"
-		}
-		return "order_action"
-	}
-
-	isBuy() {
-		return this.currentPrice < this.futurePrice
-	}
-
-	isUnbuy() {
-		return this.currentPrice > this.futurePrice
-	}
-
-	isPriceChange() {
-		return this.currentPrice !== this.futurePrice
-	}
-
-	isSinglePriceType() {
-		return this.anyItem().singleType
-	}
-
-	getCurrentCount(): number {
-		return filterInt(assertNotNull(this.currentItem).count)
-	}
-
-	getFutureCount(): number {
-		return filterInt(assertNotNull(this.futureItem).count)
-	}
-
-	isYearly(): boolean {
-		const period = assertNotNull(this.price.futurePriceNextPeriod ?? this.price.currentPriceNextPeriod)
-		return asPaymentInterval(period.paymentInterval) === PaymentInterval.Yearly
-	}
-
-	taxIncluded(): boolean {
-		return assertNotNull(this.price.futurePriceNextPeriod).taxIncluded
-	}
-
-	periodEndDate(): Date {
-		// return a copy to prevent the date from being changed by the caller
-		return new Date(this.price.periodEndDate)
-	}
-
-	addedPriceForCurrentPeriod(): number {
-		return this.price.currentPeriodAddedPrice ? filterInt(this.price.currentPeriodAddedPrice) : 0
-	}
-
-	private anyItem() {
-		return assertNotNull(this.futureItem ?? this.currentItem)
-	}
-
-	private getFuturePrice(featureType: BookingItemFeatureType) {
-		return this.getPriceFromPriceData(this.price.futurePriceNextPeriod, featureType)
-	}
-
-	/**
-	 * Returns the price for the feature type from the price data if available, otherwise 0.
-	 */
-	private getPriceFromPriceData(priceData: PriceData | null, featureType: NumberString): number {
-		let item = getPriceItem(priceData, featureType)
-		let itemPrice = item ? Number(item.price) : 0
-
-		if (featureType === BookingItemFeatureType.LegacyUsers) {
-			itemPrice += this.getPriceFromPriceData(priceData, BookingItemFeatureType.Whitelabel)
-			itemPrice += this.getPriceFromPriceData(priceData, BookingItemFeatureType.Sharing)
-			itemPrice += this.getPriceFromPriceData(priceData, BookingItemFeatureType.Business)
-		}
-
-		return itemPrice
 	}
 }

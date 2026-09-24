@@ -2,7 +2,7 @@ import m, { Child, Children, Component, Vnode } from "mithril"
 import { CalendarEventWhenModel } from "../eventeditor-model/CalendarEventWhenModel.js"
 import { LegacyTextFieldType } from "../../../../../ui/base/LegacyTextField.js"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
-import { EndType, isApp, Keys, RepeatPeriod, TabIndex, Weekday } from "../../../../../platform-kit/app-env"
+import { EndType, EnvProvider, RepeatPeriod, TabIndex, Weekday } from "../../../../../platform-kit/app-env"
 import { DatePicker, DatePickerAttrs, PickerPosition } from "../pickers/DatePicker.js"
 
 import {
@@ -29,6 +29,7 @@ import { Divider } from "../../../../../ui/Divider.js"
 import { WeekdaySelector, WeekdayToTranslation } from "./WeekdaySelector.js"
 import { WeekRepetitionSelector } from "./WeekRepetitionSelector.js"
 import { DateTime } from "luxon"
+import { Keys } from "../../../../../ui/utils/KeyboardKeys"
 
 export type RepeatRuleEditorAttrs = {
 	model: CalendarEventWhenModel
@@ -217,7 +218,7 @@ export class RepeatRuleEditor implements Component<RepeatRuleEditorAttrs> {
 				date: attrs.model.repeatEndDateForDisplay,
 				disabled: attrs.model.repeatEndType !== EndType.UntilDate,
 				onDateSelected: (date) => date && (attrs.model.repeatEndDateForDisplay = date),
-				label: "endDate_label",
+				label: lang.getTranslation("endDate_label"),
 				useInputButton: true,
 				startOfTheWeekOffset: attrs.startOfTheWeekOffset,
 				position: PickerPosition.TOP,
@@ -355,8 +356,8 @@ export class RepeatRuleEditor implements Component<RepeatRuleEditorAttrs> {
 					m(SingleLineTextField, {
 						classes: ["tutaui-button-outline", "text-center", "border-content-message-bg"],
 						value: isNaN(this.repeatOccurrences) ? "" : this.repeatOccurrences.toString(),
-						inputMode: isApp() ? InputMode.NONE : InputMode.TEXT,
-						readonly: isApp(),
+						inputMode: EnvProvider.get().isApp() ? InputMode.NONE : InputMode.TEXT,
+						readonly: EnvProvider.get().isApp(),
 						disabled: attrs.model.repeatEndType !== EndType.Count,
 						oninput: (val: string) => {
 							if (this.repeatOccurrences === Number(val)) {
@@ -366,7 +367,7 @@ export class RepeatRuleEditor implements Component<RepeatRuleEditorAttrs> {
 							this.repeatOccurrences = val === "" ? NaN : Number(val)
 							this.repeatOccurrences = val === "" ? NaN : Number(val)
 						},
-						ariaLabel: lang.get("occurrencesCount_label"),
+						ariaLabel: lang.getTranslation("occurrencesCount_label"),
 						style: {
 							textAlign: "center",
 						},

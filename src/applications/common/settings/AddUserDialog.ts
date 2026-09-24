@@ -1,12 +1,12 @@
 import m from "mithril"
 import { lang, MaybeTranslation, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
-import { assertMainOrNode, UpgradePromptType } from "../../../platform-kit/app-env"
+import { EnvProvider, UpgradePromptType } from "../../../platform-kit/app-env"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { PasswordForm, PasswordModel } from "./PasswordForm.js"
 import { SelectMailAddressForm } from "./SelectMailAddressForm.js"
 import { assertNotNull, getFirstOrThrow, ofClass } from "../../../platform-kit/utils"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog.js"
-import * as restError from "../../../platform-kit/rest-client/error"
+import { PreconditionFailedError } from "../../../platform-kit/rest-client/error"
 import { showBuyDialog } from "../subscription/BuyDialog.js"
 import { LegacyTextField } from "../../../ui/base/LegacyTextField.js"
 import { locator } from "../api/main/CommonLocator.js"
@@ -15,7 +15,7 @@ import { toFeatureType } from "../subscription/utils/SubscriptionUtils.js"
 import { showUpgradeWizard } from "../subscription/UpgradeSubscriptionWizard.js"
 import { BookingItemFeatureType } from "../../../entities/sys/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export async function show(): Promise<void> {
 	const availableDomains = await getAvailableDomains(locator.logins)
@@ -114,7 +114,7 @@ export async function show(): Promise<void> {
 					p,
 					operation.progress,
 				)
-					.catch(ofClass(restError.PreconditionFailedError, (e) => Dialog.message("createUserFailed_msg")))
+					.catch(ofClass(PreconditionFailedError, (e) => Dialog.message("createUserFailed_msg")))
 					.then(() => dialog.close())
 					.finally(() => operation.done())
 			}

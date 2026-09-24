@@ -3,11 +3,11 @@ import { Dialog, DialogType } from "../../../../../ui/base/Dialog.js"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
 import { DatePicker } from "./DatePicker.js"
 import { px, size } from "../../../../../ui/size.js"
-import { client } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
-import { assertMainOrNode } from "../../../../../platform-kit/app-env"
+import { ClientDetector } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { EnvProvider } from "../../../../../platform-kit/app-env"
 import { debounceStart, newPromise, noOp } from "../../../../../platform-kit/utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Shows a dialog in which the user can select a start date and an end date. Start and end date does not need to be selected, then they are null and regarded as unlimited.
@@ -56,14 +56,14 @@ export function showDateRangeSelectionDialog({
 							".flex-grow.flex-space-between.flex-column",
 							m(DatePicker, {
 								useInputButton: true,
-								date: startDate ?? undefined,
+								date: startDate,
 								onDateSelected: (date) => {
 									warning = null
 									startDate = date
 									validateDates(startDate, endDate)
 								},
 								startOfTheWeekOffset,
-								label: "dateFrom_label",
+								label: lang.getTranslation("dateFrom_label"),
 								nullSelectionText: optionalStartDate ? "unlimited_label" : undefined,
 							}),
 						),
@@ -80,7 +80,7 @@ export function showDateRangeSelectionDialog({
 									validateDates(startDate, endDate)
 								},
 								startOfTheWeekOffset,
-								label: "dateTo_label",
+								label: lang.getTranslation("dateTo_label"),
 							}),
 						),
 					],
@@ -110,7 +110,7 @@ export function showDateRangeSelectionDialog({
 				}),
 			type: DialogType.EditMedium,
 		})
-		if (client.isMobileDevice()) {
+		if (ClientDetector.get().isMobileDevice()) {
 			// Prevent focusing text field automatically on mobile. It opens keyboard and you don't see all details.
 			dialog.setFocusOnLoadFunction(noOp)
 		}

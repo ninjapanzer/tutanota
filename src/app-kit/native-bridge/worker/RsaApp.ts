@@ -1,5 +1,5 @@
 import type { Randomizer, RsaPrivateKey, RsaPublicKey } from "../../../platform-kit/crypto"
-import type { RsaImplementation } from "./RsaImplementation.js"
+import { RsaImplementation } from "../../../platform-kit/crypto"
 import { NativeCryptoFacade } from "../common/generatedipc/types/NativeCryptoFacade.js"
 
 export class RsaApp implements RsaImplementation {
@@ -11,7 +11,7 @@ export class RsaApp implements RsaImplementation {
 	/**
 	 * Encrypt bytes with the provided publicKey
 	 */
-	async encrypt(publicKey: RsaPublicKey, bytes: Uint8Array): Promise<Uint8Array> {
+	async encrypt(publicKey: RsaPublicKey, bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
 		const seed = this.rng.generateRandomData(32)
 
 		return await this.nativeCryptoFacade.rsaEncrypt(publicKey, bytes, seed)
@@ -20,7 +20,7 @@ export class RsaApp implements RsaImplementation {
 	/**
 	 * Decrypt bytes with the provided privateKey
 	 */
-	async decrypt(privateKey: RsaPrivateKey, bytes: Uint8Array): Promise<Uint8Array> {
+	async decrypt(privateKey: RsaPrivateKey, bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array<ArrayBuffer>> {
 		return await this.nativeCryptoFacade.rsaDecrypt(privateKey, bytes)
 	}
 }

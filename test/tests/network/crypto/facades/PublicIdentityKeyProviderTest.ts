@@ -14,27 +14,34 @@ import { arrayEquals, hexToUint8Array } from "../../../../../src/platform-kit/ut
 import { IdentityKeySourceOfTrust } from "../../../../../src/platform-kit/app-env"
 import * as restError from "../../../../../src/platform-kit/rest-client/error"
 import testData from "../../../api/worker/crypto/CompatibilityTestData.json"
-import { PublicIdentityKeyProvider } from "../../../../../src/platform-kit/base/crypto/PublicIdentityKeyProvider"
-import { brandKeyMac, IdentityPubKeyAuthenticationParams, KeyAuthenticationFacade } from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
+import { PublicIdentityKeyProvider } from "../../../../../src/platform-kit/base/base-crypto/PublicIdentityKeyProvider"
+import {
+	brandKeyMac,
+	IdentityPubKeyAuthenticationParams,
+	KeyAuthenticationFacade,
+	SystemMapKind,
+} from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
 import { ServiceExecutor } from "../../../../../src/platform-kit/network/ServiceExecutor.js"
 
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade"
-import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../../../../src/app-kit/local-store/IdentityKeyTrustDatabase"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade"
+import { LocalIdentityKeyTrustDatabase } from "../../../../../src/app-kit/local-store/LocalIdentityKeyTrustDatabase"
 import { CryptoError } from "../../../../../src/platform-kit/crypto/error"
-import { Group, GroupTypeRef, IdentityKeyGetIn, IdentityKeyGetOut, IdentityKeyPair, IdentityKeyService, KeyMacTypeRef } from "@tutao/entities/sys"
+import { Group, GroupTypeRef, IdentityKeyGetIn, IdentityKeyGetOut, IdentityKeyPair, IdentityKeyService_GET, KeyMacTypeRef } from "@tutao/entities/sys"
 import { SYSTEM_GROUP_MAIL_ADDRESS } from "../../../../../src/entities/sys/Utils"
+import { TrustDBEntry } from "../../../../../src/platform-kit/base/base-crypto/persistence/IdentityKeyTrustDatabase"
+import { elementIdToId, idToElementId, isSameId } from "../../../../../src/platform-kit/meta"
 
 o.spec("PublicIdentityKeyProviderTest", function () {
 	let serviceExecutor: ServiceExecutor
 	let entityClient: EntityClient
 	let keyAuthenticationFacade: KeyAuthenticationFacade
 	let keyLoaderFacade: KeyLoaderFacade
-	let identityKeyTrustDatabase: IdentityKeyTrustDatabase
+	let identityKeyTrustDatabase: LocalIdentityKeyTrustDatabase
 
 	let publicIdentityKeyProvider: PublicIdentityKeyProvider
 
-	let rawEd25519PublicKey: Uint8Array
+	let rawEd25519PublicKey: Uint8Array<ArrayBuffer>
 	let ed25519PublicKey: Ed25519PublicKey
 
 	o.beforeEach(function () {
@@ -59,7 +66,7 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 	o.spec("loadPublicIdentityKeyFromGroup", function () {
 		o("success", async function () {
 			const userGroup: Group = object()
-			userGroup._id = "userGroup"
+			userGroup._id = idToElementId("userGroup")
 			const identityKeyPair: IdentityKeyPair = object()
 			identityKeyPair.publicEd25519Key = rawEd25519PublicKey
 			identityKeyPair.identityKeyVersion = "0"
@@ -67,7 +74,7 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 				createTestEntity(KeyMacTypeRef, {
 					taggedKeyVersion: "0",
 					taggingKeyVersion: "1",
-					taggingGroup: userGroup._id,
+					taggingGroup: elementIdToId(userGroup._id),
 					tag: object(),
 				}),
 			)
@@ -80,17 +87,17 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 			when(entityClient.load(GroupTypeRef, matchers.anything())).thenResolve(userGroup)
 			when(keyLoaderFacade.loadSymGroupKey(matchers.anything(), matchers.anything())).thenResolve(userGroupKey)
 
-			const actualPublicIdentityKey = await publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(userGroup._id)
+			const actualPublicIdentityKey = await publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(elementIdToId(userGroup._id))
 
 			o(actualPublicIdentityKey?.object).deepEquals({ key: ed25519PublicKey, type: SigningKeyPairType.Ed25519 })
 			verify(
 				keyAuthenticationFacade.verifyTag(
 					matchers.argThat((params: IdentityPubKeyAuthenticationParams) => {
 						return (
-							params.tagType === "IDENTITY_PUB_KEY_TAG" &&
+							params.tagType === SystemMapKind.IDENTITY_PUB_KEY_TAG &&
 							arrayEquals(params.untrustedKey.identityPubKey, ed25519PublicKey) &&
 							params.sourceOfTrust.symmetricGroupKey === userGroupKey &&
-							params.bindingData.groupId === userGroup._id &&
+							isSameId(idToElementId(params.bindingData.groupId), userGroup._id) &&
 							String(params.bindingData.groupKeyVersion) === identityPublicKeyMac.taggingKeyVersion &&
 							String(params.bindingData.publicIdentityKeyVersion) === identityPublicKeyMac.taggedKeyVersion
 						)
@@ -102,7 +109,7 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 
 		o("if the tag does not match, an error is thrown", async function () {
 			const userGroup: Group = object()
-			userGroup._id = "userGroup"
+			userGroup._id = idToElementId("userGroup")
 			const identityKeyPair: IdentityKeyPair = object()
 			identityKeyPair.publicEd25519Key = rawEd25519PublicKey
 			identityKeyPair.identityKeyVersion = "0"
@@ -110,7 +117,7 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 				createTestEntity(KeyMacTypeRef, {
 					taggedKeyVersion: "0",
 					taggingKeyVersion: "1",
-					taggingGroup: userGroup._id,
+					taggingGroup: elementIdToId(userGroup._id),
 					tag: object(),
 				}),
 			)
@@ -125,17 +132,17 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 
 			when(keyAuthenticationFacade.verifyTag(matchers.anything(), matchers.anything())).thenThrow(new CryptoError("invalid mac"))
 
-			await assertThrows(CryptoError, async () => publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(userGroup._id))
+			await assertThrows(CryptoError, async () => publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(elementIdToId(userGroup._id)))
 		})
 
 		o("if the user has no identity key, the method returns null", async function () {
 			const userGroup: Group = object()
-			userGroup._id = "userGroup"
+			userGroup._id = idToElementId("userGroup")
 			userGroup.identityKeyPair = null
 
 			when(entityClient.load(GroupTypeRef, matchers.anything())).thenResolve(userGroup)
 
-			const pk = await publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(userGroup._id)
+			const pk = await publicIdentityKeyProvider.loadPublicIdentityKeyFromGroup(elementIdToId(userGroup._id))
 			o(pk).equals(null)
 		})
 	})
@@ -152,11 +159,12 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 			}
 			when(identityKeyTrustDatabase.getTrustedEntry(identifier.identifier)).thenResolve(null)
 			when(
-				serviceExecutor.get(
-					IdentityKeyService,
+				serviceExecutor.execute(
+					IdentityKeyService_GET,
 					matchers.argThat((data: IdentityKeyGetIn) => {
 						return data.identifier === identifier.identifier && identifier.identifierType === data.identifierType && data.version === null
 					}),
+					null,
 				),
 			).thenResolve(identityKeyGetOut)
 
@@ -202,7 +210,7 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 
 			const identityKey = await publicIdentityKeyProvider.loadPublicIdentityKey(identifier)
 
-			verify(serviceExecutor.get(IdentityKeyService, matchers.anything()), { times: 0 })
+			verify(serviceExecutor.execute(IdentityKeyService_GET, matchers.anything(), null), { times: 0 })
 			verify(identityKeyTrustDatabase.trust(matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
 
 			o(identityKey).deepEquals(trustDBEntry)
@@ -221,11 +229,12 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 				}
 				when(identityKeyTrustDatabase.isIdentityKeyTrustDatabaseSupported()).thenResolve(false)
 				when(
-					serviceExecutor.get(
-						IdentityKeyService,
+					serviceExecutor.execute(
+						IdentityKeyService_GET,
 						matchers.argThat((data: IdentityKeyGetIn) => {
 							return data.identifier === identifier.identifier && identifier.identifierType === data.identifierType && data.version === null
 						}),
+						null,
 					),
 				).thenResolve(identityKeyGetOut)
 
@@ -264,14 +273,14 @@ o.spec("PublicIdentityKeyProviderTest", function () {
 			o(await publicIdentityKeyProvider.loadPublicIdentityKey(identifier)).equals(null)
 			verify(identityKeyTrustDatabase.isIdentityKeyTrustDatabaseSupported(), { times: 0 })
 			verify(identityKeyTrustDatabase.getTrustedEntry(matchers.anything()), { times: 0 })
-			verify(serviceExecutor.get(IdentityKeyService, matchers.anything()), { times: 0 })
+			verify(serviceExecutor.execute(IdentityKeyService_GET, matchers.anything(), null), { times: 0 })
 		})
 
 		o("not found handled gracefully", async function () {
 			const identityKeyGetOut: IdentityKeyGetOut = object()
 			identityKeyGetOut.publicIdentityKey = rawEd25519PublicKey
 			identityKeyGetOut.publicIdentityKeyVersion = "5"
-			when(serviceExecutor.get(IdentityKeyService, matchers.anything())).thenReject(new restError.NotFoundError("not found"))
+			when(serviceExecutor.execute(IdentityKeyService_GET, matchers.anything(), null)).thenReject(new restError.NotFoundError("not found"))
 			when(identityKeyTrustDatabase.isIdentityKeyTrustDatabaseSupported()).thenResolve(false)
 
 			const identifier: PublicKeyIdentifier = {

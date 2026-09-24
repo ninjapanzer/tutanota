@@ -1,19 +1,18 @@
-import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { LeaderStatusListener, WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
 import { CalendarModel, NoOwnerEncSessionKeyForCalendarEventError } from "./CalendarModel"
 import { EventController } from "../../../common/api/main/EventController"
 import { elementIdPart, OperationType } from "../../../../platform-kit/meta"
-import * as restError from "../../../../platform-kit/rest-client/error"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { MailboxModel } from "../../../common/mailFunctionality/MailboxModel"
 import { SyncTracker } from "../../../common/api/main/SyncTracker"
-import { CalendarEventUpdate, CalendarEventUpdateTypeRef } from "@tutao/entities/tutanota"
-import { FileTypeRef } from "@tutao/entities/sys"
+import { CalendarEventUpdate, CalendarEventUpdateTypeRef, FileTypeRef } from "@tutao/entities/tutanota"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { NotFoundError } from "../../../../platform-kit/rest-client/error"
 
 const TAG = "[CalendarEventUpdateCoordinator]"
 
@@ -29,12 +28,22 @@ export class CalendarEventUpdateCoordinator {
 	private readonly fileIdToSkippedCalendarEventUpdates: Map<Id, CalendarEventUpdate> = new Map()
 
 	// create reference to the listener so it can be deleted from the event controller when the client stops being leader.
-	private readonly entityEventListener: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "CalendarEventUpdateCoordinator",
 		onEntityUpdatesReceived: (updates, eventOwnerGroupId) => {
-			return this.entityEventsReceived(updates, eventOwnerGroupId)
+			return this.onEntityUpdatesReceived(updates, eventOwnerGroupId)
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
+
+	private readonly leaderStatusListener: LeaderStatusListener = {
+		id: "CalendarEventUpdateCoordinator",
+		priority: ListenerPriority.NORMAL,
+		onLeaderStatusChanged: (newLeaderStatus) => {
+			return this.onLeaderStatusChanged(newLeaderStatus)
+		},
+	}
+
 	constructor(
 		private readonly wsConnectivityModel: WebsocketConnectivityModel,
 		private readonly calendarModel: CalendarModel,
@@ -50,50 +59,46 @@ export class CalendarEventUpdateCoordinator {
 	public async init() {
 		await this.syncTracker.waitSync() // await conclusion of global sync process
 
-		// Subscribe to leaders status changes so we can process calendar event updates when the client becomes leader
-		this.wsConnectivityModel.addLeaderStatusListener((newLeaderStatus) => {
-			return this.onLeaderStatusChanged(newLeaderStatus)
-		})
+		// subscribe to leaders status changes so we can process calendar event updates when the client becomes leader
+		this.wsConnectivityModel.addLeaderStatusListener(this.leaderStatusListener)
 
 		// initialize the model depending on leader status state.
 		await this.onLeaderStatusChanged(this.wsConnectivityModel.isLeader())
 	}
+
 	public async onLeaderStatusChanged(isLeader: boolean) {
 		if (isLeader) {
 			// Note that the order is important here. The initial loading of calendarEventUpdates must happen
 			// before registering event listener to prevent possible concurrency issues.
 			await this.loadAndProcessCalendarEventInvitesUpdates()
-			this.eventController.addEntityListener(this.entityEventListener)
+			this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		} else {
-			this.eventController.removeEntityListener(this.entityEventListener)
+			this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 		}
 	}
 
-	public async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id) {
-		for (const entityEventData of updates) {
-			if (isUpdateForTypeRef(CalendarEventUpdateTypeRef, entityEventData) && entityEventData.operation === OperationType.CREATE) {
+	public async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id) {
+		for (const update of updates) {
+			if (isUpdateForTypeRef(CalendarEventUpdateTypeRef, update) && update.operation === OperationType.CREATE) {
 				try {
-					const calendarEventUpdate = await this.entityClient.load(CalendarEventUpdateTypeRef, [
-						entityEventData.instanceListId!,
-						entityEventData.instanceId,
-					])
+					const calendarEventUpdate = await this.entityClient.load(CalendarEventUpdateTypeRef, [update.instanceListId!, update.instanceId])
 					await this.handleCalendarEventUpdateAndHandleErrors(calendarEventUpdate)
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
-						console.log(TAG, "invite not found", [entityEventData.instanceListId, entityEventData.instanceId])
+					if (e instanceof NotFoundError) {
+						console.log(TAG, "invite not found", [update.instanceListId, update.instanceId])
 					} else {
 						throw e
 					}
 				}
-			} else if (isUpdateForTypeRef(FileTypeRef, entityEventData)) {
+			} else if (isUpdateForTypeRef(FileTypeRef, update)) {
 				// with a file update, the owner enc session key should be present now so we can try to process any skipped calendar event updates
 				// (see NoOwnerEncSessionKeyForCalendarEventError's comment)
-				const skippedCalendarEventUpdate = this.fileIdToSkippedCalendarEventUpdates.get(entityEventData.instanceId)
+				const skippedCalendarEventUpdate = this.fileIdToSkippedCalendarEventUpdates.get(update.instanceId)
 				if (skippedCalendarEventUpdate) {
 					try {
 						await this.calendarModel.handleCalendarEventUpdate(skippedCalendarEventUpdate)
 					} finally {
-						this.fileIdToSkippedCalendarEventUpdates.delete(entityEventData.instanceId)
+						this.fileIdToSkippedCalendarEventUpdates.delete(update.instanceId)
 					}
 				}
 			}

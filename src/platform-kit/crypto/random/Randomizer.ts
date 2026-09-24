@@ -2,7 +2,7 @@
 import sjcl from "../internal/sjcl.js"
 import { CryptoError } from "@tutao/crypto/error"
 
-import { EntropySource } from "../CryptoTypes"
+import { EntropyDataChunk } from "./EntropyDataChunk"
 
 /**
  * This Interface provides an abstraction of the random number generator implementation.
@@ -19,20 +19,14 @@ export class Randomizer {
 	 * @param entropyCache with: number Any number value, entropy The amount of entropy in the number in bit,
 	 * source The source of the number.
 	 */
-	addEntropy(
-		entropyCache: Array<{
-			source: EntropySource
-			entropy: number
-			data: number | Array<number>
-		}>,
-	): Promise<void> {
+	addEntropy(entropyCache: Array<EntropyDataChunk>): Promise<void> {
 		for (const entry of entropyCache) {
 			this.random.addEntropy(entry.data, entry.entropy, entry.source)
 		}
 		return Promise.resolve()
 	}
 
-	addStaticEntropy(bytes: Uint8Array) {
+	addStaticEntropy(bytes: Uint8Array<ArrayBuffer>): void {
 		for (const byte of bytes) {
 			this.random.addEntropy(byte, 8, "static")
 		}
@@ -51,7 +45,7 @@ export class Randomizer {
 	 * @return A hex coded string of random data.
 	 * @throws {CryptoError} if the randomizer is not seeded (isReady == false)
 	 */
-	generateRandomData(nbrOfBytes: number): Uint8Array {
+	generateRandomData(nbrOfBytes: number): Uint8Array<ArrayBuffer> {
 		try {
 			// read the minimal number of words to get nbrOfBytes
 			let nbrOfWords = Math.floor((nbrOfBytes + 3) / 4)

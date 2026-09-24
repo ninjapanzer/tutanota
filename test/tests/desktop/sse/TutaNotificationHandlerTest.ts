@@ -3,7 +3,7 @@ import TutaNotificationHandler from "../../../../src/applications/common/desktop
 import { WindowManager } from "../../../../src/applications/common/desktop/DesktopWindowManager.js"
 import { CredentialEncryptionMode } from "../../../../src/platform-kit/app-env"
 import { ExtendedNotificationMode } from "../../../../src/app-kit/native-bridge/common/generatedipc/types/ExtendedNotificationMode.js"
-import { NativeCredentialsFacade } from "../../../../src/app-kit/native-bridge/common/generatedipc/types/NativeCredentialsFacade.js"
+import { NativeCredentialsFacade } from "../../../../src/app-kit/native-bridge/common/generatedipc/types"
 import { UnencryptedCredentials } from "../../../../src/app-kit/native-bridge/common/generatedipc/types/UnencryptedCredentials.js"
 import { DesktopNotifier } from "../../../../src/applications/common/desktop/notifications/DesktopNotifier.js"
 import { DesktopAlarmScheduler } from "../../../../src/applications/common/desktop/sse/DesktopAlarmScheduler.js"
@@ -24,11 +24,12 @@ import { assertNotNull } from "../../../../src/platform-kit/utils"
 import { Mail, MailAddressTypeRef, MailTypeRef, tutanotaModelInfo } from "@tutao/entities/tutanota"
 import { CredentialType } from "../../../../src/platform-kit/network/types"
 
-import { createIdTupleWrapper, createNotificationInfo, NotificationInfo } from "@tutao/entities/sys"
+import { createIdTupleWrapper, NotificationInfo, NotificationInfoTypeRef } from "@tutao/entities/sys"
+import { OutgoingServerJson } from "../../../../src/platform-kit/instance-pipeline/TypeMapper"
 
 type UndiciFetch = typeof undiciFetch
 
-o.spec("TutaNotificationHandler", () => {
+o.spec("TutaNotificationHandlerTest", () => {
 	const appVersion = "V_1"
 
 	let wm: WindowManager
@@ -65,7 +66,6 @@ o.spec("TutaNotificationHandler", () => {
 			fetch,
 			appVersion,
 			nativeInstancePipeline,
-			typeModelResolver,
 		)
 	})
 
@@ -78,9 +78,8 @@ o.spec("TutaNotificationHandler", () => {
 				listId: "mailListId",
 				listElementId: "mailElementId",
 			})
-			const notificationInfo = createNotificationInfo({
+			const notificationInfo = createTestEntity(NotificationInfoTypeRef, {
 				_id: "id",
-				_ownerGroup: "ownerGroupId",
 				mailId,
 				mailAddress: "recipient@example.com",
 				userId: "user1",
@@ -111,9 +110,8 @@ o.spec("TutaNotificationHandler", () => {
 				listId: "mailListId",
 				listElementId: "mailElementId",
 			})
-			const notificationInfo = createNotificationInfo({
+			const notificationInfo = createTestEntity(NotificationInfoTypeRef, {
 				_id: "id",
-				_ownerGroup: "ownerGroupId",
 				mailId,
 				mailAddress: "recipient@example.com",
 				userId: "user1",
@@ -132,9 +130,8 @@ o.spec("TutaNotificationHandler", () => {
 				listId: "mailListId",
 				listElementId: "mailElementId",
 			})
-			const notificationInfo = createNotificationInfo({
+			const notificationInfo = createTestEntity(NotificationInfoTypeRef, {
 				_id: "id",
-				_ownerGroup: "ownerGroupId",
 				mailId,
 				mailAddress: "recipient@example.com",
 				userId: "user1",
@@ -172,9 +169,8 @@ o.spec("TutaNotificationHandler", () => {
 				listId: "mailListId",
 				listElementId: "mailElementId",
 			})
-			const notificationInfo = createNotificationInfo({
+			const notificationInfo = createTestEntity(NotificationInfoTypeRef, {
 				_id: "id",
-				_ownerGroup: "ownerGroupId",
 				mailId: mailId,
 				mailAddress: "recipient@example.com",
 				userId: "user1",
@@ -214,7 +210,7 @@ o.spec("TutaNotificationHandler", () => {
 					accessToken: "accessToken",
 				},
 				200,
-				[mailLiteral],
+				[OutgoingServerJson.getJsonRepresentationOfMultiple([mailLiteral])],
 			)
 
 			await handler.onMailNotification(sseInfo, [notificationInfo])
@@ -268,9 +264,8 @@ o.spec("TutaNotificationHandler", () => {
 					listId: "mailListId",
 					listElementId: `mailElementId${i}`,
 				})
-				const notificationInfo = createNotificationInfo({
+				const notificationInfo = createTestEntity(NotificationInfoTypeRef, {
 					_id: `id${i}`,
-					_ownerGroup: "ownerGroupId",
 					mailId: mailId,
 					mailAddress: "recipient@example.com",
 					userId: "user1",
@@ -304,7 +299,7 @@ o.spec("TutaNotificationHandler", () => {
 					accessToken: "accessToken",
 				},
 				200,
-				await Promise.all(mailMetadataPromises),
+				OutgoingServerJson.getJsonRepresentationOfMultiple(await Promise.all(mailMetadataPromises)),
 			)
 
 			await handler.onMailNotification(sseInfo, notificationInfos)

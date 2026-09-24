@@ -1,11 +1,11 @@
 import { RecipientKeyVerificationRecoveryModel } from "../../../src/applications/common/misc/RecipientKeyVerificationRecoveryModel"
 import { KeyVerificationFacade } from "../../../src/platform-kit/base/facades/lazy/KeyVerificationFacade"
-import { PublicIdentityKeyProvider } from "../../../src/platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { PublicIdentityKeyProvider } from "../../../src/platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { ResolvableRecipient } from "../../../src/applications/common/api/main/RecipientsModel"
 import o from "@tutao/otest"
 import { matchers, object, verify, when } from "testdouble"
-import { TrustDBEntry } from "../../../src/app-kit/local-store/IdentityKeyTrustDatabase"
 import { IdentityKeySourceOfTrust, ProgrammingError } from "../../../src/platform-kit/app-env"
+import { TrustDBEntry } from "../../../src/platform-kit/base/base-crypto/persistence/IdentityKeyTrustDatabase"
 
 const RECIPIENT_ADDRESS = "recipient@tuta.com"
 const RECIPIENT2_ADDRESS = "recipient2@tuta.com"
@@ -24,9 +24,9 @@ o.spec("RecipientKeyVerificationRecoveryModelTest", function () {
 		recipient = object()
 		recipient2 = object()
 		// @ts-ignore
-		recipient.address = RECIPIENT_ADDRESS
+		recipient["address"] = RECIPIENT_ADDRESS
 		// @ts-ignore
-		recipient2.address = RECIPIENT2_ADDRESS
+		recipient2["address"] = RECIPIENT2_ADDRESS
 		keyVerificationErrorModel = new RecipientKeyVerificationRecoveryModel(keyVerificationFacade, publicIdentityKeyProvider, [recipient, recipient2])
 	})
 

@@ -1,26 +1,38 @@
-import { clone, getElementId, getListId, isSameId, listIdPart, OperationType } from "../../../../platform-kit/meta"
 import {
+	clone,
+	elementIdToId,
+	getElementId,
+	getListId,
+	idToElementId,
+	isSameId,
+	isSameSingleId,
+	listIdPart,
+	OperationType,
+} from "../../../../platform-kit/meta"
+import {
+	CacheSyncStatus,
 	EntityUpdateData,
 	isUpdateFor,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { CalendarEvent, CalendarEventTypeRef, Contact, ContactTypeRef, GroupSettings } from "@tutao/entities/tutanota"
+import { CalendarEvent, CalendarEventTypeRef, CalendarGroupRoot, Contact, ContactTypeRef, GroupSettings } from "@tutao/entities/tutanota"
 import { CustomerInfoTypeRef, GroupInfo, ReceivedGroupInvitation } from "@tutao/entities/sys"
 import { GroupType, NewPaidPlans } from "../../../../entities/sys/Utils"
 import {
-	$Promisable,
 	assertNotNull,
 	debounce,
 	deepEqual,
 	findAndRemove,
+	getEndOfDay,
 	getStartOfDay,
 	groupByAndMapUniquely,
 	identity,
 	incrementDate,
+	incrementMonth,
 	insertIntoSortedArray,
-	last,
 	lazy,
+	lazyAsync,
 	memoized,
 	millisToDays,
 	noOp,
@@ -34,16 +46,17 @@ import {
 	UpgradePromptType,
 	WeekStart,
 } from "../../../../platform-kit/app-env"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { LoginController } from "../../../common/api/main/LoginController"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import {
 	addDaysForRecurringEvent,
+	birthdayCalendarEventContactId,
 	CalendarTimeRange,
 	CalendarType,
+	DefaultDateProvider,
 	eventComparator,
-	extractContactIdFromEvent,
 	getDiffIn60mIntervals,
 	getMonthRange,
 	getStartOfDayWithZone,
@@ -77,11 +90,24 @@ import { EventEditorDialog } from "../gui/eventeditor-view/CalendarEventEditDial
 import { showPlanUpgradeRequiredDialog } from "../../../common/misc/SubscriptionDialogs"
 import { formatDate, formatTime } from "../../../../ui/utils/Formatter"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { SyncStatus } from "../../../common/calendar/gui/ImportExportUtils"
+import { SyncStatus } from "../../../common/calendar/import/ImportExportUtils"
 import { CalendarSidebarRowIconData } from "../gui/CalendarSidebarRow"
 import { Time } from "../../../common/calendar/date/Time"
 import { getTimeFormatForUser } from "../../../common/api/common/utils/UserUtils"
 import { ProgressMonitorInterface } from "../../../../platform-kit/network/ProgressMonitorInterface"
+import { OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
+import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
+import { CalendarImporter } from "../../../common/calendar/import/CalendarImporter"
+import { ImportInteractionHandler } from "../../../common/calendar/gui/ImportInteractionHandler"
+import { selectAndParseIcalFile } from "../../../common/calendar/gui/CalendarImporterDialog"
+import { EventSeriesResolver } from "../../../common/calendar/import/EventSeriesResolver"
+import { $Promisable } from "../../../mail-app/workerUtils/index/IndexerPromiseUtils"
+import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SearchRouter } from "../../../common/search/view/SearchRouter"
+import { encodeCalendarSearchKey } from "../search/model/CalendarSearchUtils"
+import { CalendarSearchModel } from "../../search/model/CalendarSearchModel"
+import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
 
 export interface EventWrapperFlags {
 	/**
@@ -209,7 +235,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	private _isNewPaidPlan: boolean = false
 	isCreatingExternalCalendar: boolean = false
 
-	private cancelSignal: Stream<boolean> = stream(false)
+	private abortController: AbortController = new AbortController()
 
 	private calendarColorsMap: (availableCalendars: ReadonlyArray<CalendarInfoBase>) => Map<Id, string>
 
@@ -224,12 +250,22 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 
 	private scrollByListener: ScrollByListener = noOp
 
+	private readonly syncListener: SyncListener = {
+		id: "CalendarViewModel",
+		priority: ListenerPriority.NORMAL,
+		targetStatus: CacheSyncStatus.OnlineSyncOngoing,
+		onSyncStatusChange: async () => {
+			await this.preloadMonthsAroundSelectedDate(true)
+		},
+	}
+
 	constructor(
 		private readonly logins: LoginController,
 		private readonly createCalendarEventModel: CalendarEventModelFactory,
 		private readonly createCalendarEventPreviewModel: CalendarEventPreviewModelFactory,
 		private readonly createCalendarContactPreviewModel: CalendarContactPreviewModelFactory,
 		private readonly calendarModel: CalendarModel,
+		private readonly searchModel: lazyAsync<CalendarSearchModel>,
 		private readonly eventsRepository: CalendarEventsRepository,
 		private readonly entityClient: EntityClient,
 		eventController: EventController,
@@ -240,6 +276,9 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		private readonly mailboxModel: MailboxModel,
 		private readonly contactModel: ContactModel,
 		private readonly groupSettingsModel: lazy<Promise<GroupSettingsModel>>,
+		private readonly operationProgressTracker: OperationProgressTracker,
+		private readonly syncTracker: SyncTracker,
+		private readonly searchRouter: SearchRouter,
 	) {
 		this.calendarColorsMap = memoized((availableCalendars: ReadonlyArray<CalendarInfoBase>) => {
 			const calendarColors = new Map()
@@ -251,7 +290,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 
 		this._transientEvents = []
 
-		const userId = logins.getUserController().user._id
+		const userId = elementIdToId(logins.getUserController().user._id)
 
 		this._hiddenCalendars = new Set(this.deviceConfig.getHiddenCalendars(userId))
 
@@ -268,16 +307,17 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 				const groupRoots = Array.from(newInfos.values()).map((i) => i.groupRoot)
 				const lists = [...groupRoots.map((g) => g.longEvents), ...groupRoots.map((g) => g.shortEvents)]
 				const previewListId = getListId(event)
-				if (!lists.some((id) => isSameId(previewListId, id))) {
+				if (!lists.some((id) => isSameSingleId(previewListId, id))) {
 					this.updatePreviewedEvent(null)
 				}
 			}
 			this.preloadMonthsAroundSelectedDate()
 		})
 
-		eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates) => this.entityEventReceived(updates),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		eventController.addEntityUpdatesListener({
+			id: "CalendarViewModel",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.NORMAL,
 		})
 
 		calendarInvitationsModel.init()
@@ -300,6 +340,11 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 			})
 	}
 
+	/** init is called every time the view is opened */
+	init() {
+		this.syncTracker.addSyncListener(this.syncListener)
+	}
+
 	/**
 	 * Sets the flag to be consumed once by the getter.
 	 */
@@ -318,9 +363,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	}
 
 	private _sendCancelSignal() {
-		this.cancelSignal(true)
-		this.cancelSignal.end(true)
-		this.cancelSignal = stream(false)
+		this.abortController.abort()
+		this.abortController = new AbortController()
 	}
 
 	setPreviewedEventId(id: IdTuple | null) {
@@ -372,7 +416,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	 * react to changes to the calendar data by making sure we have the current month + the two adjacent months
 	 * ready to be rendered
 	 */
-	private preloadMonthsAroundSelectedDate = debounce(200, async () => {
+	private preloadMonthsAroundSelectedDate = debounce(200, async (isForceReload: boolean = false) => {
 		// load all calendars. if there is no calendar yet, create one
 		// for each calendar we load short events for three months +3
 		const workPerCalendar = 3
@@ -392,7 +436,12 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 			if (hasNewPaidPlan) {
 				await this.eventsRepository.loadContactsBirthdays()
 			}
-			await this.loadMonthsIfNeeded([new Date(thisMonthStart), nextMonthDate, previousMonthDate], progressMonitor, this.cancelSignal)
+			await this.loadMonthsIfNeeded(
+				[new Date(thisMonthStart), nextMonthDate, previousMonthDate],
+				progressMonitor,
+				this.abortController.signal,
+				isForceReload,
+			)
 		} finally {
 			progressMonitor.completed()
 			this.doRedraw()
@@ -443,9 +492,9 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	 */
 	private canFullyEditEvent(event: CalendarEvent): boolean {
 		const userController = this.logins.getUserController()
-		const userMailGroup = userController.getUserMailGroupMembership().group
+		const userMailGroup = idToElementId(userController.getUserMailGroupMembership().group)
 		const mailboxDetailsArray = this.mailboxModel.mailboxDetails()
-		const mailboxDetails = assertNotNull(mailboxDetailsArray.find((md) => md.mailGroup._id === userMailGroup))
+		const mailboxDetails = assertNotNull(mailboxDetailsArray.find((md) => isSameId(md.mailGroup._id, userMailGroup)))
 		const ownMailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userController.userGroupInfo)
 		const eventType = getEventType(event, this.calendarInfos, ownMailAddresses, userController)
 		return eventType === EventType.OWN || eventType === EventType.SHARED_RW
@@ -548,7 +597,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	setHiddenCalendars(newHiddenCalendars: Set<Id>) {
 		this._hiddenCalendars = newHiddenCalendars
 
-		this.deviceConfig.setHiddenCalendars(this.logins.getUserController().user._id, [...newHiddenCalendars])
+		const userId = this.logins.getUserController().user._id
+		this.deviceConfig.setHiddenCalendars(elementIdToId(userId), [...newHiddenCalendars])
 	}
 
 	/**
@@ -709,7 +759,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 				},
 				color,
 			}
-			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.zone)
+			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.calendarTimeZone)
 
 			const occurrencesLeft =
 				newEventModel.editModels.whenModel.repeatEndOccurrences -
@@ -767,10 +817,14 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 			const calendarInfos = await this.calendarModel.getCalendarInfosCreateIfNeeded()
 			let previewModel: CalendarPreviewModels
 			if (isBirthdayCalendar(listIdPart(event._id))) {
-				const idParts = event._id[1].split("#")!
-				const contactId = extractContactIdFromEvent(last(idParts))!
-				const contactIdParts = contactId.split("/")
-				const contact = await this.contactModel.loadContactFromId([contactIdParts[0], contactIdParts[1]])
+				const contactId = birthdayCalendarEventContactId(event._id)
+				if (contactId == null) {
+					console.warn("Invalid birthday event id: ", event._id.join("/"))
+					this.previewedEvent(null)
+					this.doRedraw()
+					return null
+				}
+				const contact = await this.contactModel.loadContactFromId(contactId)
 				previewModel = await this.createCalendarContactPreviewModel(event, contact, true)
 			} else {
 				previewModel = await this.createCalendarEventPreviewModel(event, calendarInfos, [])
@@ -781,10 +835,10 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		}
 	}
 
-	private async entityEventReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(CalendarEventTypeRef, update)) {
-				const eventId: IdTuple = [update.instanceListId, update.instanceId]
+				const eventId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
 				const previewedEvent = this.previewedEvent()
 				if (previewedEvent != null && isUpdateFor(previewedEvent.event, update)) {
 					if (update.operation === OperationType.DELETE) {
@@ -796,11 +850,11 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 							const event = await this.entityClient.load(CalendarEventTypeRef, eventId)
 							await this.updatePreviewedEvent(event)
 						} catch (e) {
-							if (e instanceof restError.NotAuthorizedError) {
+							if (e instanceof NotAuthorizedError) {
 								// return updates that are not in cache Range if NotAuthorizedError (for those updates that are in cache range)
-								console.log("NotAuthorizedError for event in entityEventsReceived of view", e)
-							} else if (e instanceof restError.NotFoundError) {
-								console.log("Not found event in entityEventsReceived of view", e)
+								console.log("NotAuthorizedError for event in onEntityUpdatesReceived of view", e)
+							} else if (e instanceof NotFoundError) {
+								console.log("Not found event in onEntityUpdatesReceived of view", e)
 							} else {
 								throw e
 							}
@@ -813,7 +867,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 					this.doRedraw()
 				}
 			} else if (isUpdateForTypeRef(ContactTypeRef, update) && this.isNewPaidPlan) {
-				await this.eventsRepository.handleContactEvent(update.operation, [update.instanceListId, update.instanceId])
+				const contactId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
+				await this.eventsRepository.handleContactEvent(update.operation, contactId)
 				this.doRedraw()
 			} else if (isUpdateForTypeRef(CustomerInfoTypeRef, update)) {
 				this.logins
@@ -828,8 +883,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		return this.calendarModel.getCalendarInfosCreateIfNeeded()
 	}
 
-	loadMonthsIfNeeded(daysInMonths: Array<Date>, progressMonitor: ProgressMonitorInterface, canceled: Stream<boolean>): Promise<void> {
-		return this.eventsRepository.loadMonthsIfNeeded(daysInMonths, canceled, progressMonitor)
+	loadMonthsIfNeeded(daysInMonths: Array<Date>, progressMonitor: ProgressMonitorInterface, canceled: AbortSignal, isForceReload: boolean): Promise<void> {
+		return this.eventsRepository.loadMonthsIfNeeded(daysInMonths, canceled, progressMonitor, undefined, isForceReload)
 	}
 
 	private doRedraw() {
@@ -935,6 +990,50 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 
 	get isAmPm() {
 		return getTimeFormatForUser(this.logins.getUserController().userSettingsGroupRoot) === TimeFormat.TWELVE_HOURS
+	}
+
+	async importIcsFile(groupRoot: CalendarGroupRoot, calendarInfo: CalendarInfoBase) {
+		const parsedEventAlarmTuples = await showProgressDialog("loading_msg", selectAndParseIcalFile())
+		const importer = new CalendarImporter(
+			this.calendarModel,
+			new ImportInteractionHandler(),
+			this.operationProgressTracker,
+			new EventSeriesResolver(this.calendarModel, new DefaultDateProvider()),
+			this.timeZone,
+		)
+		await importer.import(groupRoot, calendarInfo, parsedEventAlarmTuples, CalendarImporter.classifyImportedEvents, calendarInfo.type)
+	}
+
+	selectSearchResult(searchQuery: SearchQuery, calendarEvent: CalendarEvent | null) {
+		this.searchRouter.routeTo(searchQuery.query, searchQuery.restriction, calendarEvent ? encodeCalendarSearchKey(calendarEvent) : null)
+	}
+
+	async getSearchResult({ query, maxResults }: QuickSearchQuery): Promise<LiveSearchResult<CalendarEvent>> {
+		const selectedDate = this.selectedDate()
+
+		const { createCalendarRestriction } = await import("../search/model/CalendarSearchUtils.js")
+
+		let startDate: Date
+
+		if (this.logins.getUserController().isFreeAccount()) {
+			startDate = new Date()
+		} else {
+			startDate = new Date(selectedDate)
+		}
+		startDate.setDate(1)
+
+		const start = getStartOfDay(startDate).getTime()
+
+		let endDate = incrementMonth(new Date(start), 3)
+		endDate.setDate(0)
+		const end = getEndOfDay(endDate).getTime()
+
+		const restriction = createCalendarRestriction({ start, end, folderIds: [], eventSeries: true })
+		return (await this.searchModel()).searchCalendar({ query, maxResults, restriction }, this.abortController.signal)
+	}
+
+	deinit() {
+		this.syncTracker.removeSyncListener(this.syncListener)
 	}
 }
 

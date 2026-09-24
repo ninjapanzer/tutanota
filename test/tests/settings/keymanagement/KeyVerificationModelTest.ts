@@ -8,9 +8,9 @@ import { matchers, object, verify, when } from "testdouble"
 import { Versioned } from "../../../../src/platform-kit/utils"
 import { PermissionType } from "../../../../src/app-kit/native-bridge/common/generatedipc/types/PermissionType.js"
 import { QRCode } from "jsqr"
-import { PublicIdentityKeyProvider } from "../../../../src/platform-kit/base/crypto/PublicIdentityKeyProvider"
-import { TrustDBEntry } from "../../../../src/app-kit/local-store/IdentityKeyTrustDatabase"
+import { PublicIdentityKeyProvider } from "../../../../src/platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import {
+	EnvType,
 	IdentityKeyQrVerificationResult,
 	IdentityKeySourceOfTrust,
 	IdentityKeyVerificationMethod,
@@ -21,6 +21,7 @@ import { DesktopSystemFacade } from "../../../../src/app-kit/native-bridge/commo
 import { withOverriddenEnv } from "../../TestUtils"
 import { SigningPublicKey } from "../../../../src/platform-kit/crypto/encryption/Ed25519"
 import { PublicKeyIdentifierType } from "../../../../src/platform-kit/crypto"
+import { TrustDBEntry } from "../../../../src/platform-kit/base/base-crypto/persistence/IdentityKeyTrustDatabase"
 
 o.spec("KeyVerificationModelTest", function () {
 	let keyVerificationModel: KeyVerificationModel
@@ -169,7 +170,7 @@ o.spec("KeyVerificationModelTest", function () {
 	})
 
 	o.spec("test requestCameraPermission() on desktop macOS", function () {
-		const desktopEnv: Partial<typeof env> = { mode: Mode.Desktop, platformId: "darwin" }
+		const desktopEnv: EnvType = { ...env, mode: Mode.Desktop, platformId: "darwin" }
 
 		o("permission already given", async function () {
 			when(desktopSystemFacade.requestVideoPermission()).thenResolve(true)

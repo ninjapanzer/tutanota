@@ -1,6 +1,6 @@
 {
 	"name": "tutanota",
-	"version": "348.260528.0",
+	"version": "359.260904.0",
 	"license": "GPL-3.0",
 	"repository": {
 		"type": "git",
@@ -28,39 +28,42 @@
 		"fix": "npm run style:fix && npm run lint:fix",
 		"trace-imports": "node --import ./buildSrc/review/import-hooks.js",
 		"review-import-trace": "node ./buildSrc/review/review.js import-trace.json",
-		"ios:generate-project": "cd app-ios && xcodegen --spec mail-project.yml && xcodegen --spec calendar-project.yml && cd ../tuta-sdk/ios && xcodegen --spec project.yml"
+		"ios:generate-project": "cd app-ios && xcodegen --spec mail-project.yml && xcodegen --spec calendar-project.yml && xcodegen --spec drive-project.yml && cd ../tuta-sdk/ios && xcodegen --spec project.yml"
 	},
 	"dependencies": {
-		"@indutny/simple-windows-notifications": "git+https://github.com/tutao/simple-windows-notifications.git#58600c1639ff47a1bae5e195ac8b52e87b17796e",
 		"@fingerprintjs/botd": "1.9.1",
+		"@indutny/simple-windows-notifications": "git+https://github.com/tutao/simple-windows-notifications.git#58600c1639ff47a1bae5e195ac8b52e87b17796e",
 		"@material/material-color-utilities": "git+https://github.com/tutao/material-color-utilities#064dcc2768cb0c8106c150a819eedb6233bb1d0a",
 		"@signalapp/sqlcipher": "git+https://github.com/tutao/node-sqlcipher#8d7eaa36321d7147faa3583231635855d8a991e7",
+		"@tensorflow/tfjs-backend-cpu": "4.22.0",
+		"@tensorflow/tfjs-backend-webgl": "4.22.0",
 		"@tensorflow/tfjs-core": "4.22.0",
 		"@tensorflow/tfjs-layers": "4.22.0",
-		"@tensorflow/tfjs-backend-webgl": "4.22.0",
-		"@tensorflow/tfjs-backend-cpu": "4.22.0",
-		"@tutao/oxmsg": "0.0.9-beta.0",
+		"@tutao/oxmsg": "0.2.3",
 		"@types/better-sqlite3": "7.4.2",
 		"@types/luxon": "3.6.2",
 		"@types/mithril": "2.0.11",
 		"@types/qrcode-svg": "1.1.4",
-		"cborg": "4.2.2",
-		"dompurify": "3.4.0",
-		"electron": "42.0.0",
+		"cborg": "6.1.1",
+		"dompurify": "3.4.14",
+		"electron": "44.1.0",
 		"electron-updater": "6.7.3",
+		"imapflow": "1.3.2",
 		"jsqr": "1.4.0",
 		"jszip": "3.10.1",
 		"linkify-html": "4.3.2",
 		"linkifyjs": "4.3.2",
 		"luxon": "3.6.1",
 		"mithril": "2.2.2",
+		"openid-client": "6.8.4",
 		"pako": "2.1.0",
+		"postal-mime": "2.7.4",
 		"qrcode-svg": "1.1.0",
 		"squire-rte": "2.2.7",
-		"undici": "7.24.4"
+		"undici": "8.10.0"
 	},
 	"optionalDependencies": {
-		"dmg-license": "^1.0.11"
+		"dmg-license": "1.0.11"
 	},
 	"devDependencies": {
 		"@electron/notarize": "3.0.1",
@@ -71,16 +74,15 @@
 		"@rollup/plugin-commonjs": "26.0.1",
 		"@rollup/plugin-json": "6.1.0",
 		"@rollup/plugin-node-resolve": "15.3.1",
-		"@rollup/plugin-replace": "^6.0.2",
-		"@rollup/plugin-terser": "0.4.4",
+		"@rollup/plugin-replace": "6.0.2",
+		"@rollup/plugin-terser": "1.0.0",
 		"@rollup/plugin-typescript": "12.1.2",
 		"@types/express": "5.0.3",
-		"@types/node": "22.16.0",
-		"@types/pako": "^2.0.3",
+		"@types/node": "26.1.2",
+		"@types/pako": "2.0.3",
 		"body-parser": "2.2.0",
 		"commander": "14.0.0",
-		"json5": "^2.2.1",
-		"electron-builder": "26.7.0",
+		"electron-builder": "26.15.3",
 		"eslint": "9.29.0",
 		"eslint-plugin-unicorn": "59.0.1",
 		"express": "5.1.0",
@@ -88,6 +90,7 @@
 		"globals": "16.2.0",
 		"js-yaml": "4.1.0",
 		"jsdom": "26.1.0",
+		"json5": "2.2.3",
 		"node-gyp": "11.2.0",
 		"octokit": "5.0.3",
 		"prettier": "3.5.3",
@@ -95,17 +98,17 @@
 		"rollup": "4.60.0",
 		"rollup-plugin-visualizer": "6.0.3",
 		"testdouble": "3.20.2",
-		"typescript": "5.8.3",
-		"typescript-eslint": "8.34.0",
+		"typescript": "6.0.3",
+		"typescript-eslint": "8.66.0",
+		"wasm-pack": "git+https://github.com/tutao/wasm-pack.git#b1e0e982fee26803ba6b8a8c29197d2a8cdd93f3",
 		"xhr2": "0.2.1",
-		"zx": "8.5.5",
-		"wasm-pack": "git+https://github.com/tutao/wasm-pack.git#b1e0e982fee26803ba6b8a8c29197d2a8cdd93f3"
+		"zx": "8.5.5"
 	},
 	"workspaces": [
 		"./src/licc"
 	],
 	"engines": {
 		"npm": ">=10.0.0",
-		"node": ">=22.16.0"
+		"node": ">=24.17.0"
 	}
 }

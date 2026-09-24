@@ -1,6 +1,6 @@
 import { Dialog } from "../../../ui/base/Dialog.js"
-import { assertMainOrNode, CancelledError, isAdminClient, isAndroidApp, isApp, isDesktop, isIOSApp, isTest, ProgrammingError } from "@tutao/app-env"
-import { assert, assertNotNull, promiseMap, sortableTimestamp } from "@tutao/utils"
+import { CancelledError, EnvProvider, ProgrammingError } from "@tutao/app-env"
+import { assert, assertNotNull, getFirstOrThrow, isNotNull, promiseMap, sortableTimestamp } from "@tutao/utils"
 import type { NativeFileApp } from "../../../app-kit/native-bridge/common/FileApp.js"
 import { BlobFacade } from "../api/worker/facades/lazy/BlobFacade.js"
 import { FileController, zipDataFiles } from "./FileController.js"
@@ -11,7 +11,7 @@ import { TransferId } from "../../../entities/drive/Utils"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { createReferencingInstance } from "../../../entities/storage/BlobUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * coordinates downloads when we have access to native functionality
@@ -21,7 +21,10 @@ export class FileControllerNative extends FileController {
 		blobFacade: BlobFacade,
 		private readonly fileApp: NativeFileApp,
 	) {
-		assert(isDesktop() || isAdminClient() || isApp() || isTest(), "Don't make native file controller when not in native")
+		assert(
+			EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient() || EnvProvider.get().isApp() || EnvProvider.isTest(),
+			"Don't make native file controller when not in native",
+		)
 		super(blobFacade)
 	}
 
@@ -45,10 +48,10 @@ export class FileControllerNative extends FileController {
 		// For apps "opening" DataFile currently means saving and opening it.
 		try {
 			const fileReference = await this.fileApp.writeDataFile(file)
-			if (isAndroidApp() || isDesktop()) {
+			if (EnvProvider.get().isAndroidApp() || EnvProvider.get().isDesktop()) {
 				await this.fileApp.putFileIntoDownloadsFolder(fileReference.location, fileReference.name)
 				return
-			} else if (isIOSApp()) {
+			} else if (EnvProvider.get().isIOSApp()) {
 				return this.fileApp.open(fileReference)
 			}
 		} catch (e) {
@@ -74,11 +77,11 @@ export class FileControllerNative extends FileController {
 	}
 
 	async writeDownloadedFiles(downloadedFiles: FileReference[]): Promise<void> {
-		if (isIOSApp()) {
+		if (EnvProvider.get().isIOSApp()) {
 			await this.processDownloadedFilesIOS(downloadedFiles)
-		} else if (isDesktop()) {
+		} else if (EnvProvider.get().isDesktop()) {
 			await this.processDownloadedFilesDesktop(downloadedFiles)
-		} else if (isAndroidApp()) {
+		} else if (EnvProvider.get().isAndroidApp()) {
 			await promiseMap(downloadedFiles, (file) => this.fileApp.putFileIntoDownloadsFolder(file.location, file.name))
 		} else {
 			throw new ProgrammingError("in filecontroller native but not in ios, android or desktop? - tried to write")
@@ -86,9 +89,7 @@ export class FileControllerNative extends FileController {
 	}
 
 	async openDownloadedFiles(downloadedFiles: FileReference[]): Promise<void> {
-		if (isIOSApp()) {
-			await this.processDownloadedFilesIOS(downloadedFiles)
-		} else if (isDesktop() || isAndroidApp()) {
+		if (EnvProvider.get().isDesktop() || EnvProvider.get().isAndroidApp() || EnvProvider.get().isIOSApp()) {
 			await this.openFiles(downloadedFiles)
 		} else {
 			throw new ProgrammingError("in filecontroller native but not in ios, android or desktop? - tried to open")
@@ -107,11 +108,17 @@ export class FileControllerNative extends FileController {
 			return
 		}
 		console.log("downloaded files in processing", downloadedFiles.length)
-		const dataFiles = (await promiseMap(downloadedFiles, (f) => this.fileApp.readDataFile(f.location))).filter(Boolean)
-		const fileInTemp =
-			dataFiles.length === 1
-				? downloadedFiles[0]
-				: await this.fileApp.writeDataFile(await zipDataFiles(dataFiles as Array<DataFile>, `${sortableTimestamp()}-attachments.zip`))
+		let fileInTemp: FileReference
+		if (downloadedFiles.length > 1) {
+			// If multiple files were downloaded they are zipped into one.
+			// Currently used for mail attachments only.
+			// Will fail if used with big data, use with caution.
+			// Ideally we shouldn't do it in the renderer process.
+			const dataFiles = (await promiseMap(downloadedFiles, (f) => this.fileApp.readDataFile(f.location))).filter(isNotNull)
+			fileInTemp = await this.fileApp.writeDataFile(await zipDataFiles(dataFiles, `${sortableTimestamp()}-attachments.zip`))
+		} else {
+			fileInTemp = getFirstOrThrow(downloadedFiles)
+		}
 		await this.fileApp.putFileIntoDownloadsFolder(fileInTemp.location, fileInTemp.name)
 	}
 
@@ -120,7 +127,7 @@ export class FileControllerNative extends FileController {
 	private async processDownloadedFilesIOS(downloadedFiles: FileReference[]): Promise<void> {
 		await promiseMap(downloadedFiles, async (file) => {
 			try {
-				await this.fileApp.open(file)
+				await this.fileApp.putFileIntoDownloadsFolder(file.location, file.name)
 			} finally {
 				await this.fileApp.deleteFile(file.location).catch((e: any) => console.log("failed to delete file", file.location, e))
 			}
@@ -133,7 +140,8 @@ export class FileControllerNative extends FileController {
 				await this.fileApp.open(file)
 			} finally {
 				// on desktop, we don't get to know when the other app is done with the file, so we leave cleanup to the OS
-				if (isApp()) await this.fileApp.deleteFile(file.location).catch((e: any) => console.log("failed to delete file", file.location, e))
+				if (EnvProvider.get().isApp())
+					await this.fileApp.deleteFile(file.location).catch((e: any) => console.log("failed to delete file", file.location, e))
 			}
 		})
 	}

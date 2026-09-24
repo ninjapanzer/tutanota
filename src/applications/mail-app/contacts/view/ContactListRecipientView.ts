@@ -1,5 +1,5 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { assertMainOrNode } from "../../../../platform-kit/app-env"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import { ListColumnWrapper } from "../../../../ui/ListColumnWrapper.js"
 import ColumnEmptyMessageBox from "../../../../ui/base/ColumnEmptyMessageBox.js"
 import { theme } from "../../../../ui/theme.js"
@@ -19,11 +19,11 @@ import {
 } from "../../../../ui/SelectableRowContainer.js"
 import { component_size, px } from "../../../../ui/size.js"
 import { shiftByForCheckbox, translateXHide, translateXShow } from "./ContactRow.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 
 import { ContactListEntry } from "@tutao/entities/tutanota"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface ContactListViewAttrs {
 	viewModel: ContactListViewModel
@@ -59,7 +59,7 @@ export class ContactListRecipientView implements Component<ContactListViewAttrs>
 							focusDetailsViewer()
 						},
 						onSingleTogglingMultiselection: (item: ContactListEntry) => {
-							listModel.onSingleInclusiveSelection(item, styles.isSingleColumnLayout())
+							listModel.onSingleInclusiveSelection(item, Styles.get().isSingleColumnLayout())
 						},
 						onRangeSelectionTowards: (item: ContactListEntry) => {
 							listModel.selectRangeTowards(item)

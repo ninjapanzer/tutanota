@@ -1,6 +1,6 @@
 {
 	"extends": "../../tsconfig_common.json",
-	"include": ["native-bridge", "../../types/", "../../types.d.ts"],
+	"include": ["native-bridge", "../types/", "../../types.d.ts"],
 	"compilerOptions": {
 		"rootDir": "native-bridge",
 		"outDir": "../../build/native-bridge",
@@ -8,6 +8,9 @@
 		"composite": true
 	},
 	"references": [
+		{
+			"path": "../platform-kit/tsconfig.base.json"
+		},
 		{
 			"path": "../platform-kit/tsconfig.meta.json"
 		},

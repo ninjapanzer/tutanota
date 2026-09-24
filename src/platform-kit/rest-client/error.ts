@@ -1,7 +1,8 @@
 //@bundleInto:common-min
 
 import { TutanotaError } from "@tutao/app-env"
-import { filterInt } from "@tutao/utils"
+import { filterInt, isNotNull, Nullable } from "@tutao/utils"
+import { TsNumber } from "../app-env/TranspileCompatibility"
 
 export class ConnectionError extends TutanotaError {
 	static CODE: number = 0
@@ -59,7 +60,7 @@ export class RequestTimeoutError extends TutanotaError {
 	}
 }
 
-export class PreconditionFailedError extends TutanotaError {
+export class PreconditionFailedError extends TutanotaError<string | null> {
 	static CODE: number = 412
 	// data field is respected by the WorkerProtocol. Other fields might not be passed
 	data: string | null
@@ -192,8 +193,13 @@ export class PayloadTooLargeError extends TutanotaError {
 /**
  * Attention: When adding an Error also add it in WorkerProtocol.ErrorNameToType.
  */
-export function handleRestError(errorCode: number, path?: string, errorId?: string | null, precondition?: string | null): TutanotaError {
-	let message = `${errorCode}: ${errorId ? errorId + " " : ""}${precondition ? precondition + " " : ""}${path}`
+export function handleRestError(
+	errorCode: number,
+	path: Nullable<string> = null,
+	errorId: Nullable<string> = null,
+	precondition: Nullable<string> = null,
+): TutanotaError<string | null> {
+	const message = `${errorCode}: ${isNotNull(errorId) ? errorId + " " : ""}${isNotNull(precondition) ? precondition + " " : ""}${path}`
 
 	switch (errorCode) {
 		case ConnectionError.CODE:
@@ -267,14 +273,14 @@ export function handleRestError(errorCode: number, path?: string, errorId?: stri
 	}
 }
 
-export class SuspensionError extends TutanotaError {
+export class SuspensionError extends TutanotaError<string | null> {
 	// milliseconds to wait
 	readonly data: string | null
 
 	constructor(message: string, suspensionTime: string | null) {
 		super("SuspensionError", message)
 
-		if (suspensionTime != null && Number.isNaN(filterInt(suspensionTime))) {
+		if (suspensionTime != null && TsNumber.isNaN(filterInt(suspensionTime))) {
 			throw new Error("invalid suspension time value (NaN)")
 		}
 

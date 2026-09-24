@@ -1,40 +1,48 @@
-import o, { assertThrows, throwsErrorWithMessage } from "@tutao/otest"
+import o, { throwsErrorWithMessage } from "@tutao/otest"
 import { stringToUtf8Uint8Array, utf8Uint8ArrayToString } from "../../../src/platform-kit/utils"
 import {
 	Aes128Key,
-	aes256EncryptSearchIndexEntry,
-	aes256EncryptSearchIndexEntryWithIV,
+	Aes256Key,
 	aes256RandomKey,
-	aesDecrypt,
-	aesDecryptUnauthenticated,
-	aesEncrypt,
-	aesEncryptConfigurationDatabaseItem,
 	AesKey,
 	AesKeyLength,
 	base64ToKey,
 	getKeyLengthInBytes,
+	InitializationVector,
 	keyToBase64,
 	random,
-	uint8ArrayToBitArray,
+	uint8ArrayToKey,
 } from "../../../src/platform-kit/crypto"
-import { BLOCK_SIZE_BYTES } from "@tutao/crypto/symmetric-cipher-utils"
+import { uint8ArrayTo128Key, validateInitializationVectorLength } from "@tutao/crypto/symmetric-cipher-utils"
 import { CryptoError } from "../../../src/platform-kit/crypto/error"
+import {
+	aes256EncryptSearchIndexEntry,
+	aes256EncryptSearchIndexEntryWithInitializationVector,
+	aesDecrypt,
+	aesDecryptUnauthenticated,
+	aesEncrypt,
+	aesEncryptConfigurationDatabaseItem,
+} from "../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
 
 o.spec("aes", function () {
-	const iv = new Uint8Array([233, 159, 225, 105, 170, 223, 70, 218, 139, 107, 71, 91, 179, 231, 239, 102])
+	const initializationVector = validateInitializationVectorLength(
+		new Uint8Array([233, 159, 225, 105, 170, 223, 70, 218, 139, 107, 71, 91, 179, 231, 239, 102]),
+	)
 
 	o("encryption roundtrip 128 without mac", () => arrayRoundtrip(aesEncrypt, aesDecrypt, _aes128RandomKey()))
 	o("encryption roundtrip 128 with mac", () => arrayRoundtrip(aesEncrypt, aesDecrypt, _aes128RandomKey()))
 	o("encrypted roundtrip 256 with mac", () => arrayRoundtrip(aesEncrypt, aesDecrypt, aes256RandomKey()))
 	o("encrypted roundtrip 256 searchIndexEntry", () => arrayRoundtrip(aes256EncryptSearchIndexEntry, aesDecryptUnauthenticated, aes256RandomKey()))
 	o("encrypted roundtrip 256 searchIndexEntryWithIV", () =>
-		arrayRoundtrip(aes256EncryptSearchIndexEntryWithIV, aesDecryptUnauthenticated, aes256RandomKey(), iv),
+		arrayRoundtrip(aes256EncryptSearchIndexEntryWithInitializationVector, aesDecryptUnauthenticated, aes256RandomKey(), initializationVector),
 	)
-	o("encrypted roundtrip 256 ConfigurationDatabaseItem", () => arrayRoundtrip(aesEncryptConfigurationDatabaseItem, aesDecrypt, aes256RandomKey(), iv))
+	o("encrypted roundtrip 256 ConfigurationDatabaseItem", () =>
+		arrayRoundtrip(aesEncryptConfigurationDatabaseItem, aesDecrypt, aes256RandomKey(), initializationVector),
+	)
 
-	async function arrayRoundtrip(encrypt, decrypt, key, iv?: Uint8Array) {
+	async function arrayRoundtrip(encrypt, decrypt, key, initializationVector?: InitializationVector) {
 		function runArrayRoundtrip(key: AesKey, plainText) {
-			let encrypted = encrypt(key, plainText, iv)
+			let encrypted = encrypt(key, plainText, initializationVector)
 			return Promise.resolve(encrypted)
 				.then((encrypted) => {
 					return (decrypt as any)(key, encrypted)
@@ -72,21 +80,9 @@ o.spec("aes", function () {
 		o(keyToBase64(base64ToKey(key3Base64))).equals(key3Base64)
 	}
 
-	o("encryptWithInvalidKey", async function () {
-		let key = new Array<number>(2)
-		const e = await assertThrows(CryptoError, async () => aesEncrypt(key, stringToUtf8Uint8Array("hello")))
-		o(e.message.startsWith("Illegal key length")).equals(true)
-	})
-
-	o("decryptWithInvalidKey", async function () {
-		let key = new Array<number>(2).fill(0)
-		const e = await assertThrows(CryptoError, async () => aesDecrypt(key, new Uint8Array(BLOCK_SIZE_BYTES)))
-		o(e.message.startsWith("Illegal key length")).equals(true)
-	})
-
-	o("decryptInvalidData 128", () => decryptInvalidData(_aes128RandomKey(), aesDecrypt, "aes decryption failed> cbc iv must be 128 bits"))
+	o("decryptInvalidData 128", () => decryptInvalidData(_aes128RandomKey(), aesDecrypt, "aes decryption failed> initialization vector must be 128 bits"))
 	o("decryptInvalidData 256 without hmac", () =>
-		decryptInvalidData(aes256RandomKey(), aesDecryptUnauthenticated, "aes decryption failed> cbc iv must be 128 bits"),
+		decryptInvalidData(aes256RandomKey(), aesDecryptUnauthenticated, "aes decryption failed> initialization vector must be 128 bits"),
 	)
 
 	function decryptInvalidData(key, decrypt, errorMessage) {
@@ -95,14 +91,14 @@ o.spec("aes", function () {
 	}
 
 	o("decryptManipulatedData 128 without mac", function () {
-		const key = [151050668, 1341212767, 316219065, 2150939763]
-		let encrypted = aes256EncryptSearchIndexEntryWithIV(key, stringToUtf8Uint8Array("hello"), iv)
+		const key = new Aes256Key([151050668, 1341212767, 316219065, 2150939763, 151050668, 1341212767, 316219065, 2150939763])
+		let encrypted = aes256EncryptSearchIndexEntryWithInitializationVector(key, stringToUtf8Uint8Array("hello"), initializationVector)
 		encrypted[0] = encrypted[0] + 1
 		let decrypted = aesDecryptUnauthenticated(key, encrypted)
 		o(utf8Uint8ArrayToString(decrypted)).equals("kello") // => encrypted data has been manipulated (missing MAC)
 	})
 	o("decryptManipulatedData 128 with mac", function () {
-		let key = [151050668, 1341212767, 316219065, 2150939763]
+		let key = new Aes128Key([151050668, 1341212767, 316219065, 2150939763])
 		let encrypted = aesEncrypt(key, stringToUtf8Uint8Array("hello"))
 		encrypted[1] = encrypted[1] + 1
 
@@ -116,7 +112,7 @@ o.spec("aes", function () {
 		}
 	})
 	o("decryptManipulatedMac 128 with mac", function () {
-		let key = [151050668, 1341212767, 316219065, 2150939763]
+		let key = new Aes128Key([151050668, 1341212767, 316219065, 2150939763])
 		let encrypted = aesEncrypt(key, stringToUtf8Uint8Array("hello"))
 		encrypted[encrypted.length - 1] = encrypted[encrypted.length - 1] + 1
 
@@ -158,5 +154,5 @@ o.spec("aes", function () {
 })
 
 export function _aes128RandomKey(): Aes128Key {
-	return uint8ArrayToBitArray(random.generateRandomData(getKeyLengthInBytes(AesKeyLength.Aes128)))
+	return uint8ArrayTo128Key(random.generateRandomData(getKeyLengthInBytes(AesKeyLength.Aes128)))
 }

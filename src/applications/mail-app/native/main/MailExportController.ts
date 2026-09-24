@@ -1,12 +1,12 @@
 import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/MailboxModel.js"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
-import { GENERATED_MAX_ID, getElementId, isSameId } from "../../../../platform-kit/meta"
+import { elementIdToId, GENERATED_MAX_ID, getElementId, isSameId } from "../../../../platform-kit/meta"
 import { assertNotNull, delay, filterInt, isNotNull, lastThrow } from "../../../../platform-kit/utils"
 import { HtmlSanitizer } from "../../../common/misc/HtmlSanitizer.js"
 import { ExportFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { LoginController } from "../../../common/api/main/LoginController.js"
-import { assertMainOrNode, CancelledError } from "../../../../platform-kit/app-env"
+import { CancelledError, EnvProvider } from "../../../../platform-kit/app-env"
 import { FileOpenError } from "../../../common/api/common/error/FileOpenError.js"
 import { MailExportFacade } from "../../../common/api/worker/facades/lazy/MailExportFacade.js"
 import { SuspensionError } from "../../../common/api/common/error/SuspensionError"
@@ -18,7 +18,7 @@ import { BlobServerUrl } from "@tutao/entities/storage"
 import { MailBag } from "@tutao/entities/tutanota"
 import { MailboxExportState } from "../../../../entities/tutanota/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type FailedMailDisplay = {
 	cells: string[]
@@ -75,7 +75,7 @@ export class MailExportController {
 		const allMailBags = [assertNotNull(mailboxDetail.mailbox.currentMailBag), ...mailboxDetail.mailbox.archivedMailBags]
 
 		try {
-			await this.exportFacade.startMailboxExport(this.userId, mailboxDetail.mailbox._id, allMailBags[0]._id, GENERATED_MAX_ID)
+			await this.exportFacade.startMailboxExport(this.userId, elementIdToId(mailboxDetail.mailbox._id), allMailBags[0]._id, GENERATED_MAX_ID)
 		} catch (e) {
 			if (e instanceof CancelledError) {
 				console.log("Export start cancelled")
@@ -233,7 +233,12 @@ export class MailExportController {
 						await this.exportFacade.saveMailboxExport(mailBundle, this.userId, mailBag._id, getElementId(mail))
 						exportedWithoutFailureCount++
 					} catch (e) {
-						if (e instanceof FileOpenError) {
+						if (e instanceof SuspensionError) {
+							await this.pauseExportForSuspension(e)
+							if (this._state().type !== "exporting") {
+								return
+							}
+						} else if (e instanceof FileOpenError) {
 							this._state({ type: "error", message: e.message })
 							return
 						} else {
@@ -244,6 +249,7 @@ export class MailExportController {
 									failures: currentState.failures + 1,
 								})
 							}
+							console.error(`Failure while exporting mail: ${mail._id.join("/")}`, e)
 							await this.exportFacade.saveMailboxExportFailure(this.userId, mailBag._id, mail._id)
 						}
 					}
@@ -263,13 +269,7 @@ export class MailExportController {
 					console.log(TAG, "Offline, will retry later")
 					await delay(1000 * 60) // 1 min
 				} else if (e instanceof SuspensionError) {
-					const timeToWait = Math.max(filterInt(assertNotNull(e.data)), 1)
-					console.log(TAG, `Pausing for ${Math.floor(timeToWait / 1000 + 0.5)} seconds`)
-					const currentState = this._state()
-					if (currentState.type === "exporting" && !currentState.paused) {
-						this._state({ ...currentState, paused: true })
-					}
-					await delay(timeToWait)
+					await this.pauseExportForSuspension(e)
 					if (this._state().type !== "exporting") {
 						return
 					}
@@ -298,6 +298,16 @@ export class MailExportController {
 				console.log(TAG, "Trying to continue with export")
 			}
 		}
+	}
+
+	private async pauseExportForSuspension(suspensionError: SuspensionError): Promise<void> {
+		const timeToWait = Math.max(filterInt(assertNotNull(suspensionError.data)), 1)
+		console.log(TAG, `Pausing for ${Math.floor(timeToWait / 1000 + 0.5)} seconds`)
+		const currentState = this._state()
+		if (currentState.type === "exporting" && !currentState.paused) {
+			this._state({ ...currentState, paused: true })
+		}
+		await delay(timeToWait)
 	}
 
 	private getServerUrl(): string {

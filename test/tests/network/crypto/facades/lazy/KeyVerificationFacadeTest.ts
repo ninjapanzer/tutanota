@@ -14,14 +14,15 @@ import {
 import testData from "../../../../api/worker/crypto/CompatibilityTestData.json"
 import { createTestEntity } from "../../../../TestUtils"
 import { KeyVerificationMismatchError } from "../../../../../../src/platform-kit/network/error/KeyVerificationMismatchError"
-import { PublicKeySignatureFacade } from "../../../../../../src/platform-kit/base/crypto/PublicKeySignatureFacade"
-import { PublicIdentityKeyProvider } from "../../../../../../src/platform-kit/base/crypto/PublicIdentityKeyProvider"
-import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../../../../../src/app-kit/local-store/IdentityKeyTrustDatabase"
+import { PublicKeySignatureFacade } from "../../../../../../src/platform-kit/base/base-crypto/PublicKeySignatureFacade"
+import { PublicIdentityKeyProvider } from "../../../../../../src/platform-kit/base/base-crypto/PublicIdentityKeyProvider"
+import { LocalIdentityKeyTrustDatabase } from "../../../../../../src/app-kit/local-store/LocalIdentityKeyTrustDatabase"
 
 import { SigningPublicKey } from "../../../../../../src/platform-kit/crypto/encryption/Ed25519"
-import { MaybeSignedPublicKey } from "../../../../../../src/app-kit/local-store/PublicEncryptionKeyCache"
 
 import { PublicKeySignatureTypeRef } from "@tutao/entities/sys"
+import { MaybeSignedPublicKey } from "../../../../../../src/platform-kit/base/base-crypto/MaybeSignedPublicKey"
+import { TrustDBEntry } from "../../../../../../src/platform-kit/base/base-crypto/persistence/IdentityKeyTrustDatabase"
 
 const { anything } = matchers
 
@@ -35,7 +36,7 @@ o.spec("KeyVerificationFacadeTest", function () {
 	let keyVerification: KeyVerificationFacade
 	let publicKeySignatureFacade: PublicKeySignatureFacade
 	let publicIdentityKeyProvider: PublicIdentityKeyProvider
-	let identityKeyTrustDatabase: IdentityKeyTrustDatabase
+	let identityKeyTrustDatabase: LocalIdentityKeyTrustDatabase
 	let publicKeyIdentifier: PublicKeyIdentifier
 	let maybeSignedPublicKey: MaybeSignedPublicKey
 
@@ -181,11 +182,11 @@ o.spec("KeyVerificationFacadeTest", function () {
 		})
 
 		o("key type and key version are embedded in fingerprint", function () {
-			const verifyKeyMetadata = (concatenation: Uint8Array, keyVersion: number, keyType: SigningKeyPairType) => {
+			const verifyKeyMetadata = (concatenation: Uint8Array<ArrayBuffer>, keyVersion: number, keyType: SigningKeyPairType) => {
 				o(concatenation.slice(0, 2)).deepEquals(new Uint8Array([keyVersion, keyType]))
 			}
 
-			let concatenation: Uint8Array
+			let concatenation: Uint8Array<ArrayBuffer>
 			let publicKey: Versioned<SigningPublicKey>
 
 			publicKey = {

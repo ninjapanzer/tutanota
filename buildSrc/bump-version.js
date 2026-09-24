@@ -3,7 +3,6 @@
 
 import { Option, program } from "commander"
 import fs from "node:fs"
-import path from "node:path"
 import { $ } from "zx"
 import { calculateClientVersions } from "./versionUtils.js"
 
@@ -45,8 +44,11 @@ async function run({ platform }) {
 	if (platform === "all" || platform === "android") {
 		await bumpAndroidVersion("app-android/app/build.gradle.kts")
 		await bumpAndroidVersion("app-android/calendar/build.gradle.kts")
+		await bumpAndroidVersion("app-android/drive/build.gradle.kts")
+
 		await bumpAndroidVersionName(currentVersion, newVersionString, "app-android/app/build.gradle.kts")
 		await bumpAndroidVersionName(currentVersion, newVersionString, "app-android/calendar/build.gradle.kts")
+		await bumpAndroidVersionName(currentVersion, newVersionString, "app-android/drive/build.gradle.kts")
 	}
 
 	console.log(`Bumped version ${currentVersionString} -> ${newVersionString}`)
@@ -83,6 +85,7 @@ async function bumpIosVersion(newVersionString) {
 	const plists = [
 		"app-ios/calendar/Info.plist",
 		"app-ios/tutanota/Info.plist",
+		"app-ios/drive/Info.plist",
 		"app-ios/TutanotaNotificationExtension/Info.plist",
 		"app-ios/tutanotaTests/Info.plist",
 	]

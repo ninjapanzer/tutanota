@@ -1,15 +1,36 @@
 // @bundleInto:common
 
-import * as restError from "@tutao/rest-client/error"
-import { LoginIncompleteError } from "@tutao/rest-client/error"
+import {
+	AccessBlockedError,
+	AccessDeactivatedError,
+	AccessExpiredError,
+	BadGatewayError,
+	BadRequestError,
+	ConnectionError,
+	InsufficientStorageError,
+	InternalServerError,
+	InvalidDataError,
+	InvalidSoftwareVersionError,
+	LimitReachedError,
+	LockedError,
+	LoginIncompleteError,
+	MethodNotAllowedError,
+	NotAuthenticatedError,
+	NotAuthorizedError,
+	NotFoundError,
+	PayloadTooLargeError,
+	PreconditionFailedError,
+	RequestTimeoutError,
+	ResourceError,
+	ServiceUnavailableError,
+	SessionExpiredError,
+	TooManyRequestsError,
+} from "@tutao/rest-client/error"
 import { SuspensionError } from "../error/SuspensionError.js"
 import { CryptoError, SessionKeyNotFoundError } from "@tutao/crypto/error"
 import { SseError } from "../error/SseError.js"
-import { CancelledError, InvalidModelError, ProgrammingError } from "@tutao/app-env"
-import { RecipientsNotFoundError } from "../../../../../platform-kit/network/error/RecipientsNotFoundError.js"
-import { RecipientNotResolvedError } from "../../../../../platform-kit/network/error/RecipientNotResolvedError.js"
+import { CancelledError, InvalidModelError, OutOfSyncError, ProgrammingError } from "@tutao/app-env"
 import { OfflineDbClosedError } from "../error/OfflineDbClosedError.js"
-import { OutOfSyncError } from "../../../../../platform-kit/app-env/OutOfSyncError.js"
 import { DbError } from "../error/DbError.js"
 import { IndexingNotSupportedError } from "../error/IndexingNotSupportedError.js"
 import { QuotaExceededError } from "../error/QuotaExceededError.js"
@@ -33,6 +54,9 @@ import { AppLockAuthenticationError } from "../error/AppLockAuthenticationError"
 import { MoveCycleError } from "../error/MoveCycleError"
 import { MoveToTrashError } from "../error/MoveToTrashError"
 import { MoveDestinationIsSourceError } from "../error/MoveDestinationIsSourceError"
+import { FileTooLargeError } from "../error/FileTooLargeError"
+import { RecipientsNotFoundError } from "../../../../../platform-kit/network/error/RecipientsNotFoundError"
+import { RecipientNotResolvedError } from "../../../../../platform-kit/network/error/RecipientNotResolvedError"
 
 // If importing fails it is a good idea to adjust the chunking to bundle the error into common
 
@@ -44,27 +68,27 @@ import { MoveDestinationIsSourceError } from "../error/MoveDestinationIsSourceEr
  * All errors that cross IPC boundaries should be added here.
  */
 const ErrorNameToType = {
-	ConnectionError: restError.ConnectionError,
-	BadRequestError: restError.BadRequestError,
-	NotAuthenticatedError: restError.NotAuthenticatedError,
-	SessionExpiredError: restError.SessionExpiredError,
-	NotAuthorizedError: restError.NotAuthorizedError,
-	NotFoundError: restError.NotFoundError,
-	MethodNotAllowedError: restError.MethodNotAllowedError,
-	PreconditionFailedError: restError.PreconditionFailedError,
-	LockedError: restError.LockedError,
-	TooManyRequestsError: restError.TooManyRequestsError,
-	AccessDeactivatedError: restError.AccessDeactivatedError,
-	AccessExpiredError: restError.AccessExpiredError,
-	AccessBlockedError: restError.TooManyRequestsError,
-	InvalidDataError: restError.TooManyRequestsError,
-	InvalidSoftwareVersionError: restError.TooManyRequestsError,
-	LimitReachedError: restError.TooManyRequestsError,
-	InternalServerError: restError.TooManyRequestsError,
-	BadGatewayError: restError.TooManyRequestsError,
-	ResourceError: restError.TooManyRequestsError,
-	RequestTimeoutError: restError.RequestTimeoutError,
-	InsufficientStorageError: restError.TooManyRequestsError,
+	ConnectionError,
+	BadRequestError,
+	NotAuthenticatedError,
+	SessionExpiredError,
+	NotAuthorizedError,
+	NotFoundError,
+	MethodNotAllowedError,
+	PreconditionFailedError,
+	LockedError,
+	TooManyRequestsError,
+	AccessDeactivatedError,
+	AccessExpiredError,
+	AccessBlockedError,
+	InvalidDataError,
+	InvalidSoftwareVersionError,
+	LimitReachedError,
+	InternalServerError,
+	BadGatewayError,
+	ResourceError,
+	RequestTimeoutError,
+	InsufficientStorageError,
 	CryptoError,
 	SessionKeyNotFoundError,
 	SseError,
@@ -75,13 +99,13 @@ const ErrorNameToType = {
 	ServerModelsUnavailableError,
 	InvalidModelError,
 	OutOfSyncError,
-	ServiceUnavailableError: restError.TooManyRequestsError,
+	ServiceUnavailableError,
 	DbError,
 	IndexingNotSupportedError,
 	QuotaExceededError,
 	CancelledError,
 	FileOpenError,
-	PayloadTooLargeError: restError.TooManyRequestsError,
+	PayloadTooLargeError,
 	DeviceStorageUnavailableError,
 	MailBodyTooLargeError,
 	ImportError,
@@ -96,14 +120,15 @@ const ErrorNameToType = {
 	MoveCycleError,
 	MoveToTrashError,
 	MoveDestinationIsSourceError,
+	FileTooLargeError,
 	Error,
-	"java.net.SocketTimeoutException": restError.ConnectionError,
-	"java.net.SocketException": restError.ConnectionError,
-	"java.net.ConnectException": restError.ConnectionError,
-	"javax.net.ssl.SSLException": restError.ConnectionError,
-	"javax.net.ssl.SSLHandshakeException": restError.ConnectionError,
-	"java.io.EOFException": restError.ConnectionError,
-	"java.net.UnknownHostException": restError.ConnectionError,
+	"java.net.SocketTimeoutException": ConnectionError,
+	"java.net.SocketException": ConnectionError,
+	"java.net.ConnectException": ConnectionError,
+	"javax.net.ssl.SSLException": ConnectionError,
+	"javax.net.ssl.SSLHandshakeException": ConnectionError,
+	"java.io.EOFException": ConnectionError,
+	"java.net.UnknownHostException": ConnectionError,
 	"java.lang.SecurityException": PermissionError,
 	"java.io.FileNotFoundException": FileNotFoundError,
 	"de.tutao.tutashared.CryptoError": CryptoError,
@@ -112,7 +137,7 @@ const ErrorNameToType = {
 	// iOS app crypto error domain
 	"android.content.ActivityNotFoundException": FileOpenError,
 	"de.tutao.tutashared.TutFileViewer": FileOpenError,
-	NSURLErrorDomain: restError.ConnectionError,
+	NSURLErrorDomain: ConnectionError,
 	NSCocoaErrorDomain: Error,
 	"de.tutao.tutashared.CredentialAuthenticationException": CredentialAuthenticationError,
 	"de.tutao.tutashared.AppLockAuthenticationException": AppLockAuthenticationError,

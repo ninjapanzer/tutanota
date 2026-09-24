@@ -3,16 +3,16 @@ use crate::reduce_to_chunks::{KeyedImportMailData, MailUploadDataWithAttachment}
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use crypto_primitives::aes;
-use crypto_primitives::aes::Iv;
+use crypto_primitives::aes::InitializationVector;
 use crypto_primitives::key::GenericAesKey;
 use crypto_primitives::randomizer_facade::RandomizerFacade;
+use crypto_primitives::versioned::VersionedAesKey;
 use file_reader::FileImport;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tutasdk::crypto::key::VersionedAesKey;
 use tutasdk::entities::generated::sys::StringWrapper;
 
 use crate::importer::attachment_importer::PerChunkAttachmentImporter;
@@ -23,7 +23,7 @@ use crate::importer::ImportStatus::Canceled;
 use crate::importer_api::TutaCredentials;
 use tutasdk::bindings::native_file_client::NativeFileClient;
 use tutasdk::entities::generated::tutanota::{
-	ImportMailGetIn, ImportMailPostIn, ImportMailPostOut, ImportMailState,
+	ImportFileMailState, ImportMailGetIn, ImportMailPostIn, ImportMailPostOut,
 };
 use tutasdk::entities::json_size_estimator::estimate_json_size;
 use tutasdk::net::native_rest_client::NativeRestClient;
@@ -51,7 +51,7 @@ pub(super) const FAILED_MAILS_SUB_DIR: &str = "failed-mails";
 #[cfg_attr(feature = "javascript", napi_derive::napi(object))]
 #[cfg_attr(test, derive(Debug))]
 #[derive(Clone, PartialEq)]
-pub struct ImportMailStateId {
+pub struct ImportFileMailStateId {
 	pub list_id: String,
 	pub element_id: String,
 }
@@ -124,20 +124,20 @@ impl Iterator for ImportSource {
 pub(super) type ImportLoopResult = Result<ImportOkKind, MailImportErrorMessage>;
 
 impl ImportEssential {
-	pub async fn load_remote_state(&self) -> Result<ImportMailState, ApiCallError> {
+	pub async fn load_remote_state(&self) -> Result<ImportFileMailState, ApiCallError> {
 		self.logged_in_sdk
 			.mail_facade()
 			.get_crypto_entity_client()
-			.load::<ImportMailState, _>(&self.remote_state_id)
+			.load::<ImportFileMailState, _>(&self.remote_state_id)
 			.await
 	}
 
-	/// updates the remote importMailState, if changes to importMailState are valid
-	/// @params updater: function updating the importMailState internally
+	/// updates the remote importFileMailState, if changes to importFileMailState are valid
+	/// @params updater: function updating the importFileMailState internally
 	///                  and returning whether if it should be uploaded or not.
 	pub(super) async fn update_remote_state(
 		&self,
-		updater: impl Fn(&mut ImportMailState) -> bool,
+		updater: impl Fn(&mut ImportFileMailState) -> bool,
 	) -> Result<(), MailImportErrorMessage> {
 		let mut server_state = self
 			.load_remote_state()
@@ -177,7 +177,8 @@ impl ImportEssential {
 
 		let post_in = ImportMailPostIn {
 			encImports: serialized_imports,
-			mailState: self.remote_state_id.clone(),
+			importFileMailState: Some(self.remote_state_id.clone()),
+			imapFolderSyncState: None,
 			_format: 0,
 		};
 
@@ -226,8 +227,10 @@ impl ImportEssential {
 		total_importable_mails: i64,
 	) -> Result<IdTupleGenerated, PreparationError> {
 		let session_key = GenericAesKey::Aes256(aes::Aes256Key::generate(randomizer_facade));
-		let owner_enc_sk_for_import_state_get =
-			mail_group_key.encrypt_key(&session_key, Iv::generate(randomizer_facade));
+		let owner_enc_sk_for_import_state_get = mail_group_key.encrypt_key(
+			&session_key,
+			InitializationVector::generate(randomizer_facade),
+		);
 		let import_mail_get_in = ImportMailGetIn {
 			_format: 0,
 			newImportedMailSetName: "@internal-mailset".to_string(),
@@ -259,7 +262,7 @@ impl ImportEssential {
 				}
 			})?;
 
-		Ok(import_get_response.mailState)
+		Ok(import_get_response.importFileMailState)
 	}
 }
 
@@ -377,7 +380,7 @@ impl Importer {
 		let remote_import_state = logged_in_sdk
 			.mail_facade()
 			.get_crypto_entity_client()
-			.load::<ImportMailState, _>(&import_state_id)
+			.load::<ImportFileMailState, _>(&import_state_id)
 			.await
 			.map_err(|e| {
 				log::error!("Can not load remote import state: {e:?}");
@@ -741,7 +744,7 @@ impl Importer {
 	}
 }
 
-impl From<IdTupleGenerated> for ImportMailStateId {
+impl From<IdTupleGenerated> for ImportFileMailStateId {
 	fn from(id_tuple: IdTupleGenerated) -> Self {
 		Self {
 			list_id: id_tuple.list_id.to_string(),
@@ -750,8 +753,8 @@ impl From<IdTupleGenerated> for ImportMailStateId {
 	}
 }
 
-impl From<ImportMailStateId> for IdTupleGenerated {
-	fn from(id_tuple: ImportMailStateId) -> Self {
+impl From<ImportFileMailStateId> for IdTupleGenerated {
+	fn from(id_tuple: ImportFileMailStateId) -> Self {
 		Self {
 			list_id: GeneratedId::from(id_tuple.list_id),
 			element_id: GeneratedId::from(id_tuple.element_id),

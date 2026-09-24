@@ -16,21 +16,13 @@ import {
 	incrementDate,
 	isNotEmpty,
 	isSameDay,
-	isSameDayOfDate,
 	isToday,
 	newPromise,
 	numberRange,
 	typedValues,
-} from "../../../../platform-kit/utils"
+} from "@tutao/utils"
 import { IconButton } from "../../../../ui/base/IconButton.js"
-import {
-	formatDateTime,
-	formatDateWithMonth,
-	formatDateWithWeekday,
-	formatMonthWithFullYear,
-	formatTime,
-	timeStringFromParts,
-} from "../../../../ui/utils/Formatter.js"
+import { formatDateWithWeekday, formatMonthWithFullYear } from "../../../../ui/utils/Formatter.js"
 import {
 	AlarmInterval,
 	alarmIntervalToLuxonDurationLikeObject,
@@ -38,37 +30,20 @@ import {
 	ByRule,
 	CalendarDay,
 	CalendarMonth,
-	eventEndsAfterDay,
-	eventStartsBefore,
 	getAllDayDateForTimezone,
-	getEndOfDayWithZone,
 	getEventEnd,
 	getEventStart,
 	getStartOfDayWithZone,
 	getStartOfNextDayWithZone,
 	getStartOfWeek,
-	getTimeZone,
 	getWeekNumber,
-	incrementByRepeatPeriod,
 	StandardAlarmInterval,
 } from "../../../common/calendar/date/CalendarUtils.js"
-import {
-	DAY_IN_MILLIS,
-	DEFAULT_CALENDAR_COLOR,
-	EndType,
-	EventTextTimeOption,
-	isAppleDevice,
-	Keys,
-	ProgrammingError,
-	RepeatPeriod,
-	ShareCapability,
-	Weekday,
-	WeekStart,
-} from "../../../../platform-kit/app-env"
+import { DEFAULT_CALENDAR_COLOR, EndType, EnvProvider, RepeatPeriod, ShareCapability, TimeConstants, Weekday, WeekStart } from "@tutao/app-env"
 import { AllIcons } from "../../../../ui/base/Icon.js"
 import { SelectorItemList } from "../../../../ui/base/DropDownSelector.js"
-import { DateTime, Duration } from "luxon"
-import { CalendarEventTimes, CalendarViewType, isAllDayEvent } from "../../../common/api/common/utils/CommonCalendarUtils.js"
+import { Duration } from "luxon"
+import { CalendarViewType, isAllDayEvent } from "../../../common/api/common/utils/CommonCalendarUtils.js"
 import { layout_size } from "../../../../ui/size.js"
 import { hslToHex, MAX_HUE_ANGLE } from "../../../../ui/base/Color.js"
 import { GroupColors } from "../view/CalendarView.js"
@@ -87,11 +62,12 @@ import { ByDayRule } from "./eventeditor-view/RepeatRuleEditor.js"
 import { getStartOfTheWeekOffset } from "../../../common/misc/weekOffset"
 import { EventInviteEmailType } from "../view/CalendarNotificationSender.js"
 import { Key } from "../../../../ui/utils/KeyManager.js"
-import { IcsCalendarEvent } from "../../../common/calendar/gui/ImportExportUtils.js"
 import { AdvancedRepeatRule, CalendarEvent } from "@tutao/entities/tutanota"
 import { CalendarAttendeeStatus } from "../../../../entities/tutanota/Utils"
 import { AccountType, hasCapabilityOnGroup } from "../../../../entities/sys/Utils"
-import { clone } from "../../../../platform-kit/meta"
+import { clone } from "@tutao/meta"
+import { IcsCalendarEvent } from "../export/CalendarParser"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export interface IntervalOption {
 	value: number
@@ -101,7 +77,7 @@ export interface IntervalOption {
 
 export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
-		title: label,
+		label: label,
 		icon: Icons.ChevronLeft,
 		click,
 	})
@@ -109,7 +85,7 @@ export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () 
 
 export function renderCalendarSwitchRightButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
-		title: label,
+		label: label,
 		icon: Icons.ChevronRight,
 		click,
 	})
@@ -292,7 +268,7 @@ export function getRowDateFromMousePos(mouseEvent: MouseEvent, dayCount: number,
 	const xPosition = mouseEvent.pageX - diffFromOrigin
 	const daysToAdd = Math.floor(xPosition / daysDivisionsWidth)
 
-	return new Date(startOfPeriod.getTime() + DAY_IN_MILLIS * daysToAdd)
+	return new Date(startOfPeriod.getTime() + TimeConstants.DAY_IN_MILLIS * daysToAdd)
 }
 
 export const SELECTED_DATE_INDICATOR_THICKNESS = 4
@@ -395,31 +371,6 @@ export function getCalendarMonth(date: Date, firstDayOfWeekFromOffset: number, w
 		beginningOfMonth,
 		weekdays,
 		weeks,
-	}
-}
-
-export function formatEventDuration(event: CalendarEventTimes, zone: string, includeTimezone: boolean): string {
-	if (isAllDayEvent(event)) {
-		const startTime = getEventStart(event, zone)
-		const startString = formatDateWithMonth(startTime)
-		const endTime = incrementByRepeatPeriod(getEventEnd(event, zone), RepeatPeriod.DAILY, -1, zone)
-
-		if (isSameDayOfDate(startTime, endTime)) {
-			return `${lang.get("allDay_label")}, ${startString}`
-		} else {
-			return `${lang.get("allDay_label")}, ${startString} - ${formatDateWithMonth(endTime)}`
-		}
-	} else {
-		const startString = formatDateTime(event.startTime)
-		let endString
-
-		if (isSameDay(event.startTime, event.endTime)) {
-			endString = formatTime(event.endTime)
-		} else {
-			endString = formatDateTime(event.endTime)
-		}
-
-		return `${startString} - ${endString} ${includeTimezone ? getTimeZone() : ""}`
 	}
 }
 
@@ -644,49 +595,6 @@ export function humanDescriptionForAlarmIntervalUnit(unit: AlarmIntervalUnit): s
 			return lang.get("calendarReminderIntervalUnitDays_label")
 		case AlarmIntervalUnit.WEEK:
 			return lang.get("calendarReminderIntervalUnitWeeks_label")
-	}
-}
-
-export function timeString(date: Date, amPm: boolean): string {
-	return timeStringFromParts(date.getHours(), date.getMinutes(), amPm)
-}
-
-export function timeStringInZone(date: Date, amPm: boolean, zone: string): string {
-	const { hour, minute } = DateTime.fromJSDate(date, {
-		zone,
-	})
-	return timeStringFromParts(hour, minute, amPm)
-}
-
-export function formatEventTime({ endTime, startTime }: CalendarEventTimes, showTime: EventTextTimeOption): string {
-	switch (showTime) {
-		case EventTextTimeOption.START_TIME:
-			return formatTime(startTime)
-
-		case EventTextTimeOption.END_TIME:
-			return ` - ${formatTime(endTime)}`
-
-		case EventTextTimeOption.START_END_TIME:
-			return `${formatTime(startTime)} - ${formatTime(endTime)}`
-
-		default:
-			throw new ProgrammingError(`Unknown time option: ${showTime}`)
-	}
-}
-
-export function formatEventTimes(day: Date, event: CalendarEvent, zone: string): string {
-	if (isAllDayEvent(event)) {
-		return lang.get("allDay_label")
-	} else {
-		const startsBefore = eventStartsBefore(day, zone, event)
-		const endsAfter = eventEndsAfterDay(day, zone, event)
-		if (startsBefore && endsAfter) {
-			return lang.get("allDay_label")
-		} else {
-			const startTime: Date = startsBefore ? day : event.startTime
-			const endTime: Date = endsAfter ? getEndOfDayWithZone(day, zone) : event.endTime
-			return formatEventTime({ startTime, endTime }, EventTextTimeOption.START_END_TIME)
-		}
 	}
 }
 
@@ -1094,7 +1002,7 @@ export function extractCalendarEventModifierKey<T extends MouseEvent | KeyboardE
 	},
 ): Key | undefined {
 	let key
-	if (event.metaKey && isAppleDevice()) {
+	if (event.metaKey && EnvProvider.get().isAppleDevice()) {
 		key = Keys.META
 	} else if (event.ctrlKey) {
 		key = Keys.CTRL

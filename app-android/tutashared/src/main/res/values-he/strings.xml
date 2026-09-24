@@ -8,6 +8,11 @@
     <string name="unlockCredentials_action">שחרר אישורים</string>
     <string name="delete_action">מחיקה</string>
     <string name="markRead_action">סמן כלא נקרא</string>
+    <string name="archive_action">ארכיון</string>
     <string name="sendLogs_action">שליחת דו"חות</string>
     <string name="account_label">משתמש</string>
+    <string name="widgetNoCredentialsInfo_msg">אין פרטי משתמש זמינים</string>
+    <string name="widgetUnexpectedError_msg">אופס! משהו השתבש.</string>
+    <string name="widgetNoEvents_msg">אין אירועים</string>
+    <string name="widgetDescription_msg">הצג את האירועים הקרבים של היום</string>
 </resources>

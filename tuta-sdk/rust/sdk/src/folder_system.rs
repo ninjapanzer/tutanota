@@ -88,8 +88,7 @@ impl FolderSystem {
 		for folder in folders {
 			if folder.is_visible_system() {
 				system.push(folder);
-			} else if folder.mail_set_kind() == MailSetKind::Custom
-				&& folder.parentFolder.is_none()
+			} else if folder.mail_set_kind() == MailSetKind::Custom && folder.parentFolder.is_none()
 			{
 				top_level_custom.push(folder);
 			} else if folder.mail_set_kind() == MailSetKind::Imported && imported_mail_set.is_none()
@@ -332,7 +331,12 @@ mod tests {
 			mail_set("inbox", MailSetKind::Inbox, "", None),
 			mail_set("parent", MailSetKind::Custom, "Parent", None),
 			mail_set("child", MailSetKind::Custom, "Child", Some("parent")),
-			mail_set("grandchild", MailSetKind::Custom, "Grandchild", Some("child")),
+			mail_set(
+				"grandchild",
+				MailSetKind::Custom,
+				"Grandchild",
+				Some("child"),
+			),
 		]);
 
 		let children = fs.custom_folders_of_parent(Some(&id("parent")));
@@ -342,7 +346,10 @@ mod tests {
 		let indented = fs.indented_list();
 		let parent = indented.iter().find(|f| f.folder.name == "Parent").unwrap();
 		let child = indented.iter().find(|f| f.folder.name == "Child").unwrap();
-		let grand = indented.iter().find(|f| f.folder.name == "Grandchild").unwrap();
+		let grand = indented
+			.iter()
+			.find(|f| f.folder.name == "Grandchild")
+			.unwrap();
 		assert_eq!(child.level, parent.level + 1);
 		assert_eq!(grand.level, parent.level + 2);
 	}
@@ -358,7 +365,9 @@ mod tests {
 				.map(|f| f.name.as_str()),
 			Some("Child")
 		);
-		assert!(fs.folder_by_id(&GeneratedId("missing".to_owned())).is_none());
+		assert!(fs
+			.folder_by_id(&GeneratedId("missing".to_owned()))
+			.is_none());
 	}
 
 	#[test]

@@ -1,0 +1,786 @@
+import { CancelledError, EnvProvider, OutOfSyncError, TimeConstants } from "@tutao/app-env"
+import {
+	AccessBlockedError,
+	AccessDeactivatedError,
+	ConnectionError,
+	handleRestError,
+	isExpectedErrorForSynchronization,
+	NotAuthorizedError,
+	ServiceUnavailableError,
+	SessionExpiredError,
+	TooManyRequestsError,
+} from "@tutao/rest-client/error"
+import { type AppName, elementIdToId, isSameTypeRef, timestampToGeneratedId, TypeRef } from "@tutao/meta"
+import { assertNotNull, DateProvider, delay, identity, isNotEmpty, lazyAsync, Nullable, ofClass, promiseMap, randomIntFromInterval } from "@tutao/utils"
+import { DecryptedParsedInstance, EntityAdapter, InstancePipeline, LoggedInUserProvider, SessionKeyResolver, TypeModelResolver } from "@tutao/instance-pipeline"
+import { CloseEventBusOption, ConnectMode, WsConnectionState } from "../../../platform-kit/network/Constants.js"
+import { SessionKeyNotFoundError } from "@tutao/crypto/error"
+import { ProgressMonitorInterface } from "../../../platform-kit/network/ProgressMonitorInterface.js"
+import { WebsocketConnectivityListener } from "../../../platform-kit/network/WebsocketConnectivityListener.js"
+import { LastProcessedEventBatchProvider } from "../../../platform-kit/network/LastProcessedEventBatchProvider.js"
+import { filterIndexMemberships } from "../../../platform-kit/network/GroupUtils.js"
+import { EntityRestCache } from "../../../platform-kit/network/EntityRestCacheInterface.js"
+import { ISleepDetector } from "../../../platform-kit/network/SleepDetector.js"
+import {
+	createWebsocketLeaderStatus,
+	EntityUpdate,
+	OperationStatusUpdate,
+	OperationStatusUpdateTypeRef,
+	sysModelInfo,
+	WebsocketCounterData,
+	WebsocketCounterDataTypeRef,
+	WebsocketEntityData,
+	WebsocketEntityDataTypeRef,
+	WebsocketLeaderStatus,
+	WebsocketLeaderStatusTypeRef,
+} from "@tutao/entities/sys"
+import { GroupType } from "../../../entities/sys/Utils"
+import {
+	MailDetailsBlobTypeRef,
+	MailTypeRef,
+	PhishingMarkerWebsocketData,
+	PhishingMarkerWebsocketDataTypeRef,
+	ReportedMailFieldMarker,
+	tutanotaModelInfo,
+} from "@tutao/entities/tutanota"
+import { EventQueue, QueuedBatch } from "./EventQueue.js"
+import { CacheSyncStatus, EntityUpdateData, entityUpdateToUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityMigrator } from "../../../platform-kit/network/EntityRestClient"
+import { validateKdfNonceLength } from "@tutao/crypto"
+import { IncomingServerJson } from "../../../platform-kit/instance-pipeline/TypeMapper"
+
+EnvProvider.assertWorkerOrNode()
+
+export const enum EventBusState {
+	Automatic = "automatic",
+	// automatic reconnection is enabled
+	Suspended = "suspended",
+	// automatic reconnection is suspended but can be enabled again
+	Terminated = "terminated", // automatic reconnection is disabled and websocket is closed but can be opened again by calling connect explicit
+}
+
+// EntityEventBatches expire after 45 days. keep a time diff security of one day.
+export const ENTITY_EVENT_BATCH_EXPIRE_MS = 44 * 24 * 60 * 60 * 1000
+export const MAX_EVENT_QUEUE_LENGTH_BEFORE_FLUSHING = 500
+
+// InitialSyncWorkEstimates (announced through WS) lower than this are not triggering a reload.
+const INITIAL_SYNC_WORK_ESTIMATE_FEW_UPDATES: number = 100
+
+const RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS = 30000
+const NORMAL_SHUTDOWN_CLOSE_CODE = 1
+/**
+ * Reconnection interval bounds. When we reconnect we pick a random number of seconds in a range to prevent that all the clients connect at the same time which
+ * would put unnecessary load on the server.
+ * The range depends on the number of attempts and the server response.
+ * */
+const RECONNECT_INTERVAL = Object.freeze({
+	SMALL: [5, 10],
+	MEDIUM: [20, 40],
+	LARGE: [60, 120],
+} as const)
+
+/** Known types of messages that can be received over websocket. */
+const enum MessageType {
+	EntityUpdate = "entityUpdate",
+	UnreadCounterUpdate = "unreadCounterUpdate",
+	PhishingMarkers = "phishingMarkers",
+	LeaderStatus = "leaderStatus",
+	OperationStatusUpdate = "operationStatusUpdate",
+	InitialSyncDone = "initialSyncDone",
+	InitialSyncWorkEstimate = "initialSyncWorkEstimate",
+}
+
+export interface EventBusListener {
+	onCounterChanged(counter: WebsocketCounterData): unknown
+
+	onEntityUpdatesReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void>
+
+	/**
+	 * @param markers only phishing (not spam) markers will be sent as event bus updates
+	 */
+	onPhishingMarkersReceived(markers: ReportedMailFieldMarker[]): unknown
+
+	onError(tutanotaError: Error): void
+
+	onSyncStatusChanged(cacheSyncStatus: CacheSyncStatus): unknown
+
+	onOperationStatusUpdate(update: OperationStatusUpdate): unknown
+}
+
+const PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS = 1000
+
+const TAG = "[EventBusClient]"
+
+export class EventBusClient {
+	private state: EventBusState
+	private socket: WebSocket | null
+	private immediateReconnect: boolean = false // if true tries to reconnect immediately after the websocket is closed
+
+	private lastAntiphishingMarkersId: Id | null = null
+
+	/** Queue to process all events. */
+	private readonly eventQueue: EventQueue
+	private reconnectTimer: TimeoutID | null
+	private connectTimer: TimeoutID | null
+
+	private progressMonitor: ProgressMonitorInterface | null = null
+	private isInitialSyncDone: boolean = false
+	private lastMissedBatchId: Id | null = null
+
+	/**
+	 * The artificial work that is added as an overstatement, to make sure the progress bar is not completed too early.
+	 * e.g. group 1 has 5 batches, group 2 has 10000 batches; since sending the messages for group 2 takes time,
+	 * it is possible that the progress bar is completed before the group 2 messages are sent from the server.
+	 *
+	 * In this case, we add 25 artificial work to the progress bar, and complete it
+	 * (with a Timeout of PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS), when we receive the initialSyncDone message.
+	 * Since we receive the initialSyncDone message only after the group2 also sends its messages,
+	 * we can be sure that the progress bar is not completed too early.
+	 */
+	private readonly artificialWorkEstimate = 25
+	private readonly initialWorkDone = 25
+	private flushCount = 0
+
+	/**
+	 * Represents a currently retried execution due to a ServiceUnavailableError
+	 */
+	private serviceUnavailableRetry: Promise<void> | null = null
+	/**
+	 * The message queue is used to ensure that messages are processed in the correct order.
+	 * The messages are sent from the server in a correct order, but if they are not awaited,
+	 * they could be processed out of order.
+	 */
+	// VisibleForTesting
+	messageQueue: Promise<void> = Promise.resolve()
+	private failedConnectionAttempts: number = 0
+
+	constructor(
+		private readonly connectivityListener: WebsocketConnectivityListener,
+		private readonly listener: EventBusListener,
+		private readonly cache: EntityRestCache,
+		private readonly loggedInUserProvider: LoggedInUserProvider,
+		private readonly instancePipeline: InstancePipeline,
+		private readonly socketFactory: (path: string) => WebSocket,
+		private readonly sleepDetector: ISleepDetector,
+		private readonly typeModelResolver: TypeModelResolver,
+		private readonly sessionKeyResolver: SessionKeyResolver,
+		private readonly entityMigrator: EntityMigrator,
+		private readonly lastProcessedEventBatchStorageFacade: lazyAsync<LastProcessedEventBatchProvider>,
+		private readonly serverDateProvider: DateProvider,
+		private readonly createProgressMonitor: (totalWork: number) => ProgressMonitorInterface,
+	) {
+		// We are not connected by default and will not try to unless connect() is called
+		this.state = EventBusState.Terminated
+		this.socket = null
+		this.reconnectTimer = null
+		this.connectTimer = null
+		this.eventQueue = new EventQueue("ws", (modification) => this.eventQueueCallback(modification))
+		this.reset()
+	}
+
+	private reset() {
+		this.immediateReconnect = false
+		this.flushCount = 0
+		this.eventQueue.pause()
+		this.eventQueue.clear()
+
+		this.serviceUnavailableRetry = null
+	}
+
+	/**
+	 * Opens a WebSocket connection to receive server events.
+	 * @param connectMode
+	 */
+	async connect(connectMode: ConnectMode) {
+		console.log(TAG, "ws connect reconnect:", connectMode === ConnectMode.Reconnect, "state:", this.state)
+		// make sure a retry will be cancelled by setting _serviceUnavailableRetry to null
+		this.serviceUnavailableRetry = null
+		this.flushCount = 0
+		this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
+
+		this.state = EventBusState.Automatic
+		this.connectTimer = null
+
+		const authHeaders = this.loggedInUserProvider.createAuthHeaders()
+
+		// Native query building is not supported in old browser, mithril is not available in the worker
+		const authQuery =
+			"modelVersions=" +
+			sysModelInfo.version +
+			"." +
+			tutanotaModelInfo.version +
+			"&clientVersion=" +
+			env.versionNumber +
+			"&userId=" +
+			elementIdToId(this.loggedInUserProvider.getLoggedInUser()._id) +
+			"&accessToken=" +
+			authHeaders.accessToken +
+			(this.lastAntiphishingMarkersId ? "&lastPhishingMarkersId=" + this.lastAntiphishingMarkersId : "") +
+			(env.clientName ? "&clientName=" + env.clientName : "") +
+			(env.networkDebugging ? "&network-debugging=" + "enable-network-debugging" : "")
+
+		// the server sends web socket messages for **missed entity events**, after a new websocket connection
+		// has been opened for all given groups, when the groupsToLastEventBatchIds query parameter is set on
+		// init or reconnect.
+		let groupsToLastEventBatchIdsQuery = "&groupsToLastEventBatchIds="
+		const eventGroups = this.eventGroups()
+		const groupsToLastEventBatchIds = new Map<Id, Id>()
+		for (const groupId of eventGroups) {
+			const lastProcessedEventBatchStorageFacade = await this.lastProcessedEventBatchStorageFacade()
+			const lastProcessedBatchId = await lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(groupId)
+			if (lastProcessedBatchId != null) {
+				groupsToLastEventBatchIds.set(groupId, lastProcessedBatchId)
+			}
+		}
+		for (const [groupId, lastEventBatchId] of groupsToLastEventBatchIds) {
+			groupsToLastEventBatchIdsQuery += groupId + "=" + lastEventBatchId + ";"
+		}
+
+		if (groupsToLastEventBatchIds.size === 0) {
+			this.isInitialSyncDone = true
+			await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncDone)
+		}
+
+		const path = "/event?" + authQuery + (groupsToLastEventBatchIds.size > 0 ? groupsToLastEventBatchIdsQuery : "")
+
+		this.unsubscribeFromOldWebsocket()
+
+		this.socket = this.socketFactory(path)
+		this.socket.onopen = () => this.onOpen(connectMode)
+		this.socket.onclose = (event: CloseEvent) => this.onClose(event)
+		this.socket.onerror = (error: any) => this.onError(error)
+		this.socket.onmessage = (message: MessageEvent<string>) => this.onMessage(message)
+
+		this.sleepDetector.start(() => {
+			console.log(TAG, "ws sleep detected, reconnecting...")
+			this.tryReconnect(true, true)
+		})
+	}
+
+	/**
+	 * Sends a close event to the server and finally closes the connection.
+	 * The state of this event bus client is reset and the client is terminated (does not automatically reconnect) except reconnect == true
+	 */
+	async close(closeOption: CloseEventBusOption) {
+		console.log(TAG, "ws close closeOption: ", closeOption, "state:", this.state)
+
+		await this.cache.setCacheSyncStatus(CacheSyncStatus.Offline)
+
+		switch (closeOption) {
+			case CloseEventBusOption.Terminate:
+				this.terminate()
+				break
+			case CloseEventBusOption.Pause:
+				this.state = EventBusState.Suspended
+				this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
+				break
+			case CloseEventBusOption.Reconnect:
+				this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
+				break
+		}
+
+		this.socket?.close()
+	}
+
+	async tryReconnect(closeIfOpen: boolean, enableAutomaticState: boolean, delay: number | null = null): Promise<void> {
+		console.log(TAG, "ws tryReconnect closeIfOpen:", closeIfOpen, "enableAutomaticState:", enableAutomaticState, "delay:", delay)
+
+		if (this.reconnectTimer) {
+			// prevent reconnect race-condition
+			clearTimeout(this.reconnectTimer)
+			this.reconnectTimer = null
+		}
+
+		if (!delay) {
+			this.reconnect(closeIfOpen, enableAutomaticState)
+		} else {
+			this.reconnectTimer = setTimeout(() => this.reconnect(closeIfOpen, enableAutomaticState), delay)
+		}
+	}
+
+	// Returning promise for tests
+	private onOpen(connectMode: ConnectMode): Promise<void> {
+		this.failedConnectionAttempts = 0
+		console.log(TAG, "ws open state:", this.state)
+
+		const p = this.initEntityEvents(connectMode)
+
+		this.connectivityListener.updateWebSocketState(WsConnectionState.connected)
+
+		return p
+	}
+
+	private onError(error: Event) {
+		console.log(TAG, "ws error type:", error.type, JSON.stringify(error), "state:", this.state)
+	}
+
+	private onMessage(message: MessageEvent<string>): void {
+		this.messageQueue = this.messageQueue.then(() => this.handleMessage(message))
+	}
+
+	private async handleMessage(message: MessageEvent<string>): Promise<void> {
+		const [type, ...values] = message.data.split(";")
+		const value = values.join(";")
+
+		switch (type) {
+			case MessageType.EntityUpdate: {
+				if (this.eventQueue.eventQueue.length >= (this.flushCount + 1) * MAX_EVENT_QUEUE_LENGTH_BEFORE_FLUSHING) {
+					await this.processAccumulatedEventBatches()
+				}
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketEntityDataTypeRef)
+				const entityUpdateData = await this.instancePipeline.decryptAndMap<WebsocketEntityData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
+				this.typeModelResolver.setServerApplicationTypesModelHash(entityUpdateData.applicationTypesHash)
+
+				// We only process entity updates for apps and types the clients know about.
+				// We drop the other entity updates early on before constructing TypeRefs for them.
+				const filteredUpdates = await promiseMap(entityUpdateData.entityUpdates, async (entityUpdate) => {
+					return {
+						entityUpdate,
+						isKnown: await this.typeModelResolver.isKnownClientTypeReference(entityUpdate.application, parseInt(entityUpdate.typeId)),
+					}
+				})
+
+				const entityUpdatesForClientApps = filteredUpdates.filter((x) => x.isKnown).map((x) => x.entityUpdate)
+				const updates = await promiseMap(entityUpdatesForClientApps, async (event) => {
+					let { parsedInstance, parsedBlobInstance } = await this.getParsedInstanceFromEntityEvent(event)
+					return entityUpdateToUpdateData(event, parsedInstance, parsedBlobInstance)
+				})
+				const groupId = entityUpdateData.eventBatchOwner
+				const batchId = entityUpdateData.eventBatchId
+
+				if (this.isInitialSyncDone && !(await this.progressMonitor?.isDone())) {
+					// the initial sync is done; this is to add work for entity updates we receive right after the initial sync is done,
+					// such as two entity updates per mail after the ProcessInboxService call. We complete this added work in the EventController
+					await this.progressMonitor?.updateTotalWork(this.progressMonitor.totalWork + 1)
+				}
+				// update the lastMissedBatchId as long as the initial sync is not done
+				if (!this.isInitialSyncDone) {
+					this.lastMissedBatchId = batchId
+				}
+				this.eventQueue.add(batchId, groupId, updates, this.isInitialSyncDone)
+				break
+			}
+			case MessageType.UnreadCounterUpdate: {
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketCounterDataTypeRef)
+				const counterData = await this.instancePipeline.decryptAndMap<WebsocketCounterData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
+				this.typeModelResolver.setServerApplicationTypesModelHash(counterData.applicationTypesHash)
+				this.listener.onCounterChanged(counterData)
+				break
+			}
+			case MessageType.PhishingMarkers: {
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(PhishingMarkerWebsocketDataTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<PhishingMarkerWebsocketData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
+				this.typeModelResolver.setServerApplicationTypesModelHash(data.applicationTypesHash)
+
+				this.lastAntiphishingMarkersId = data.lastId
+				this.listener.onPhishingMarkersReceived(data.markers)
+				break
+			}
+			case MessageType.LeaderStatus: {
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketLeaderStatusTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<WebsocketLeaderStatus>(IncomingServerJson.expectSingleInstance(value, typeModel), null)
+				if (data.applicationTypesHash) {
+					this.typeModelResolver.setServerApplicationTypesModelHash(data.applicationTypesHash)
+				}
+
+				this.loggedInUserProvider.setLeaderStatus(data)
+				await this.connectivityListener.onLeaderStatusMessageReceived(data)
+				break
+			}
+			case MessageType.OperationStatusUpdate: {
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(OperationStatusUpdateTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<OperationStatusUpdate>(IncomingServerJson.expectSingleInstance(value, typeModel), null)
+				this.listener.onOperationStatusUpdate(data)
+				break
+			}
+			case MessageType.InitialSyncDone: {
+				this.isInitialSyncDone = true
+				await this.processAccumulatedEventBatches()
+				this.flushCount = 0
+				await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncDone)
+				console.log(TAG, "Reached final event, sync is done")
+				await this.waitForEmptyQueue()
+				// if we received no missed batches and lastMissedBatchId remains null, we should call the syncDone listener directly
+				if (this.lastMissedBatchId === null) {
+					this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
+				}
+				setTimeout(() => this.progressMonitor?.completed(), PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS)
+				break
+			}
+			case MessageType.InitialSyncWorkEstimate: {
+				const newWorkEstimate = Number.parseInt(value)
+				this.isInitialSyncDone = false
+
+				const isFewUpdates = newWorkEstimate < INITIAL_SYNC_WORK_ESTIMATE_FEW_UPDATES
+				console.log(TAG, `InitialSyncWorkEstimate: ${newWorkEstimate}, isFewUpdates: ${isFewUpdates}`)
+				if (isFewUpdates) {
+					await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates)
+					await this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates)
+				} else {
+					await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing)
+					await this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing)
+				}
+
+				if (newWorkEstimate === 0) {
+					break
+				}
+
+				if (this.progressMonitor == null) {
+					// add and finish some work (25) directly, to immediately show some progress and start estimating
+					this.progressMonitor = this.createProgressMonitor(newWorkEstimate + this.artificialWorkEstimate + this.initialWorkDone)
+					this.progressMonitor.workDone(this.initialWorkDone)
+				} else {
+					this.progressMonitor.updateTotalWork(this.progressMonitor.totalWork + newWorkEstimate)
+				}
+				break
+			}
+			default:
+				console.log(TAG, "ws message with unknown type", type)
+				break
+		}
+	}
+
+	private async getParsedInstanceFromEntityEvent(
+		event: EntityUpdate,
+	): Promise<{ parsedInstance: Nullable<DecryptedParsedInstance>; parsedBlobInstance: Nullable<DecryptedParsedInstance> }> {
+		const typeRef = new TypeRef<any>(event.application as AppName, parseInt(event.typeId))
+		if (event.instance != null) {
+			const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
+			try {
+				const serverJson = IncomingServerJson.expectSingleInstance(event.instance, typeModel)
+				const encryptedParsedInstance = await this.instancePipeline.typeMapper.parseServerJson(serverJson)
+				const entityAdapter = await EntityAdapter.fromEncryptedParsedInstance(
+					encryptedParsedInstance,
+					this.instancePipeline.modelMapper,
+					this.instancePipeline.cryptoMapper,
+				)
+				const migratedEntity = await this.entityMigrator.applyMigrations(typeRef, entityAdapter)
+				const sessionKey = await this.sessionKeyResolver.resolveSessionKey(migratedEntity)
+				const parsedInstance = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
+					encryptedParsedInstance,
+					sessionKey,
+					validateKdfNonceLength(entityAdapter._kdfNonce),
+					this.instancePipeline.cryptoMapper.makeOwnerKeyProvider(entityAdapter._ownerGroup),
+				)
+
+				// we do not want to process the instance if there are _errors (when decrypting)
+				if (!parsedInstance.hasError()) {
+					if (isSameTypeRef(MailTypeRef, typeRef) && event.blobInstance != null) {
+						const mailDetailsTypeModel = await this.typeModelResolver.resolveServerTypeReference(MailDetailsBlobTypeRef)
+						// handle MailDetails blobs
+						const mailDetailsBlobEncryptedParsedInstance = await this.instancePipeline.typeMapper.parseServerJson(
+							IncomingServerJson.expectSingleInstance(event.blobInstance, mailDetailsTypeModel),
+						)
+						const parsedBlobInstance = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
+							mailDetailsBlobEncryptedParsedInstance,
+							sessionKey,
+							validateKdfNonceLength(entityAdapter._kdfNonce),
+							this.instancePipeline.cryptoMapper.makeOwnerKeyProvider(entityAdapter._ownerGroup),
+						)
+						return { parsedInstance, parsedBlobInstance }
+					}
+					return { parsedInstance, parsedBlobInstance: null }
+				} else {
+					return { parsedInstance: null, parsedBlobInstance: null }
+				}
+			} catch (e) {
+				if (e instanceof SessionKeyNotFoundError) {
+					// After resolving the main instance with the BucketKey, the _ownerEncSessionKeys for files on the mails are
+					// updated only after the UpdateSessionKeyService call, while the _ownerEncSessionKey for the main instance is
+					// immediately updated. Therefore, there is a brief period where the File created after a reply to a mail has
+					// null _ownerEncSessionKey. This means we cannot use the instance on the update for the File type.
+					return { parsedInstance: null, parsedBlobInstance: null }
+				} else {
+					throw e
+				}
+			}
+		}
+		return { parsedInstance: null, parsedBlobInstance: null }
+	}
+
+	private onClose(event: CloseEvent) {
+		this.failedConnectionAttempts++
+		console.log(TAG, "ws close event code: ", event.code, " reason: ", event.reason, " wasClean:", event.wasClean, " state:", this.state)
+
+		this.loggedInUserProvider.setLeaderStatus(
+			createWebsocketLeaderStatus({
+				leaderStatus: false,
+				// a valid applicationVersionSum and applicationTypesHash can only be provided by the server
+				applicationVersionSum: null,
+				applicationTypesHash: null,
+			}),
+		)
+
+		this.sleepDetector.stop()
+
+		// Avoid running into penalties when trying to authenticate with an invalid session
+		// NotAuthenticatedException 401, AccessDeactivatedException 470, AccessBlocked 472
+		// do not catch session expired here because websocket will be reused when we authenticate again
+		const serverCode = event.code - 4000
+
+		if ([NotAuthorizedError.CODE, AccessDeactivatedError.CODE, AccessBlockedError.CODE].includes(serverCode)) {
+			this.terminate()
+			this.listener.onError(handleRestError(serverCode, "web socket error", null, null))
+		} else if (serverCode === SessionExpiredError.CODE) {
+			// session is expired. do not try to reconnect until the user creates a new session
+			this.state = EventBusState.Suspended
+			this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
+		} else if (this.state === EventBusState.Automatic && this.loggedInUserProvider.isFullyLoggedIn()) {
+			this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
+
+			if (this.immediateReconnect) {
+				this.immediateReconnect = false
+				this.tryReconnect(false, false)
+			} else {
+				let reconnectionInterval: readonly [number, number]
+
+				if (serverCode === NORMAL_SHUTDOWN_CLOSE_CODE || serverCode === TooManyRequestsError.CODE) {
+					reconnectionInterval = RECONNECT_INTERVAL.LARGE
+				} else if (this.failedConnectionAttempts === 1) {
+					reconnectionInterval = RECONNECT_INTERVAL.SMALL
+				} else if (this.failedConnectionAttempts === 2) {
+					reconnectionInterval = RECONNECT_INTERVAL.MEDIUM
+				} else {
+					reconnectionInterval = RECONNECT_INTERVAL.LARGE
+				}
+
+				this.tryReconnect(false, false, TimeConstants.SECOND_IN_MILLIS * randomIntFromInterval(reconnectionInterval[0], reconnectionInterval[1]))
+			}
+		}
+	}
+
+	private async initEntityEvents(connectMode: ConnectMode): Promise<void> {
+		return this.initConnection()
+			.catch(
+				ofClass(ConnectionError, async (e) => {
+					console.log(TAG, "ws not connected in connect(), close websocket", e)
+					await this.close(CloseEventBusOption.Reconnect)
+				}),
+			)
+			.catch(
+				ofClass(CancelledError, () => {
+					// the processing was aborted due to a reconnect. do not reset any attributes because they might already be in use since reconnection
+					console.log(TAG, "ws cancelled retry process entity events after reconnect")
+				}),
+			)
+			.catch(
+				ofClass(ServiceUnavailableError, async (e) => {
+					// a ServiceUnavailableError is a temporary error, and we have to retry to avoid data inconsistencies
+					console.log(TAG, "ws retry init entity events in ", RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS, e)
+					let promise = delay(RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS).then(() => {
+						// if we have a websocket reconnect we have to stop retrying
+						if (this.serviceUnavailableRetry === promise) {
+							console.log(TAG, "ws retry initializing entity events")
+							return this.initEntityEvents(connectMode)
+						} else {
+							console.log(TAG, "ws cancel initializing entity events")
+						}
+					})
+					this.serviceUnavailableRetry = promise
+					return promise
+				}),
+			)
+			.catch(
+				ofClass(OutOfSyncError, async (e) => {
+					// we did not check for updates for too long, so some missed EntityEventBatches can not be loaded any more
+					// purge cache if out of sync
+					await this.cache.purgeStorage()
+					// We want users to re-login. By the time we get here they probably already have loaded some entities which we cannot update
+					throw e
+				}),
+			)
+			.catch((e) => {
+				this.listener.onError(e)
+			})
+	}
+
+	private async initConnection() {
+		const someIdsWereCached = await this.updateLastEntityEventIds()
+
+		// Second, we need to initialize the cache too.
+		if (!someIdsWereCached) {
+			// If the cache is clean then this is a clean cache (either ephemeral after first connect or persistent with empty DB).
+			// We need to record the time even if we don't process anything to later know if we are out of sync or not.
+			await this.cache.recordSyncTime()
+		} else {
+			await this.checkOutOfSync()
+		}
+	}
+
+	/**
+	 * Gets the latest event batch ids for each of the users groups or min id if there is no event batch yet.
+	 * This is needed to know from where to start loading missed events when we connect.
+	 */
+	private async updateLastEntityEventIds(): Promise<boolean> {
+		// set all last event ids in one step to avoid that we have just set them for a few groups when a ServiceUnavailableError occurs
+		let someIdsWereCached = false
+		const lastProcessedEventBatchStorageFacade = await this.lastProcessedEventBatchStorageFacade()
+		for (const groupId of this.eventGroups()) {
+			const cachedBatchId = await lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(groupId)
+			if (cachedBatchId != null) {
+				someIdsWereCached = true
+			} else {
+				const FIVE_SECONDS_IN_MILLISECONDS = 5000
+				const recentTimestampToGeneratedId = timestampToGeneratedId(this.serverDateProvider.now() - FIVE_SECONDS_IN_MILLISECONDS)
+				await lastProcessedEventBatchStorageFacade.putLastEntityEventBatchForGroup(groupId, recentTimestampToGeneratedId)
+			}
+		}
+
+		return someIdsWereCached
+	}
+
+	private async checkOutOfSync(): Promise<void> {
+		// We try to detect whether event batches have already expired.
+		// If this happened we don't need to download anything, we need to purge the cache and start all over.
+		if (await this.cache.isOutOfSync()) {
+			// We handle it where we initialize the connection and purge the cache there.
+			throw new OutOfSyncError("some missed EntityEventBatches cannot be loaded any more")
+		}
+	}
+
+	private async eventQueueCallback(modification: QueuedBatch): Promise<void> {
+		try {
+			await this.processEventBatch(modification)
+		} catch (e) {
+			console.log(TAG, "ws error while processing event batches", e)
+			this.listener.onError(e)
+			throw e
+		}
+	}
+
+	private unsubscribeFromOldWebsocket() {
+		if (this.socket) {
+			// Remove listeners. We don't want old socket to mess our state
+			this.socket.onopen = this.socket.onclose = this.socket.onerror = this.socket.onmessage = identity
+		}
+	}
+
+	private terminate() {
+		this.state = EventBusState.Terminated
+
+		this.reset()
+
+		this.connectivityListener.updateWebSocketState(WsConnectionState.terminated)
+		this.listener.onSyncStatusChanged(CacheSyncStatus.Offline)
+	}
+
+	/**
+	 * Tries to reconnect the websocket if it is not connected.
+	 */
+	private reconnect(closeIfOpen: boolean, enableAutomaticState: boolean) {
+		console.log(
+			TAG,
+			"ws reconnect socket.readyState: (CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3): " + (this.socket ? this.socket.readyState : "null"),
+			"state:",
+			this.state,
+			"closeIfOpen:",
+			closeIfOpen,
+			"enableAutomaticState:",
+			enableAutomaticState,
+		)
+
+		if (this.state !== EventBusState.Terminated && enableAutomaticState) {
+			this.state = EventBusState.Automatic
+		}
+
+		if (closeIfOpen && this.socket && this.socket.readyState === WebSocket.OPEN) {
+			this.immediateReconnect = true
+			this.socket.close()
+		} else if (
+			(this.socket == null || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) &&
+			this.state !== EventBusState.Terminated &&
+			this.loggedInUserProvider.isFullyLoggedIn()
+		) {
+			// Don't try to connect right away because connection may not be actually there
+			// see #1165
+			if (this.connectTimer) {
+				clearTimeout(this.connectTimer)
+			}
+
+			this.connectTimer = setTimeout(async () => await this.connect(ConnectMode.Reconnect), 100)
+		}
+	}
+
+	private async processEventBatch(batch: QueuedBatch): Promise<void> {
+		try {
+			if (this.isTerminated()) return
+
+			const filteredEvents = await this.cache.onEntityUpdatesReceived(batch.updates, batch.batchId, batch.groupId)
+			if (!this.isTerminated() && isNotEmpty(filteredEvents)) {
+				await this.listener.onEntityUpdatesReceived(filteredEvents, batch.batchId, batch.groupId, assertNotNull(batch.isInitialSyncDone))
+			}
+
+			if (!(await this.progressMonitor?.isDone())) {
+				this.progressMonitor?.workDone(1)
+			}
+
+			// call syncDone listener right after the last missed batch is processed
+			if (batch.batchId === this.lastMissedBatchId && this.isInitialSyncDone) {
+				this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
+			}
+		} catch (e) {
+			if (e instanceof ServiceUnavailableError) {
+				// a ServiceUnavailableError is a temporary error, and we have to retry to avoid data inconsistencies
+				console.log(TAG, "ws retry processing event in 30s", e)
+				const retryPromise = delay(RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS).then(() => {
+					// if we have a websocket reconnect we have to stop retrying
+					if (this.serviceUnavailableRetry === retryPromise) {
+						return this.processEventBatch(batch)
+					} else {
+						throw new CancelledError("stop retry processing after service unavailable due to reconnect")
+					}
+				})
+				this.serviceUnavailableRetry = retryPromise
+				return retryPromise
+			}
+
+			if (!isExpectedErrorForSynchronization(e)) {
+				console.log(TAG, "EVENT", "error", e)
+				throw e
+			}
+		}
+	}
+
+	private isTerminated() {
+		return this.state === EventBusState.Terminated
+	}
+
+	private eventGroups(): Id[] {
+		const user = this.loggedInUserProvider.getLoggedInUser()
+		if ((!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()) || EnvProvider.isTest()) {
+			return user.memberships
+				.filter((membership) => membership.groupType !== GroupType.MailingList)
+				.concat(user.userGroup)
+				.map((membership) => membership.group)
+		} else {
+			return filterIndexMemberships(user)
+				.concat(user.userGroup)
+				.map((membership) => membership.group)
+		}
+	}
+
+	async waitForEmptyQueue(): Promise<void> {
+		this.eventQueue.resume()
+		await this.eventQueue.waitForEmptyQueue()
+	}
+
+	private async processAccumulatedEventBatches() {
+		const allMissedEventsFlat = this.eventQueue.eventQueue.flatMap((batch) => batch.updates)
+		await this.cache.updateCacheWithMissedEntityUpdates(allMissedEventsFlat)
+		// we set the instance and blobInstance to null to make sure that the event queue does not take up too much memory
+		allMissedEventsFlat.map((entityUpdate) => {
+			entityUpdate.instance = null
+			entityUpdate.blobInstance = null
+		})
+		this.flushCount += 1
+	}
+}

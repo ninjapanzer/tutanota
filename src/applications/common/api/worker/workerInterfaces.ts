@@ -1,4 +1,4 @@
-import { EventBusClient } from "../../../../platform-kit/network/EventBusClient.js"
+import { EventBusClient } from "../../../../app-kit/local-store/event/EventBusClient.js"
 import { LoginFacade, LoginListener } from "../../../../platform-kit/base/facades/LoginFacade.js"
 import { ExposedProgressTracker } from "../main/ProgressTracker.js"
 import { ExposedEventController } from "../main/EventController.js"
@@ -20,7 +20,7 @@ import { BlobFacade } from "./facades/lazy/BlobFacade.js"
 import { UserManagementFacade } from "./facades/lazy/UserManagementFacade.js"
 import { RecoverCodeFacade } from "../../../../platform-kit/base/facades/lazy/RecoverCodeFacade.js"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { SqlCipherFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { EntropyFacade } from "../../../../platform-kit/base/facades/EntropyFacade.js"
 import { WorkerFacade } from "./facades/WorkerFacade.js"
@@ -28,18 +28,18 @@ import { ContactFacade } from "./facades/lazy/ContactFacade.js"
 import { SyncTracker } from "../main/SyncTracker.js"
 import { KeyVerificationFacade } from "../../../../platform-kit/base/facades/lazy/KeyVerificationFacade"
 import { ApplicationTypesFacade } from "@tutao/instance-pipeline"
-import PublicEncryptionKeyProvider from "../../../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
-import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import PublicEncryptionKeyProvider from "../../../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
+import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { DriveFacade } from "./facades/lazy/DriveFacade"
 import { TransferProgressDispatcher } from "../main/TransferProgressDispatcher"
 import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorage"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { WebsocketConnectivityListener } from "../../../../platform-kit/network/WebsocketConnectivityListener"
 import { EntityRestInterface } from "../../../../platform-kit/network/EntityRestCacheInterface"
 import { AlarmFacade } from "./facades/lazy/AlarmFacade"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface WorkerRandomizer {
 	generateRandomNumber(numBytes: number): Promise<number>

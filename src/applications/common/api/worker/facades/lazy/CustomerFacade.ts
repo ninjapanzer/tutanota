@@ -1,11 +1,10 @@
-import { assertWorkerOrNode, Const, Country, CryptoProtocolVersion, FeatureType, InvoiceData, ProgrammingError } from "@tutao/app-env"
+import { Const, CryptoProtocolVersion, EnvProvider, FeatureType, ProgrammingError } from "@tutao/app-env"
 import { assertNotNull, lazyAsync, neverNull, noOp, Nullable, ofClass, stringToUtf8Uint8Array, uint8ArrayToBase64, uint8ArrayToHex } from "@tutao/utils"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import type { UserManagementFacade } from "./UserManagementFacade.js"
 import type { GroupManagementFacade } from "../../../../../../platform-kit/base/facades/lazy/GroupManagementFacade.js"
 import { CounterFacade } from "../../../../../../platform-kit/network/CounterFacade.js"
-import * as restError from "@tutao/rest-client/error"
-import type { RsaImplementation } from "../../../../../../app-kit/native-bridge/worker/RsaImplementation.js"
+import { LockedError } from "@tutao/rest-client/error"
 import { EntityClient } from "../../../../../../platform-kit/network/EntityClient.js"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { BookingFacade } from "./BookingFacade.js"
@@ -13,13 +12,13 @@ import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFaca
 import { PaymentInterval } from "../../../../subscription/utils/PriceUtils.js"
 import { ExposedOperationProgressTracker, OperationId } from "../../../main/OperationProgressTracker.js"
 import { formatNameAndAddress } from "../../../common/utils/CommonFormatter.js"
-import { PQFacade } from "../../../../../../platform-kit/base/crypto/PQFacade.js"
+import { PQFacade } from "../../../../../../platform-kit/base/base-crypto/PQFacade.js"
 import { getWhitelabelDomainInfo } from "../../../common/utils/CustomerUtils.js"
 import type { PdfWriter } from "../../pdf/PdfWriter.js"
-import { KeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { RecoverCodeFacade } from "../../../../../../platform-kit/base/facades/lazy/RecoverCodeFacade.js"
-import { AsymmetricCryptoFacade } from "../../../../../../platform-kit/base/crypto/AsymmetricCryptoFacade.js"
-import PublicEncryptionKeyProvider from "../../../../../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
+import { AsymmetricCryptoFacade } from "../../../../../../platform-kit/base/base-crypto/AsymmetricCryptoFacade.js"
+import PublicEncryptionKeyProvider from "../../../../../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
 import { isInternalUser } from "../../../common/utils/UserUtils"
 import { PaymentData, SubscriptionApp } from "../../../../subscription/utils/SubscriptionUtils"
 import {
@@ -32,40 +31,51 @@ import {
 	VersionedEncryptedKey,
 	VersionedKey,
 } from "@tutao/crypto"
-import { CacheMode } from "../../../../../../platform-kit/network/EntityRestClient"
 import { CounterType } from "../../../../../../entities/monitor/Utils"
-import { createCustomerAccountCreateData, CustomerAccountService } from "@tutao/entities/tutanota"
+import { createCustomerAccountCreateData, CustomerAccountService_POST } from "@tutao/entities/tutanota"
 import { SpamRuleFieldType, SpamRuleType } from "../../../../../../entities/tutanota/Utils"
 import {
 	AccountingInfo,
 	AccountingInfoTypeRef,
-	BrandingDomainService,
+	BrandingDomainService_DELETE,
+	BrandingDomainService_POST,
+	BrandingDomainService_PUT,
 	createBrandingDomainData,
 	createBrandingDomainDeleteData,
 	createCreateCustomerServerPropertiesData,
 	createCustomDomainData,
-	CreateCustomerServerProperties,
+	CreateCustomerServerProperties_POST,
 	createEmailSenderListElement,
 	createInvoiceDataGetIn,
 	createPaymentDataServicePutData,
 	CustomDomainReturn,
-	CustomDomainService,
+	CustomDomainService_DELETE,
+	CustomDomainService_POST,
+	CustomDomainService_PUT,
 	CustomerInfoTypeRef,
 	CustomerServerProperties,
 	CustomerServerPropertiesTypeRef,
 	CustomerTypeRef,
 	EmailSenderListElement,
-	InvoiceDataService,
-	PaymentDataService,
+	InvoiceDataService_GET,
+	PaymentDataService_PUT,
 	PaymentDataServicePutReturn,
-	SystemKeysService,
+	SystemKeysService_GET,
 	User,
 } from "@tutao/entities/sys"
 import { AccountType, BookingItemFeatureType, GroupType } from "../../../../../../entities/sys/Utils"
-import { getByAbbreviation } from "../../../../gui/CountryList"
 import { DataFile } from "../../../../../../entities/tutanota/MailBundle"
+import { RsaImplementation } from "../../../../../../platform-kit/crypto/encryption/RsaImplementation"
+import {
+	CacheMode,
+	DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	DEFAULT_EXTRA_SERVICE_PARAMS,
+} from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { Country, CountryType, getByAbbreviation } from "../../../../gui/CountryList"
+import { idToElementId, NULL_ENTITY } from "@tutao/meta"
+import { InvoiceData } from "../../../../subscription/utils/PaymentUtils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class CustomerFacade {
 	// they are FeatureType but we might not be aware of newer values for it, so it is not just FeatureType
@@ -103,7 +113,7 @@ export class CustomerFacade {
 			domain: domainName.trim().toLowerCase(),
 			catchAllMailGroup: null,
 		})
-		return this.serviceExecutor.post(CustomDomainService, data)
+		return this.serviceExecutor.execute(CustomDomainService_POST, data, null)
 	}
 
 	async removeDomain(domainName: string): Promise<void> {
@@ -111,7 +121,7 @@ export class CustomerFacade {
 			domain: domainName.trim().toLowerCase(),
 			catchAllMailGroup: null,
 		})
-		await this.serviceExecutor.delete(CustomDomainService, data)
+		await this.serviceExecutor.execute(CustomDomainService_DELETE, data, null)
 	}
 
 	async setCatchAllGroup(domainName: string, mailGroupId: Id | null): Promise<void> {
@@ -119,17 +129,17 @@ export class CustomerFacade {
 			domain: domainName.trim().toLowerCase(),
 			catchAllMailGroup: mailGroupId,
 		})
-		await this.serviceExecutor.put(CustomDomainService, data)
+		await this.serviceExecutor.execute(CustomDomainService_PUT, data, null)
 	}
 
 	async orderWhitelabelCertificate(domainName: string): Promise<void> {
 		const customerId = this.getCustomerId()
-		const customer = await this.entityClient.load(CustomerTypeRef, customerId)
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(customerId))
 		const customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
 		let existingBrandingDomain = getWhitelabelDomainInfo(customerInfo, domainName)
 		let sessionKey = this.cryptoWrapper.aes256RandomKey()
 
-		const keyData = await this.serviceExecutor.get(SystemKeysService, null)
+		const keyData = await this.serviceExecutor.execute(SystemKeysService_GET, NULL_ENTITY, null)
 		const systemAdminPubKeys = this.publicEncryptionKeyProvider.convertFromSystemKeysReturn(keyData)
 		const { pubEncSymKeyBytes, cryptoProtocolVersion } = await this.asymmetricCryptoFacade.asymEncryptSymKey(
 			sessionKey,
@@ -145,9 +155,9 @@ export class CustomerFacade {
 			sessionEncPemCertificateChain: null,
 		})
 		if (existingBrandingDomain) {
-			await this.serviceExecutor.put(BrandingDomainService, data)
+			await this.serviceExecutor.execute(BrandingDomainService_PUT, data, null)
 		} else {
-			await this.serviceExecutor.post(BrandingDomainService, data)
+			await this.serviceExecutor.execute(BrandingDomainService_POST, data, null)
 		}
 	}
 
@@ -159,7 +169,7 @@ export class CustomerFacade {
 		const data = createBrandingDomainDeleteData({
 			domain: domainName,
 		})
-		await this.serviceExecutor.delete(BrandingDomainService, data)
+		await this.serviceExecutor.execute(BrandingDomainService_DELETE, data, null)
 	}
 
 	/**
@@ -176,7 +186,7 @@ export class CustomerFacade {
 	 * @return The amount of available storage capacity in byte.
 	 */
 	readAvailableCustomerStorage(customerId: Id): Promise<number> {
-		return this.entityClient.load(CustomerTypeRef, customerId).then((customer) => {
+		return this.entityClient.load(CustomerTypeRef, idToElementId(customerId)).then((customer) => {
 			return this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo).then((customerInfo) => {
 				let includedStorage = Number(customerInfo.includedStorageCapacity)
 				let promotionStorage = Number(customerInfo.promotionStorageCapacity)
@@ -202,7 +212,7 @@ export class CustomerFacade {
 	}
 
 	async loadCustomerServerProperties(): Promise<CustomerServerProperties> {
-		const customer = await this.entityClient.load(CustomerTypeRef, this.getCustomerId())
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(this.getCustomerId()))
 		let cspId
 		if (customer.serverProperties) {
 			cspId = customer.serverProperties
@@ -217,10 +227,10 @@ export class CustomerFacade {
 				adminGroupEncSessionKey: adminGroupEncSessionKey.key,
 				adminGroupKeyVersion: adminGroupEncSessionKey.encryptingKeyVersion.toString(),
 			})
-			const returnData = await this.serviceExecutor.post(CreateCustomerServerProperties, data)
+			const returnData = await this.serviceExecutor.execute(CreateCustomerServerProperties_POST, data, null)
 			cspId = returnData.id
 		}
-		return this.entityClient.load(CustomerServerPropertiesTypeRef, cspId)
+		return this.entityClient.load(CustomerServerPropertiesTypeRef, idToElementId(cspId))
 	}
 
 	addSpamRule(field: SpamRuleFieldType, type: SpamRuleType, value: string): Promise<void> {
@@ -233,7 +243,7 @@ export class CustomerFacade {
 				field,
 			})
 			props.emailSenderList.push(newListEntry)
-			return this.entityClient.update(props).catch(ofClass(restError.LockedError, noOp))
+			return this.entityClient.update(props).catch(ofClass(LockedError, noOp))
 		})
 	}
 
@@ -249,7 +259,7 @@ export class CustomerFacade {
 			}
 
 			props.emailSenderList[index] = spamRule
-			return this.entityClient.update(props).catch(ofClass(restError.LockedError, noOp))
+			return this.entityClient.update(props).catch(ofClass(LockedError, noOp))
 		})
 	}
 
@@ -281,7 +291,7 @@ export class CustomerFacade {
 		const accountingInfoSessionKey = this.cryptoWrapper.aes256RandomKey()
 		const customerServerPropertiesSessionKey = this.cryptoWrapper.aes256RandomKey()
 
-		const keyData = await this.serviceExecutor.get(SystemKeysService, null)
+		const keyData = await this.serviceExecutor.execute(SystemKeysService_GET, NULL_ENTITY, null)
 		const pubRsaKey = keyData.systemAdminPubRsaKey
 		let systemAdminPubEncAccountingInfoSessionKey: VersionedEncryptedKey
 		let systemAdminPublicProtocolVersion: CryptoProtocolVersion
@@ -359,7 +369,7 @@ export class CustomerFacade {
 			accountGroupKeyVersion: "0",
 			app,
 		})
-		await this.serviceExecutor.post(CustomerAccountService, data)
+		await this.serviceExecutor.execute(CustomerAccountService_POST, data, null)
 
 		return recoverData.hexCode
 	}
@@ -370,15 +380,15 @@ export class CustomerFacade {
 		paymentData: PaymentData | null,
 		confirmedInvoiceCountry: Country | null,
 	): Promise<PaymentDataServicePutReturn> {
-		let customer = await this.entityClient.load(CustomerTypeRef, assertNotNull(this.userFacade.getLoggedInUser().customer))
+		let customer = await this.entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(this.userFacade.getLoggedInUser().customer)))
 		let customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
-		let accountingInfo = await this.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
+		let accountingInfo = await this.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 		let accountingInfoSessionKey = await this.cryptoFacade.resolveSessionKey(accountingInfo)
 		const service = createPaymentDataServicePutData({
 			paymentInterval: paymentInterval.toString(),
 			invoiceName: "",
 			invoiceAddress: invoiceData.invoiceAddress,
-			invoiceCountry: invoiceData.country ? invoiceData.country.a : "",
+			invoiceCountry: invoiceData.country != null ? invoiceData.country.a : null,
 			invoiceVatIdNo: invoiceData.vatNumber ? invoiceData.vatNumber : "",
 			paymentMethod: paymentData ? paymentData.paymentMethod : accountingInfo.paymentMethod ? accountingInfo.paymentMethod : "",
 			paymentMethodInfo: null,
@@ -386,7 +396,7 @@ export class CustomerFacade {
 			creditCard: paymentData && paymentData.creditCardData ? paymentData.creditCardData : null,
 			confirmedCountry: confirmedInvoiceCountry ? confirmedInvoiceCountry.a : null,
 		})
-		return this.serviceExecutor.put(PaymentDataService, service, { sessionKey: accountingInfoSessionKey ?? undefined })
+		return this.serviceExecutor.execute(PaymentDataService_PUT, service, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey: accountingInfoSessionKey })
 	}
 
 	/**
@@ -410,7 +420,7 @@ export class CustomerFacade {
 	}
 
 	async generatePdfInvoice(invoiceNumber: string): Promise<DataFile> {
-		const invoiceData = await this.serviceExecutor.get(InvoiceDataService, createInvoiceDataGetIn({ invoiceNumber }))
+		const invoiceData = await this.serviceExecutor.execute(InvoiceDataService_GET, createInvoiceDataGetIn({ invoiceNumber }), null)
 		const writer = await this.pdfWriter()
 		const { PdfInvoiceGenerator } = await import("../../invoicegen/PdfInvoiceGenerator.js")
 		const pdfGenerator = new PdfInvoiceGenerator(writer, invoiceData, invoiceNumber, this.getCustomerId())
@@ -443,11 +453,19 @@ export class CustomerFacade {
 	}
 
 	async generateXRechnungInvoice(invoiceNumber: string): Promise<DataFile> {
-		const customer = await this.entityClient.load(CustomerTypeRef, assertNotNull(this.userFacade.getUser()?.customer))
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(this.userFacade.getUser()?.customer)))
 		const customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
-		const invoiceData = await this.serviceExecutor.get(InvoiceDataService, createInvoiceDataGetIn({ invoiceNumber }))
+		const invoiceData = await this.serviceExecutor.execute(InvoiceDataService_GET, createInvoiceDataGetIn({ invoiceNumber }), null)
 		const { XRechnungInvoiceGenerator } = await import("../../invoicegen/XRechnungInvoiceGenerator.js")
-		const xRechnungGenerator = new XRechnungInvoiceGenerator(invoiceData, invoiceNumber, this.getCustomerId(), customerInfo.registrationMailAddress)
+		const { urlEncodeHtmlTags } = await import("../../../../../../platform-kit/utils")
+		const xRechnungGenerator = new XRechnungInvoiceGenerator(
+			invoiceData,
+			invoiceNumber,
+			this.getCustomerId(),
+			customerInfo.registrationMailAddress,
+			getByAbbreviation(invoiceData.country)!.t === CountryType.EU,
+			(html) => urlEncodeHtmlTags(html),
+		)
 		const xRechnungFile = xRechnungGenerator.generate()
 		return {
 			_type: "DataFile",
@@ -460,9 +478,9 @@ export class CustomerFacade {
 	}
 
 	async loadAccountingInfo(): Promise<AccountingInfo> {
-		const customer = await this.entityClient.load(CustomerTypeRef, assertNotNull(this.userFacade.getUser()?.customer))
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(this.userFacade.getUser()?.customer)))
 		const customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
-		return this.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
+		return this.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 	}
 
 	// This also exists in LoginController. Look at the comment in LoginController for an explanation.
@@ -476,7 +494,10 @@ export class CustomerFacade {
 		} else {
 			const user = this.userFacade.getLoggedInUser()
 			if (isInternalUser(user)) {
-				const customer = await this.entityClient.load(CustomerTypeRef, assertNotNull(user.customer), { cacheMode })
+				const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(user.customer)), {
+					...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+					cacheMode,
+				})
 				this.customizations = customer.customizations.map((f) => f.feature)
 				return this.customizations
 			} else {

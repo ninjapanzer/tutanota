@@ -139,7 +139,10 @@ pub enum EventBusMessage {
 	/// Phishing markers, exposed as the raw JSON value.
 	PhishingMarkers(Value),
 	/// Any other / unknown message type, exposed for forward compatibility.
-	Unknown { kind: String, payload: String },
+	Unknown {
+		kind: String,
+		payload: String,
+	},
 }
 
 /// Observable connection state of an `EventBusClient`. Subscribe via
@@ -204,6 +207,7 @@ pub struct EventBusClient {
 }
 
 impl EventBusClient {
+	#[must_use]
 	pub fn new(
 		base_url: String,
 		sys_model_version: u32,
@@ -225,6 +229,7 @@ impl EventBusClient {
 
 	/// Subscribe to live connection-state transitions
 	/// (`Stopped` → `Connecting` → `Connected` → `Reconnecting` → …).
+	#[must_use]
 	pub fn state(&self) -> watch::Receiver<WsState> {
 		self.state.subscribe()
 	}
@@ -233,6 +238,7 @@ impl EventBusClient {
 	/// entry after each fully processed batch; the next reconnect uses the
 	/// current values to ask the server to resend events missed since that
 	/// batch.
+	#[must_use]
 	pub fn last_batch_ids(&self) -> Arc<Mutex<HashMap<String, String>>> {
 		Arc::clone(&self.last_batch_ids)
 	}
@@ -292,7 +298,10 @@ impl EventBusClient {
 					warn!("ws connect failed: {e}");
 					failed_attempts = failed_attempts.saturating_add(1);
 					publish(WsState::Reconnecting);
-					if self.sleep_backoff(failed_attempts, None, &mut shutdown).await {
+					if self
+						.sleep_backoff(failed_attempts, None, &mut shutdown)
+						.await
+					{
 						return Err(EventBusError::Stopped);
 					}
 					continue;
@@ -413,7 +422,11 @@ impl EventBusClient {
 	fn build_path(&self, access_token: &str, user_id: &str) -> String {
 		use std::fmt::Write as _;
 		let mut q = String::from("/event?modelVersions=");
-		let _ = write!(q, "{}.{}", self.sys_model_version, self.tutanota_model_version);
+		let _ = write!(
+			q,
+			"{}.{}",
+			self.sys_model_version, self.tutanota_model_version
+		);
 		let _ = write!(q, "&clientVersion={}", urlencode(&self.client_version));
 		let _ = write!(q, "&userId={}", urlencode(user_id));
 		let _ = write!(q, "&accessToken={}", urlencode(access_token));
@@ -470,7 +483,9 @@ fn parse_entity_update_batch(value: &str) -> Result<EntityUpdateBatch, EventBusE
 	let arr = v
 		.get(attr::ENTITY_UPDATES)
 		.and_then(|u| u.as_array())
-		.ok_or_else(|| EventBusError::InvalidMessage("entityUpdate: missing entityUpdates".into()))?;
+		.ok_or_else(|| {
+			EventBusError::InvalidMessage("entityUpdate: missing entityUpdates".into())
+		})?;
 	let updates = arr
 		.iter()
 		.map(parse_entity_update_event)
@@ -871,11 +886,7 @@ mod tests {
 			String::new(),
 		);
 		let url = client.build_ws_url("t", "u");
-		assert!(
-			url.starts_with("wss://app.tuta.com/event?"),
-			"got: {}",
-			url
-		);
+		assert!(url.starts_with("wss://app.tuta.com/event?"), "got: {}", url);
 	}
 
 	#[test]

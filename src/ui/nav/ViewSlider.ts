@@ -5,15 +5,15 @@ import { alpha, AlphaEnum, animations, transform, TransformEnum } from "../anima
 import { ease } from "../animation/Easing.js"
 import { theme } from "../theme.js"
 import { assertNotNull, noOp } from "../../platform-kit/utils"
-import { styles } from "../styles.js"
+import { Styles } from "../styles.js"
 import { AriaLandmarks } from "../AriaUtils.js"
 import { LayerType } from "../base/RootView.js"
-import { assertMainOrNode } from "../../platform-kit/app-env"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector.js"
+import { EnvProvider } from "../../platform-kit/app-env"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector.js"
 import { WindowSizeListener } from "../utils/WindowUtils"
 import { IWindowFacade } from "../IWindowFacade"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type GestureInfo = {
 	x: number
 	y: number
@@ -120,7 +120,7 @@ export class ViewSlider implements Component<ViewSliderAttrs> {
 							inert: this.isModalBackgroundVisible,
 						},
 						[
-							styles.isUsingBottomNavigation() ? null : attrs.header,
+							Styles.get().isUsingBottomNavigation() ? null : attrs.header,
 							m(
 								".view-columns.flex-grow.rel",
 								{
@@ -140,7 +140,7 @@ export class ViewSlider implements Component<ViewSliderAttrs> {
 									}),
 								),
 							),
-							styles.isUsingBottomNavigation() && !client.isCalendarApp() ? attrs.bottomNav : null,
+							Styles.get().isUsingBottomNavigation() && !ClientDetector.get().isCalendarApp() ? attrs.bottomNav : null,
 						],
 					),
 					this.getColumnsForOverlay().map((c) => m(c, { onResize: noOp })),
@@ -199,14 +199,14 @@ export class ViewSlider implements Component<ViewSliderAttrs> {
 		// as a Background column instead of, as by default, as a Foreground column,
 		// we update the columnType on every redraw (orientation change, resize, etc.)
 		// to allow the styles.mobileDesktopLayout() to work properly on all screens.
-		const isRenderFirstColumnAsBackgroundColumn = styles.isMobileDesktopLayout() || !this.enableDrawer
+		const isRenderFirstColumnAsBackgroundColumn = Styles.get().isMobileDesktopLayout() || !this.enableDrawer
 
 		const firstColumn = this.viewColumns[0]
 		const oldColumnType = firstColumn.columnType
 		firstColumn.columnType = isRenderFirstColumnAsBackgroundColumn ? ColumnType.Background : ColumnType.Foreground
 
-		// iOS might change the window size to a width of the device (even if the device is vertical) after the app is
-		// moved to the background, and this breaks the first column if it was open
+		// iOS might change the window size to the width or height of the device (regardless of device orientation) after
+		// the app is moved to the background, and this breaks the first column if it was of type Foreground and was open
 		if (oldColumnType !== firstColumn.columnType && oldColumnType === ColumnType.Background && firstColumn.isVisible) {
 			firstColumn.isVisible = false
 			if (firstColumn.domColumn != null) {
@@ -214,6 +214,14 @@ export class ViewSlider implements Component<ViewSliderAttrs> {
 				firstColumn.domColumn.style.transform = `translateX(${px(-firstColumn.width)})`
 			}
 			this.focus(this.viewColumns[1])
+		} else if (firstColumn.columnType === ColumnType.Background) {
+			// first column of type Background should always be visible, so we make sure it's shown again after the app
+			// is moved to the foreground
+			firstColumn.isVisible = true
+			if (firstColumn.domColumn != null && firstColumn.domColumn.style.visibility === "hidden") {
+				firstColumn.domColumn.style.visibility = "visible"
+				firstColumn.domColumn.style.transform = ""
+			}
 		}
 
 		this.focusedColumn = this.focusedColumn || this.mainColumn

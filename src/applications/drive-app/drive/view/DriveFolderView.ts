@@ -1,7 +1,6 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { DriveClipboard, SortColumn, SortingPreference } from "./DriveViewModel"
 import { DriveFolderNav, DriveSelectedItemsActions } from "./DriveFolderNav"
-import { DriveFolderContent, DriveFolderContentAttrs, DriveFolderSelectionEvents, SelectionState } from "./DriveFolderContent"
+import { DriveFolderContent, DriveFolderContentAttrs } from "./DriveFolderContent"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { ListLoadingState, ListState } from "../../../../ui/base/List"
 import { px, size } from "../../../../ui/size"
@@ -12,34 +11,36 @@ import { IconMessageBox } from "../../../../ui/base/ColumnEmptyMessageBox"
 import { LayerType } from "../../../../ui/base/RootView"
 import { Icon, IconSize } from "../../../../ui/base/Icon"
 import { DomRectReadOnlyPolyfilled, Dropdown } from "../../../../ui/base/Dropdown"
-import { isMobileDriveLayout, newItemActions, parseDragItems } from "./DriveGuiUtils"
+import { driveItemContextMenu, isMobileDriveLayout, newItemActions, parseDragItems } from "./DriveGuiUtils"
 import { modal } from "../../../../ui/base/Modal"
 import { DropType } from "../../../../ui/base/GuiUtils"
 import { FileActions } from "./DriveFolderContentEntry"
-import { FolderFolderItem, FolderItem, FolderItemId } from "./DriveUtils"
+import { FolderFolderItem, FolderItem, FolderItemId, SortColumn, SortingPreference } from "./DriveUtils"
 import { DriveFolderType } from "../../../common/api/worker/facades/lazy/DriveFacade"
-import { DriveFolder } from "@tutao/entities/drive"
+import { DriveClipboard } from "../model/DriveModel"
+import { ListItemSelectionCallbacks } from "../../../../ui/base/ListUtils"
 
 export interface DriveFolderViewAttrs {
-	selection: SelectionState
 	selectedItemsActions: DriveSelectedItemsActions
-	currentFolder: DriveFolder | null
-	parents: readonly DriveFolder[]
+	currentFolder: FolderFolderItem | null
+	parents: readonly FolderFolderItem[]
 	listState: ListState<FolderItem>
-	selectionEvents: DriveFolderSelectionEvents
-	onDropFiles: (files: File[]) => unknown
-	loadParents: () => Promise<DriveFolder[]>
-	onNewFile: (event: MouseEvent, dom: HTMLElement) => unknown
-	onNewFolder: () => unknown
+	selectionEvents: ListItemSelectionCallbacks<FolderItem>
+	onDropFiles: (files: File[], folders: FileSystemDirectoryEntry[]) => unknown
+	loadParents: () => Promise<FolderFolderItem[]>
+	onUploadFiles: (event: MouseEvent, dom: HTMLElement) => unknown
+	onCreateFolder: () => unknown
+	onUploadFolders: (event: MouseEvent, dom: HTMLElement) => unknown
 	fileActions: FileActions
 	onMove: (items: FolderItemId[], into: FolderFolderItem) => unknown
 	sortOrder: SortingPreference
 	onSortColumn: (column: SortColumn) => unknown
 	clipboard: DriveClipboard | null
+	onPaste?: () => unknown
 }
 
-function canDropFilesToFolder(currentFolder: DriveFolder | null): boolean {
-	return currentFolder != null && currentFolder.type !== DriveFolderType.Trash
+function canDropFilesToFolder(currentFolder: FolderFolderItem | null): boolean {
+	return currentFolder != null && currentFolder.folder.type !== DriveFolderType.Trash
 }
 
 function isValidDataTransferItem(item: DataTransferItem): boolean {
@@ -55,17 +56,18 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 			onDropFiles,
 			currentFolder,
 			parents,
-			selection,
 			selectionEvents,
 			listState,
 			loadParents,
-			onNewFile,
-			onNewFolder,
+			onUploadFiles,
+			onCreateFolder,
+			onUploadFolders,
 			fileActions,
 			onMove,
 			sortOrder,
 			onSortColumn,
 			clipboard,
+			onPaste,
 		},
 	}: Vnode<DriveFolderViewAttrs>): Children {
 		const onDropInto = (item: FolderItem, event: DragEvent) => {
@@ -74,6 +76,9 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 			if (item.type === "folder" && itemsData) {
 				const dragItems = parseDragItems(itemsData)
 				if (dragItems) onMove(dragItems, item)
+				// this is a drive item move, to not bubble it up to the file handling
+				event.preventDefault()
+				event.stopPropagation()
 			}
 		}
 
@@ -97,9 +102,8 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 					this.draggedOver = false
 
 					if (canDropFilesToFolder(currentFolder) && event.dataTransfer) {
-						// We need some fancier code to read the directories.
-						const definitelyFileItems = Array.from(event.dataTransfer.items).filter((item) => item.webkitGetAsEntry()?.isFile)
-						onDropFiles(definitelyFileItems.map((item) => assertNotNull(item.getAsFile())))
+						const { files, folders } = parseDataTransferItems(event.dataTransfer)
+						onDropFiles(files, folders)
 					}
 				},
 				ondragleave: (event: DragEvent) => {
@@ -111,14 +115,16 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 				oncontextmenu: (e: MouseEvent) => {
 					if (!isMobileDriveLayout()) {
 						e.preventDefault()
-						const dropdown = new Dropdown(() => newItemActions({ onNewFile, onNewFolder }), 300)
+						const dropdown = new Dropdown(() => newItemActions({ onUploadFiles, onCreateFolder, onUploadFolders, onPaste }), 300)
 						dropdown.setOrigin(new DomRectReadOnlyPolyfilled(e.clientX, e.clientY, 0, 0))
 						modal.displayUnique(dropdown, false)
+
+						selectionEvents.selectNone()
 					}
 				},
 				onclick: (e: MouseEvent) => {
 					if (!isMobileDriveLayout()) {
-						selectionEvents.onSelectNone()
+						selectionEvents.selectNone()
 					}
 				},
 			},
@@ -139,14 +145,16 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 						fileActions,
 						onSort: onSortColumn,
 						onDropInto,
-						selection,
 						listState,
 						selectionEvents,
 						clipboard,
+						displayLocation: false,
+						onEntryContextMenu: (item, event) => driveItemContextMenu(selectionEvents, selectedItemsActions, fileActions, listState, item, event),
 					} satisfies DriveFolderContentAttrs),
 		)
 	}
-	private renderEmptyView(folder: DriveFolder | null): Children {
+
+	private renderEmptyView(folder: FolderFolderItem | null): Children {
 		return m(
 			"",
 			{
@@ -154,7 +162,7 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 					marginTop: "6.4rem",
 				},
 			},
-			folder && folder.type === DriveFolderType.Trash
+			folder && folder.folder.type === DriveFolderType.Trash
 				? m(IconMessageBox, {
 						message: lang.getTranslation("trashIsEmpty_msg"),
 						icon: Icons.TrashEmptyFilled,
@@ -199,4 +207,20 @@ export class DriveFolderView implements Component<DriveFolderViewAttrs> {
 			),
 		)
 	}
+}
+
+function parseDataTransferItems(dataTransfer: DataTransfer): { files: File[]; folders: FileSystemDirectoryEntry[] } {
+	const files: File[] = []
+	const folders: FileSystemDirectoryEntry[] = []
+	for (const item of Array.from(dataTransfer.items)) {
+		const itemEntry = item.webkitGetAsEntry()
+		if (itemEntry?.isFile) {
+			files.push(assertNotNull(item.getAsFile()))
+		} else if (itemEntry?.isDirectory) {
+			folders.push(itemEntry as FileSystemDirectoryEntry)
+		}
+		// skip the rest, could be a drive item dragged and not handled, could be another random
+		// item
+	}
+	return { files, folders }
 }

@@ -1,25 +1,36 @@
-import { EntityRestClientEraseOptions, EntityRestClientLoadOptions, EntityRestClientSetupOptions, EntityRestClientUpdateOptions } from "./EntityRestClient"
 import {
+	AttributeModel,
 	CUSTOM_MIN_ID,
 	elementIdPart,
+	EntityTypeEnum,
 	firstBiggerThanSecond,
 	GENERATED_MIN_ID,
 	getElementId,
 	getLetId,
 	getServerIdEncodingForType,
+	idToElementId,
+	ListElementId,
 	listIdPart,
 	RANGE_ITEM_LIMIT,
-	Type,
 	TypeRef,
-	ValueType,
+	ValueTypeEnum,
 } from "../meta"
-import { downcast, groupByAndMap, last, promiseMap } from "@tutao/utils"
-import * as restError from "@tutao/rest-client/error"
-import { ProgrammingError } from "@tutao/app-env"
+import { assertNotNull, groupByAndMap, last, Nullable, promiseMap } from "@tutao/utils"
+import { NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 import { ClientTypeModelResolver, OwnerEncSessionKeyProvider } from "@tutao/instance-pipeline"
-import { ElementEntity, ListElementEntity, SomeEntity } from "@tutao/meta"
+import { ElementEntity, ListElementEntity, PersistentEntity } from "@tutao/meta"
 import { RootInstance, RootInstanceTypeRef } from "@tutao/entities/sys"
 import { EntityRestInterface } from "./EntityRestCacheInterface"
+import {
+	DEFAULT_ENTITY_RESTCLIENT_ERASE_OPTIONS,
+	DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	DEFAULT_ENTITY_RESTCLIENT_UPDATE_OPTIONS,
+	EntityRestClientEraseOptions,
+	EntityRestClientLoadOptions,
+	EntityRestClientSetupOptions,
+	EntityRestClientUpdateOptions,
+} from "../instance-pipeline/RestClientOptions"
+import { isNull } from "../utils/Utils"
 
 export class EntityClient {
 	_target: EntityRestInterface
@@ -34,20 +45,23 @@ export class EntityClient {
 	/**
 	 * Important: we can't pass functions through the bridge, so we can't pass ownerKeyProvider from the page context.
 	 */
-	load<T extends SomeEntity>(typeRef: TypeRef<T>, id: PropertyType<T, "_id">, opts: EntityRestClientLoadOptions = {}): Promise<T> {
+	load<T extends PersistentEntity>(
+		typeRef: TypeRef<T>,
+		id: T["_id"],
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	): Promise<T> {
 		return this._target.load(typeRef, id, opts)
 	}
 
-	async loadAll<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, start?: Id): Promise<T[]> {
+	async loadAll<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, start: Nullable<Id> = null): Promise<T[]> {
 		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
 
-		if (!start) {
-			const _idValueId = Object.values(typeModel.values).find((valueType) => valueType.name === "_id")?.id
-			if (_idValueId) {
-				start = typeModel.values[_idValueId].type === ValueType.GeneratedId ? GENERATED_MIN_ID : CUSTOM_MIN_ID
-			} else {
-				throw new ProgrammingError(`could not load, _id field not set for ${typeModel.name}`)
-			}
+		if (isNull(start)) {
+			const attributeIdFor_id = assertNotNull(
+				AttributeModel.getAttributeId(typeModel, "_id"),
+				`_id attribute not defined in ${typeModel.app}/${typeModel.name}`,
+			)
+			start = typeModel.values[attributeIdFor_id].type === ValueTypeEnum.GeneratedId ? GENERATED_MIN_ID : CUSTOM_MIN_ID
 		}
 
 		const elements = await this.loadRange<T>(typeRef, listId, start, RANGE_ITEM_LIMIT, false)
@@ -66,13 +80,10 @@ export class EntityClient {
 		start: Id,
 		end: Id,
 		rangeItemLimit: number = RANGE_ITEM_LIMIT,
-	): Promise<{
-		elements: T[]
-		loadedCompletely: boolean
-	}> {
+	): Promise<ReverseRangeBetweenItems<T>> {
 		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
-		if (typeModel.type !== Type.ListElement) throw new Error("only ListElement types are permitted")
-		const loadedEntities = await this._target.loadRange<T>(typeRef, listId, start, rangeItemLimit, true)
+		if (typeModel.type !== EntityTypeEnum.ListElement) throw new Error("only ListElement types are permitted")
+		const loadedEntities = await this._target.loadRange<T>(typeRef, listId, start, rangeItemLimit, true, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS)
 		const filteredEntities = loadedEntities.filter((entity) => firstBiggerThanSecond(getElementId(entity), end, getServerIdEncodingForType(typeModel)))
 
 		if (filteredEntities.length === rangeItemLimit) {
@@ -96,7 +107,7 @@ export class EntityClient {
 		start: Id,
 		count: number,
 		reverse: boolean,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<T[]> {
 		return this._target.loadRange(typeRef, listId, start, count, reverse, opts)
 	}
@@ -104,42 +115,55 @@ export class EntityClient {
 	/**
 	 * load multiple does not guarantee order or completeness of returned elements.
 	 */
-	loadMultiple<T extends SomeEntity>(
+	loadMultiple<T extends PersistentEntity>(
 		typeRef: TypeRef<T>,
-		listId: Id | null,
+		listId: Nullable<Id>,
 		elementIds: Id[],
-		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
-		opts: EntityRestClientLoadOptions = {},
+		ownerEncSessionKeyProvider: Nullable<OwnerEncSessionKeyProvider> = null,
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<T[]> {
 		return this._target.loadMultiple(typeRef, listId, elementIds, ownerEncSessionKeyProvider, opts)
 	}
 
-	setup<T extends SomeEntity>(listId: Id | null, instance: T, extraHeaders?: Dict, options?: EntityRestClientSetupOptions): Promise<Id | null> {
+	setup<T extends PersistentEntity>(
+		listId: Nullable<Id>,
+		instance: T,
+		extraHeaders: Nullable<Dict> = null,
+		options: Nullable<EntityRestClientSetupOptions> = null,
+	): Promise<Nullable<Id>> {
 		return this._target.setup(listId, instance, extraHeaders, options)
 	}
 
-	setupMultipleEntities<T extends SomeEntity>(listId: Id | null, instances: ReadonlyArray<T>): Promise<Array<Id>> {
+	setupMultipleEntities<T extends PersistentEntity>(listId: Nullable<Id>, instances: ReadonlyArray<T>): Promise<Array<Id>> {
 		return this._target.setupMultiple(listId, instances)
 	}
 
-	update<T extends SomeEntity>(instance: T, options?: EntityRestClientUpdateOptions): Promise<void> {
+	update<T extends PersistentEntity>(instance: T, options: EntityRestClientUpdateOptions = DEFAULT_ENTITY_RESTCLIENT_UPDATE_OPTIONS): Promise<void> {
 		return this._target.update(instance, options)
 	}
 
-	erase<T extends SomeEntity>(instance: T, options?: EntityRestClientEraseOptions): Promise<void> {
+	erase<T extends PersistentEntity>(instance: T, options: EntityRestClientEraseOptions = DEFAULT_ENTITY_RESTCLIENT_ERASE_OPTIONS): Promise<void> {
 		return this._target.erase(instance, options)
 	}
 
-	eraseMultiple<T extends SomeEntity>(listId: Id, instances: Array<T>, options?: EntityRestClientEraseOptions): Promise<void> {
+	eraseMultiple<T extends PersistentEntity>(
+		listId: Id,
+		instances: Array<T>,
+		options: EntityRestClientEraseOptions = DEFAULT_ENTITY_RESTCLIENT_ERASE_OPTIONS,
+	): Promise<void> {
 		return this._target.eraseMultiple(listId, instances, options)
 	}
 
-	async loadRoot<T extends ElementEntity>(typeRef: TypeRef<T>, groupId: Id, opts: EntityRestClientLoadOptions = {}): Promise<T> {
+	async loadRoot<T extends ElementEntity>(
+		typeRef: TypeRef<T>,
+		groupId: Id,
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	): Promise<T> {
 		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
 
-		const rootId = [groupId, typeModel.rootId] as const
+		const rootId: ListElementId = [groupId, typeModel.rootId]
 		const root = await this.load<RootInstance>(RootInstanceTypeRef, rootId, opts)
-		return this.load<T>(typeRef, downcast(root.reference), opts)
+		return this.load<T>(typeRef, idToElementId(root.reference), opts)
 	}
 }
 
@@ -148,7 +172,7 @@ function wasReverseRangeCompletelyLoaded<T extends ListElementEntity>(rangeItemL
 		const lastLoaded = last(loadedEntities)
 		const lastFiltered = last(filteredEntities)
 
-		if (!lastLoaded) {
+		if (isNull(lastLoaded)) {
 			return true
 		}
 
@@ -183,7 +207,7 @@ export async function loadMultipleFromLists<T extends ListElementEntity>(
 				} catch (e) {
 					// these are thrown if the list itself is inaccessible. elements will just be missing
 					// in the loadMultiple result.
-					if (e instanceof restError.NotFoundError || e instanceof restError.NotAuthorizedError) {
+					if (e instanceof NotFoundError || e instanceof NotAuthorizedError) {
 						console.log(`could not load entities of type ${type} from list ${listId}: ${e.name}`)
 						return []
 					} else {
@@ -194,4 +218,9 @@ export async function loadMultipleFromLists<T extends ListElementEntity>(
 			{ concurrency: 3 },
 		)
 	).flat()
+}
+
+export type ReverseRangeBetweenItems<T extends ListElementEntity> = {
+	elements: T[]
+	loadedCompletely: boolean
 }

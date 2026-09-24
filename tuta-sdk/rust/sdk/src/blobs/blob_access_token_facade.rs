@@ -105,10 +105,7 @@ impl BlobAccessTokenFacade {
 		};
 
 		self.cache
-			.try_get_read_token(
-				&BlobReadArchiveTokenKey::new(archive_id),
-				loader,
-			)
+			.try_get_read_token(&BlobReadArchiveTokenKey::new(archive_id), loader)
 			.await
 	}
 

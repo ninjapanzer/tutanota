@@ -1,38 +1,37 @@
-import {
-	AppName,
-	BlobElementEntity,
-	getTypeString,
-	isSameId,
-	isSameTypeRef,
-	ListElementEntity,
-	OperationType,
-	ServerModelParsedInstance,
-	SomeEntity,
-	TypeRef,
-} from "@tutao/meta"
+import { AppName, getTypeString, isSameId, isSameTypeRef, OperationType, PersistentEntity, TypeRef } from "@tutao/meta"
 import { Nullable } from "@tutao/utils"
 import { EntityUpdate, Patch } from "@tutao/entities/sys"
+
+import { DecryptedParsedInstance } from "@tutao/instance-pipeline"
 
 /**
  * A type similar to {@link EntityUpdate} but mapped to make it easier to work with.
  */
-export type EntityUpdateData<T extends SomeEntity = SomeEntity> = {
+export type EntityUpdateData<T extends PersistentEntity = PersistentEntity> = {
 	typeRef: TypeRef<T>
-	instanceListId: T extends ListElementEntity | BlobElementEntity ? NonEmptyString : null
+	instanceListId: Id | null
 	instanceId: string
 	operation: OperationType
-	instance: Nullable<ServerModelParsedInstance>
-	blobInstance: Nullable<ServerModelParsedInstance>
+	instance: Nullable<DecryptedParsedInstance>
+	blobInstance: Nullable<DecryptedParsedInstance>
 
 	// emptyList: when server did not send patchList, or empty re-write to the server database.
 	// length > 0: normal case for patch
 	patches: Nullable<Array<Patch>>
+	// status indicating if the update modified the cache. Missed updates are update the cache using
+	// deleteMultiple and putMultiple in DefaultEntityRestCache.updateCacheWithMissedEntityUpdates to minimize IPC overhead.
+	cachingStatus: CachingStatus
 }
 
-export async function entityUpdateToUpdateData<T extends SomeEntity>(
+export enum CachingStatus {
+	CacheNotUpdated = "CacheNotUpdated",
+	CacheUpdated = "CacheUpdated",
+}
+
+export async function entityUpdateToUpdateData<T extends PersistentEntity>(
 	update: EntityUpdate,
-	instance: Nullable<ServerModelParsedInstance> = null,
-	blobInstance: Nullable<ServerModelParsedInstance> = null,
+	instance: Nullable<DecryptedParsedInstance> = null,
+	blobInstance: Nullable<DecryptedParsedInstance> = null,
 ): Promise<EntityUpdateData<T>> {
 	const typeId = parseInt(update.typeId)
 	const typeRefOfEntityUpdateType = new TypeRef<T>(update.application as AppName, typeId)
@@ -44,26 +43,24 @@ export async function entityUpdateToUpdateData<T extends SomeEntity>(
 		patches: update.patch?.patches ?? null,
 		instance,
 		blobInstance,
+		cachingStatus: CachingStatus.CacheNotUpdated,
 	}
 }
 
-export function isUpdateForTypeRef<T extends SomeEntity>(typeRef: TypeRef<T>, update: EntityUpdateData): update is EntityUpdateData<T> {
+export function isUpdateForTypeRef<T extends PersistentEntity>(typeRef: TypeRef<T>, update: EntityUpdateData): update is EntityUpdateData<T> {
 	return isSameTypeRef(typeRef, update.typeRef)
 }
 
-export function isUpdateFor<T extends SomeEntity>(entity: T, update: EntityUpdateData): boolean {
+export function isUpdateFor<T extends PersistentEntity>(entity: T, update: EntityUpdateData): boolean {
 	const typeRef = entity._type as TypeRef<T>
-	return (
-		isSameTypeRef(typeRef, update.typeRef) &&
-		(update.instanceListId === null ? isSameId(update.instanceId, entity._id) : isSameId([update.instanceListId, update.instanceId], entity._id))
-	)
+	return isSameTypeRef(typeRef, update.typeRef) && isSameId([update.instanceListId, update.instanceId], entity._id)
 }
 
-export function getLogStringForEntityEvent(event: EntityUpdateData): string {
-	return `event: ${getTypeString(event.typeRef)}, listId: ${event.instanceListId}, elementId: ${event.instanceId}, operation: ${event.operation}, patches: ${getLogStringForPatches(event.patches ?? [])} ;`
+export function getLogStringForEntityUpdate(update: EntityUpdateData): string {
+	return `event: ${getTypeString(update.typeRef)}, listId: ${update.instanceListId}, elementId: ${update.instanceId}, operation: ${update.operation}, patches: ${getLogStringForPatches(update.patches ?? [])} ;`
 }
 
-export function getLogStringForPatches(patches: Array<Patch>) {
+export function getLogStringForPatches(patches: Array<Patch>): string {
 	let message = ""
 	for (const patch of patches) {
 		message += "Patch Operation: " + patch.patchOperation + " Patched Attribute: " + patch.attributePath + " ;"
@@ -71,13 +68,22 @@ export function getLogStringForPatches(patches: Array<Patch>) {
 	return message
 }
 
-export enum OnEntityUpdateReceivedPriority {
+export enum ListenerPriority {
 	LOW = 1,
 	NORMAL = 2,
 	HIGH = 3,
 }
 
-export type EntityEventsListener = {
+export type EntityUpdatesListener = {
+	id: string
 	onEntityUpdatesReceived: (updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id, isInitialSyncDone: boolean) => Promise<unknown>
-	priority: OnEntityUpdateReceivedPriority
+	priority: ListenerPriority
+}
+export enum CacheSyncStatus {
+	Offline = "Offline",
+	// cacheSyncStatus can either be in OnlineSyncOngoing or OnlineSyncOngoingFewUpdates
+	// (both transition to OnlineSyncDone afterwards)
+	OnlineSyncOngoing = "OnlineSyncOngoing",
+	OnlineSyncOngoingFewUpdates = "OnlineSyncOngoingFewUpdates",
+	OnlineSyncDone = "OnlineSyncDone",
 }

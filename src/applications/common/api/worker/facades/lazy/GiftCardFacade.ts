@@ -12,20 +12,22 @@ import {
 import { elementIdPart, GENERATED_MAX_ID } from "@tutao/meta"
 import { _encryptKeyWithVersionedKey, aes256RandomKey, base64ToKey, keyToUint8Array, sha256Hash } from "@tutao/crypto"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { ProgrammingError } from "@tutao/app-env"
 import { CustomerFacade } from "./CustomerFacade.js"
-import { KeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import {
 	createGiftCardCreateData,
 	createGiftCardRedeemData,
 	GiftCard,
 	GiftCardRedeemGetReturn,
-	GiftCardRedeemService,
-	GiftCardService,
+	GiftCardRedeemService_GET,
+	GiftCardRedeemService_POST,
+	GiftCardService_POST,
 } from "@tutao/entities/sys"
 import { GroupType } from "../../../../../../entities/sys/Utils"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 const ID_LENGTH = GENERATED_MAX_ID.length
 const KEY_LENGTH_128_BIT_B64 = 24
@@ -52,30 +54,28 @@ export class GiftCardFacade {
 
 		const sessionKey = aes256RandomKey()
 		const ownerEncSessionKey = _encryptKeyWithVersionedKey(ownerKey, sessionKey)
-		const { giftCard } = await this.serviceExecutor.post(
-			GiftCardService,
-			createGiftCardCreateData({
-				message: message,
-				keyHash: sha256Hash(keyToUint8Array(sessionKey)),
-				value,
-				ownerEncSessionKey: ownerEncSessionKey.key,
-				ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
-			}),
-			{ sessionKey },
-		)
+		const data = createGiftCardCreateData({
+			message: message,
+			keyHash: sha256Hash(keyToUint8Array(sessionKey)),
+			value,
+		})
+		data.ownerEncSessionKey = ownerEncSessionKey.key
+		data.ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
+		const { giftCard } = await this.serviceExecutor.execute(GiftCardService_POST, data, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
 		return giftCard
 	}
 
 	getGiftCardInfo(id: Id, key: string): Promise<GiftCardRedeemGetReturn> {
-		return this.serviceExecutor.get(
-			GiftCardRedeemService,
+		return this.serviceExecutor.execute(
+			GiftCardRedeemService_GET,
 			createGiftCardRedeemData({
 				giftCardInfo: id,
 				keyHash: sha256Hash(base64ToUint8Array(key)),
 				countryCode: "",
 			}),
 			{
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
 				sessionKey: base64ToKey(key),
 			},
 		)
@@ -91,13 +91,14 @@ export class GiftCardFacade {
 			throw new ProgrammingError("User must provide a country")
 		}
 
-		await this.serviceExecutor.post(
-			GiftCardRedeemService,
+		await this.serviceExecutor.execute(
+			GiftCardRedeemService_POST,
 			createGiftCardRedeemData({
 				giftCardInfo: giftCardInfoId,
 				keyHash: sha256Hash(base64ToUint8Array(key)),
 				countryCode,
 			}),
+			null,
 		)
 	}
 
@@ -117,7 +118,7 @@ export class GiftCardFacade {
 		return { id, key }
 	}
 
-	private encodeToken(id: Id, key: Uint8Array): Base64 {
+	private encodeToken(id: Id, key: Uint8Array<ArrayBuffer>): Base64 {
 		if (id.length !== ID_LENGTH) {
 			throw new Error("Invalid gift card params")
 		}

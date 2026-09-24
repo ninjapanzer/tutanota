@@ -18,7 +18,6 @@ use crate::crypto::asymmetric_crypto_facade::AsymmetricCryptoFacade;
 use crate::crypto::crypto_facade::create_auth_verifier;
 #[cfg_attr(test, mockall_double::double)]
 use crate::crypto::crypto_facade::CryptoFacade;
-use crate::crypto::key::VersionedAesKey;
 #[cfg_attr(test, mockall_double::double)]
 use crate::crypto::public_key_provider::PublicKeyProvider;
 #[cfg_attr(test, mockall_double::double)]
@@ -55,9 +54,10 @@ use crate::typed_entity_client::TypedEntityClient;
 use crate::user_facade::UserFacade;
 use bindings::file_client::FileClient;
 use bindings::rest_client::{RestClient, RestClientError};
-use crypto_primitives::aes::{Aes256Key, Iv};
+use crypto_primitives::aes::{Aes256Key, InitializationVector};
 use crypto_primitives::key::GenericAesKey;
 use crypto_primitives::randomizer_facade::RandomizerFacade;
+use crypto_primitives::versioned::VersionedAesKey;
 
 pub mod contacts;
 pub mod crypto;
@@ -410,7 +410,7 @@ impl Sdk {
 		};
 		let encrypted_passphrase_key = GenericAesKey::Aes256(access_key).encrypt_key(
 			&GenericAesKey::Aes256(user_passphrase_key),
-			Iv::generate(&randomizer),
+			InitializationVector::generate(&randomizer),
 		);
 		let session_return: CreateSessionReturn = service_executor
 			.post::<SessionService>(session_data, ExtraServiceParams::default())
@@ -464,10 +464,7 @@ impl Sdk {
 	/// This is a single request; retrying and cancellation are left to the
 	/// caller. Corresponds to the request performed in each iteration of TS
 	/// `LoginFacade.waitUntilSecondFactorApproved`.
-	pub async fn is_second_factor_pending(
-		&self,
-		access_token: &str,
-	) -> Result<bool, LoginError> {
+	pub async fn is_second_factor_pending(&self, access_token: &str) -> Result<bool, LoginError> {
 		let service_executor = self.make_unauthenticated_service_executor();
 		let result = service_executor
 			.get::<SecondFactorAuthService>(
@@ -484,10 +481,7 @@ impl Sdk {
 	/// Cancel a session that is awaiting second factor approval.
 	///
 	/// Mirrors TS `LoginFacade.cancelCreateSession`.
-	pub async fn cancel_create_session(
-		&self,
-		access_token: &str,
-	) -> Result<(), LoginError> {
+	pub async fn cancel_create_session(&self, access_token: &str) -> Result<(), LoginError> {
 		let session_id =
 			parse_session_id(access_token).map_err(|e| LoginError::InvalidAccessToken {
 				error_message: format!("{e}"),
@@ -723,6 +717,8 @@ impl LoggedInSdk {
 			self.crypto_entity_client.clone(),
 			self.user_facade.clone(),
 			self.service_executor.clone(),
+		)
+		.with_mail_details_support(
 			self.blob_facade.clone(),
 			key_loader,
 			self.json_serializer.clone(),

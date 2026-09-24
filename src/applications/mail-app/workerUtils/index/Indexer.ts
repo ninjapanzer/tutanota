@@ -17,7 +17,7 @@ export interface Indexer {
 
 	disableMailIndexing(): Promise<void>
 
-	processEntityEvents(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void>
+	onEntityUpdatesReceived(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void>
 
 	/**
 	 * Extends the mail index to the given timestamp.
@@ -27,16 +27,6 @@ export interface Indexer {
 	 * @param time timestamp
 	 */
 	extendMailIndex(time: number): Promise<void>
-
-	/**
-	 * Sets the mail index to the given timestamp.
-	 *
-	 * If the mail index would extend, then this will have the same effect as calling extendMailIndex.
-	 *
-	 * Otherwise, it sets the current timestamp to the new one.
-	 * @param time timestamp
-	 */
-	resizeMailIndex(time: number): Promise<void>
 
 	deleteIndex(userId: string): Promise<void>
 

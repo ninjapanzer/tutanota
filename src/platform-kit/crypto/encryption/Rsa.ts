@@ -1,15 +1,15 @@
 // @ts-ignore[untyped-import]
 import { BigInteger, parseBigInt, RSAKey } from "../internal/crypto-jsbn-2012-08-09_1.js"
 import { base64ToHex, base64ToUint8Array, concat, hexToUint8Array, int8ArrayToBase64, uint8ArrayToHex } from "@tutao/utils"
-import type { RawRsaPublicKey, RsaPrivateKey, RsaPublicKey } from "./RsaKeyPair.js"
+import { RsaPrivateKey, RsaPublicKey } from "./RsaKeyPair.js"
 import { CryptoError } from "@tutao/crypto/error"
 import { sha256Hash } from "../hashes/Sha256.js"
-import { KeyPairType } from "./AsymmetricKeyPair.js"
+import { isNull } from "../../utils/Utils"
 
 const RSA_KEY_LENGTH_BITS = 2048
 const RSA_PUBLIC_EXPONENT = 65537
 
-export function rsaEncrypt(publicKey: RsaPublicKey, bytes: Uint8Array, seed: Uint8Array): Uint8Array {
+export function rsaEncrypt(publicKey: RsaPublicKey, bytes: Uint8Array<ArrayBuffer>, seed: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	const rsa = new RSAKey()
 	// we have double conversion from bytes to hex to big int because there is no direct conversion from bytes to big int
 	// BigInteger of JSBN uses a signed byte array and we convert to it by using Int8Array
@@ -31,7 +31,7 @@ export function rsaEncrypt(publicKey: RsaPublicKey, bytes: Uint8Array, seed: Uin
 	return _padAndUnpadLeadingZeros(publicKey.keyLength / 8, encrypted)
 }
 
-export function rsaDecrypt(privateKey: RsaPrivateKey, bytes: Uint8Array): Uint8Array {
+export function rsaDecrypt(privateKey: RsaPrivateKey, bytes: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	try {
 		const rsa = new RSAKey()
 		// we have double conversion from bytes to hex to big int because there is no direct conversion from bytes to big int
@@ -59,7 +59,7 @@ export function rsaDecrypt(privateKey: RsaPrivateKey, bytes: Uint8Array): Uint8A
 /**
  * Adds leading 0's to the given byte array until targeByteLength bytes are reached. Removes leading 0's if byteArray is longer than targetByteLength.
  */
-export function _padAndUnpadLeadingZeros(targetByteLength: number, byteArray: Uint8Array): Uint8Array {
+export function _padAndUnpadLeadingZeros(targetByteLength: number, byteArray: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	const result = new Uint8Array(targetByteLength)
 
 	// JSBN produces results which are not always exact length.
@@ -97,7 +97,7 @@ export function _padAndUnpadLeadingZeros(targetByteLength: number, byteArray: Ui
  * @param seed An array of 32 random bytes.
  * @return The padded byte array.
  */
-export function oaepPad(value: Uint8Array, keyLength: number, seed: Uint8Array): Uint8Array {
+export function oaepPad(value: Uint8Array<ArrayBuffer>, keyLength: number, seed: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	let hashLength = 32 // bytes sha256
 
 	if (seed.length !== hashLength) {
@@ -131,7 +131,7 @@ export function oaepPad(value: Uint8Array, keyLength: number, seed: Uint8Array):
  * @param keyLength The length of the RSA key in bit.
  * @return The unpadded byte array.
  */
-export function oaepUnpad(value: Uint8Array, keyLength: number): Uint8Array {
+export function oaepUnpad(value: Uint8Array<ArrayBuffer>, keyLength: number): Uint8Array<ArrayBuffer> {
 	let hashLength = 32 // bytes sha256
 
 	if (value.length !== keyLength / 8 - 1) {
@@ -171,7 +171,7 @@ export function oaepUnpad(value: Uint8Array, keyLength: number): Uint8Array {
  *    32           32    keyLen-2*32-2  1  value.length
  * The label is the hash of an empty string like defined in PKCS#1 v2.1
  */
-export function _getPSBlock(value: Uint8Array, keyLength: number): Uint8Array {
+export function _getPSBlock(value: Uint8Array<ArrayBuffer>, keyLength: number): Uint8Array<ArrayBuffer> {
 	let hashLength = 32 // bytes sha256
 
 	let blockLength = keyLength / 8 - 1 // the leading byte shall be 0 to make the resulting value in any case smaller than the modulus, so we just leave the byte off
@@ -204,7 +204,7 @@ export function _getPSBlock(value: Uint8Array, keyLength: number): Uint8Array {
  * @param salt An array of random bytes.
  * @return The padded byte array.
  */
-export function encode(message: Uint8Array, keyLength: number, salt: Uint8Array): Uint8Array {
+export function encode(message: Uint8Array<ArrayBuffer>, keyLength: number, salt: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	let hashLength = 32 // bytes sha256
 
 	let emLen = Math.ceil(keyLength / 8)
@@ -266,8 +266,8 @@ export function encode(message: Uint8Array, keyLength: number, salt: Uint8Array)
 /**
  * clears an array to contain only zeros (0)
  */
-function _clear(array: Uint8Array | null | undefined) {
-	if (!array) {
+function _clear<TArray extends ArrayBufferLike>(array: Uint8Array<TArray> | null): void {
+	if (isNull(array)) {
 		return
 	}
 
@@ -280,8 +280,8 @@ function _clear(array: Uint8Array | null | undefined) {
  * @param seed An array of byte values.
  * @param length The length of the return value in bytes.
  */
-export function mgf1(seed: Uint8Array, length: number): Uint8Array {
-	let C: Uint8Array | null = null
+export function mgf1(seed: Uint8Array<ArrayBuffer>, length: number): Uint8Array<ArrayBuffer> {
+	let C: Uint8Array<ArrayBuffer> | null = null
 	let counter = 0
 	let T = new Uint8Array(0)
 
@@ -296,7 +296,7 @@ export function mgf1(seed: Uint8Array, length: number): Uint8Array {
 /**
  * converts an integer to a 4 byte array
  */
-export function i2osp(i: number): Uint8Array {
+export function i2osp(i: number): Uint8Array<ArrayBuffer> {
 	return new Uint8Array([(i >> 24) & 255, (i >> 16) & 255, (i >> 8) & 255, (i >> 0) & 255])
 }
 
@@ -307,7 +307,7 @@ export function i2osp(i: number): Uint8Array {
  * @returns The public key in a persistable array format
  * @private
  */
-function _publicKeyToArray(publicKey: RawRsaPublicKey): BigInteger[] {
+function _publicKeyToArray(publicKey: RsaPublicKey): BigInteger[] {
 	return [_base64ToBigInt(publicKey.modulus)]
 }
 
@@ -329,13 +329,7 @@ function _privateKeyToArray(privateKey: RsaPrivateKey): BigInteger[] {
 }
 
 function _arrayToPublicKey(publicKey: BigInteger[]): RsaPublicKey {
-	return {
-		keyPairType: KeyPairType.RSA,
-		version: 0,
-		keyLength: RSA_KEY_LENGTH_BITS,
-		modulus: int8ArrayToBase64(new Int8Array(publicKey[0].toByteArray())),
-		publicExponent: RSA_PUBLIC_EXPONENT,
-	}
+	return new RsaPublicKey(0, RSA_KEY_LENGTH_BITS, int8ArrayToBase64(new Int8Array(publicKey[0].toByteArray())), RSA_PUBLIC_EXPONENT)
 }
 
 function _arrayToPrivateKey(privateKey: BigInteger[]): RsaPrivateKey {
@@ -407,7 +401,7 @@ function _hexToKeyArray(hex: Hex): BigInteger[] {
 	}
 }
 
-function _validateKeyLength(key: BigInteger[]) {
+function _validateKeyLength(key: BigInteger[]): void {
 	if (key.length !== 1 && key.length !== 7) {
 		throw new Error("invalid key params")
 	}
@@ -421,11 +415,11 @@ export function rsaPrivateKeyToHex(privateKey: RsaPrivateKey): Hex {
 	return _keyArrayToHex(_privateKeyToArray(privateKey))
 }
 
-export function rsaPublicKeyToHex(publicKey: RawRsaPublicKey): Hex {
+export function rsaPublicKeyToHex(publicKey: RsaPublicKey): Hex {
 	return _keyArrayToHex(_publicKeyToArray(publicKey))
 }
 
-export function rsaPublicKeyToBytes(rsaPublicKey: RawRsaPublicKey) {
+export function rsaPublicKeyToBytes(rsaPublicKey: RsaPublicKey): Uint8Array<ArrayBuffer> {
 	return hexToUint8Array(rsaPublicKeyToHex(rsaPublicKey))
 }
 
@@ -437,11 +431,6 @@ export function hexToRsaPublicKey(publicKeyHex: Hex): RsaPublicKey {
 	return _arrayToPublicKey(_hexToKeyArray(publicKeyHex))
 }
 
-export function extractRawPublicRsaKeyFromPrivateRsaKey(privateRsaKey: RsaPrivateKey): RawRsaPublicKey {
-	return {
-		keyLength: privateRsaKey.keyLength,
-		modulus: privateRsaKey.modulus,
-		version: privateRsaKey.version,
-		publicExponent: RSA_PUBLIC_EXPONENT,
-	}
+export function extractRawPublicRsaKeyFromPrivateRsaKey(privateRsaKey: RsaPrivateKey): RsaPublicKey {
+	return new RsaPublicKey(privateRsaKey.version, privateRsaKey.keyLength, privateRsaKey.modulus, RSA_PUBLIC_EXPONENT)
 }

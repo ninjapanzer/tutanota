@@ -2,15 +2,18 @@ import m, { Children, ClassComponent, Vnode, VnodeDOM } from "mithril"
 import { createResizeObserver, debounce, memoized, numberRange } from "../../platform-kit/utils"
 import { component_size, px, size } from "../size.js"
 import { isKeyPressed } from "../utils/KeyManager.js"
-import { Keys, ProgrammingError, TabIndex } from "../../platform-kit/app-env"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector.js"
+import { ProgrammingError, TabIndex } from "../../platform-kit/app-env"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector.js"
 import { progressIcon } from "./Icon.js"
 import { Button, ButtonType } from "./Button.js"
 import { ListSwipeHandler } from "./ListSwipeHandler.js"
 import { applySafeAreaInsetMarginLR } from "../HtmlUtils.js"
 import { theme, ThemeId } from "../theme.js"
 import { Coordinate2D } from "./SwipeHandler.js"
-import { styles } from "../styles.js"
+import { Styles } from "../styles.js"
+import { Keys } from "../utils/KeyboardKeys"
+import { DropdownButtonAttrs } from "./Dropdown"
+import { contextDropdown } from "./GuiUtils"
 
 export type ListState<T> = Readonly<{
 	items: ReadonlyArray<T>
@@ -96,6 +99,8 @@ export interface ListAttrs<T, R extends ViewHolder<T>> {
 
 	/** called when stop button was pressed in progress item */
 	onStopLoading(): unknown
+
+	contextDropdownAttrs?: (entity: T) => DropdownButtonAttrs[]
 }
 
 export interface ListRow<T, R extends ViewHolder<T>> {
@@ -163,7 +168,7 @@ export class List<T, VH extends ViewHolder<T>> implements ClassComponent<ListAtt
 					this.updateDomElements(attrs)
 					this.state = attrs.state
 					this.lastThemeId = theme.themeId
-					if (styles.isSingleColumnLayout()) this.innerDom.focus()
+					if (Styles.get().isSingleColumnLayout()) this.innerDom.focus()
 				},
 				onupdate: ({ dom }) => {
 					if (oldRenderConfig !== attrs.renderConfig) {
@@ -313,6 +318,12 @@ export class List<T, VH extends ViewHolder<T>> implements ClassComponent<ListAtt
 			}
 		}
 
+		domElement.oncontextmenu = async (e: MouseEvent) => {
+			if (this.lastAttrs.contextDropdownAttrs && row.entity) {
+				contextDropdown(e, this.lastAttrs.contextDropdownAttrs(row.entity))
+			}
+		}
+
 		if (renderConfig.multiselectionAllowed === MultiselectMode.Enabled) {
 			let timeoutId: TimeoutID | null
 			let touchStartCoords: { x: number; y: number } | null = null
@@ -372,7 +383,7 @@ export class List<T, VH extends ViewHolder<T>> implements ClassComponent<ListAtt
 		// shift click selects a lot of things and enabled multiselect
 		// (there are also key press handlers but they are invoked from another place)
 		let changeType: Parameters<typeof this.changeSelection>[1]
-		if ((client.isMobileDevice() && this.lastAttrs.state.inMultiselect) || event.ctrlKey || (client.isMacOS && event.metaKey)) {
+		if ((ClientDetector.get().isMobileDevice() && this.lastAttrs.state.inMultiselect) || event.ctrlKey || (ClientDetector.get().isMacOS && event.metaKey)) {
 			changeType = "togglingIncludingSingle"
 		} else if (event.shiftKey) {
 			changeType = "range"
@@ -420,7 +431,6 @@ export class List<T, VH extends ViewHolder<T>> implements ClassComponent<ListAtt
 			const index = attrs.state.activeIndex
 			const desiredPosition = attrs.state.activeIndex * rowHeight
 			if (desiredPosition > this.containerDom!.scrollTop + this.height || desiredPosition < this.containerDom!.scrollTop) {
-				console.log("active item out of screen, scrolling to", index, desiredPosition)
 				this.currentPosition = this.containerDom!.scrollTop = desiredPosition
 			} else {
 				this.currentPosition = this.containerDom!.scrollTop
@@ -615,7 +625,7 @@ export class List<T, VH extends ViewHolder<T>> implements ClassComponent<ListAtt
 		this.width = containerDom.clientWidth
 		this.height = containerDom.clientHeight
 
-		if (this.swipeHandler && client.isMobileDevice()) {
+		if (this.swipeHandler && ClientDetector.get().isMobileDevice()) {
 			// with different zoom levels Blink does weird things and shows parts of elements that it shouldn't so we shift them around by a pixel
 			const translateX = this.width + 1
 			this.domSwipeSpacerLeft.style.width = px(this.width)

@@ -1,24 +1,23 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { lang } from "../../../ui/utils/LanguageViewModel"
+import { InfoLink, lang } from "../../../ui/utils/LanguageViewModel"
 import { PaymentInterval, PriceAndConfigProvider } from "./utils/PriceUtils"
 import { SelectedSubscriptionOptions } from "./FeatureListProvider"
 import { lazy } from "@tutao/utils"
 import { component_size, px, size } from "../../../ui/size.js"
-import { PrimaryButton, PrimaryButtonAttrs, TertiaryButton, TertiaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
+import { PrimaryButton, PrimaryButtonAttrs, SecondaryButton, TertiaryButton, TertiaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
 import { theme } from "../../../ui/theme.js"
 import { boxShadowHigh } from "../../../ui/main-styles.js"
 import { windowFacade } from "../misc/WindowFacade.js"
-import { getApplePriceStr, getPriceStr } from "./utils/SubscriptionUtils.js"
 import { PaymentIntervalSwitch } from "./components/PaymentIntervalSwitch.js"
 import { PersonalPlanContainer } from "./components/PersonalPlanContainer.js"
 import { BusinessPlanContainer } from "./components/BusinessPlanContainer.js"
 import { getSafeAreaInsetBottom } from "../../../ui/HtmlUtils.js"
-import { anyHasGlobalFirstYearCampaign, DiscountDetails, isPersonalPlanAvailable, shouldFixButtonPosition } from "./utils/PlanSelectorUtils.js"
-import { styles } from "../../../ui/styles"
-import { isIOSApp } from "@tutao/app-env"
-import { AvailablePlanType, PlanType } from "../../../entities/sys/Utils"
+import { DiscountDetails, hasRelevantGlobalFirstYearCampaign, isPersonalPlanAvailable, shouldFixButtonPosition } from "./utils/PlanSelectorUtils.js"
+import { Styles } from "../../../ui/styles"
+import { EnvProvider } from "@tutao/app-env"
+import { AvailablePlanType, NewBusinessPlans, NewPersonalPlans, PlanType, SubscriptionType } from "../../../entities/sys/Utils"
 
 export type PlanSelectorAttr = {
 	options: SelectedSubscriptionOptions
@@ -34,7 +33,7 @@ export type PlanSelectorAttr = {
 	targetPlan: PlanType
 	onContinue?: any
 	newSignupFlow?: boolean
-	personalPlansAvailable?: boolean
+	personalPlansAvailable: boolean
 }
 
 export class PlanSelector implements Component<PlanSelectorAttr> {
@@ -74,37 +73,20 @@ export class PlanSelector implements Component<PlanSelectorAttr> {
 		const isYearly = options.paymentInterval() === PaymentInterval.Yearly
 		options.businessUse(!isPersonalPlanAvailable(availablePlans) ? true : options.businessUse())
 		const renderFootnoteElement = (): Children => {
-			const getLegendPriceStrProps = {
-				priceAndConfigProvider,
-				paymentInterval: PaymentInterval.Yearly,
-				targetPlan: PlanType.Legend,
-			}
-			const { referencePriceStr: legendRefPriceStr } = isApplePrice ? getApplePriceStr(getLegendPriceStrProps) : getPriceStr(getLegendPriceStrProps)
-
-			if (!options.businessUse() && anyHasGlobalFirstYearCampaign(discountDetails)) {
-				return m(
-					".flex.column-gap-4",
-					m("span", m("sup", "1")),
-					m(
-						"span",
-						lang.get(isApplePrice ? "pricing.firstYearDiscountIos_msg" : "pricing.firstYearDiscount_msg", {
-							"{price}": legendRefPriceStr ?? "",
-						}),
-					),
-				)
+			if (hasRelevantGlobalFirstYearCampaign(discountDetails ?? null, options.businessUse() ? SubscriptionType.Business : SubscriptionType.Personal)) {
+				return m(".flex.column-gap-4", m("span", m("sup", "1")), m("span", lang.get("pricing.firstYearDiscountOnly_msg")))
 			}
 
 			return undefined
 		}
 
 		const getContinueButtonWidth = () => {
-			if (!newSignupFlow || styles.isMobileLayout() || this.shouldFixButtonPos) return "full"
+			if (!newSignupFlow || Styles.get().isMobileLayout() || this.shouldFixButtonPos) return "full"
 			return "flex"
 		}
 
 		const renderActionButton = (onContinue: any): Children => {
 			let temp = (event: any, dom: any) => actionButtons[this.selectedPlan() as AvailablePlans]().onclick(event, dom)
-			let isBusiness = options.businessUse()
 			if (onContinue) {
 				temp = () => onContinue(this.selectedPlan())
 			}
@@ -114,31 +96,21 @@ export class PlanSelector implements Component<PlanSelectorAttr> {
 					style: {
 						"padding-inline": this.shouldFixButtonPos ? px(size.spacing_16) : 0,
 						display: "inline-grid",
-						"grid-auto-flow": styles.isMobileLayout() || !newSignupFlow ? "row" : "column",
+						"grid-auto-flow": Styles.get().isMobileLayout() || !newSignupFlow ? "row" : "column",
 						"grid-auto-columns": "1fr",
 						"margin-left": newSignupFlow ? "auto" : "initial",
 						"max-width": newSignupFlow ? "initial" : px(400),
-						width: styles.isMobileLayout() || !newSignupFlow ? "100%" : "fit-content",
+						width: Styles.get().isMobileLayout() || !newSignupFlow ? "100%" : "fit-content",
 					},
 				},
-				!this.shouldFixButtonPos &&
-					newSignupFlow &&
-					!isIOSApp() &&
-					personalPlansAvailable &&
-					m(TertiaryButton, {
-						label: isBusiness ? "privateUse_action" : "businessUse_action",
-						width: "flex",
-						onclick: () => options.businessUse(!isBusiness),
-						style: {
-							order: styles.isMobileLayout() ? 1 : -1,
-						},
-					} satisfies TertiaryButtonAttrs),
+				!this.shouldFixButtonPos && personalPlansAvailable && this.renderAdditionalButton(newSignupFlow, options),
 				m(PrimaryButton, {
 					// The label text for go european campaign shall not be translated.
 					label: "continue_action",
 					width: getContinueButtonWidth(),
 					onclick: temp,
 					style: { order: 0 },
+					disabled: !this.isMatchingPlanSelected(options),
 				}),
 			)
 		}
@@ -209,14 +181,7 @@ export class PlanSelector implements Component<PlanSelectorAttr> {
 					renderActionButton(onContinue),
 				),
 
-				this.shouldFixButtonPos &&
-					newSignupFlow &&
-					!isIOSApp() &&
-					m(TertiaryButton, {
-						label: options.businessUse() ? "privateUse_action" : "businessUse_action",
-						width: "flex",
-						onclick: () => options.businessUse(!options.businessUse()),
-					} satisfies TertiaryButtonAttrs),
+				this.shouldFixButtonPos && this.renderAdditionalButton(newSignupFlow, options),
 
 				!(availablePlans.length === 1 && availablePlans.includes(PlanType.Free)) &&
 					m(
@@ -227,10 +192,51 @@ export class PlanSelector implements Component<PlanSelectorAttr> {
 								"margin-inline": "auto",
 							},
 						},
-						[m(".small.mb-16", lang.get("pricing.subscriptionPeriodInfoPrivate_msg")), m(".small.mb-16", renderFootnoteElement())],
+						[
+							m(
+								".small.mb-16",
+								options.businessUse()
+									? lang.get("pricing.subscriptionPeriodInfoBusiness_msg")
+									: lang.get("pricing.subscriptionPeriodInfoPrivate_msg"),
+							),
+							m(".small.mb-16", renderFootnoteElement()),
+						],
 					),
 			],
 		)
+	}
+	private isMatchingPlanSelected(options: SelectedSubscriptionOptions): boolean {
+		if (options.businessUse() && NewBusinessPlans.includes(this.selectedPlan() as AvailablePlanType)) {
+			return true
+		} else if (!options.businessUse() && NewPersonalPlans.includes(this.selectedPlan() as AvailablePlanType)) {
+			return true
+		}
+		return false
+	}
+
+	private renderAdditionalButton(newSignupFlow: undefined | boolean, options: SelectedSubscriptionOptions) {
+		if (!newSignupFlow || EnvProvider.get().isIOSApp()) {
+			return null
+		}
+		if (options.businessUse()) {
+			return m(SecondaryButton, {
+				label: "contactSales_action",
+				width: "flex",
+				onclick: () => windowFacade.openLink(InfoLink.Sales),
+				style: {
+					order: Styles.get().isMobileLayout() ? 1 : -1,
+				},
+			} satisfies TertiaryButtonAttrs)
+		} else {
+			return m(TertiaryButton, {
+				label: "businessUse_action",
+				width: "flex",
+				onclick: () => options.businessUse(true),
+				style: {
+					order: Styles.get().isMobileLayout() ? 1 : -1,
+				},
+			} satisfies TertiaryButtonAttrs)
+		}
 	}
 
 	/**

@@ -1,5 +1,5 @@
 import { ListFilter, ListModel, ListModelConfig } from "./ListModel.js"
-import { getElementId, isSameId, ListElement, OperationType } from "@tutao/meta"
+import { getElementId, isSameId, isSameSingleId, ListElement, OperationType } from "@tutao/meta"
 import Stream from "mithril/stream"
 import { ListLoadingState, ListState } from "../../../ui/base/List"
 import { ListSelectionCallbacks } from "../../../ui/base/ListUtils"
@@ -46,7 +46,7 @@ export class ListElementListModel<ElementType extends ListElement> implements Li
 	constructor(config: ListElementListModelConfig<ElementType>) {
 		const theBestConfig = {
 			...config,
-			isSameId,
+			isSameId: isSameSingleId,
 			getItemId: getElementId,
 		}
 
@@ -54,7 +54,7 @@ export class ListElementListModel<ElementType extends ListElement> implements Li
 		this.config = theBestConfig
 	}
 
-	async entityEventReceived(listId: Id, elementId: Id, operation: OperationType): Promise<void> {
+	async onEntityUpdateReceived(listId: Id, elementId: Id, operation: OperationType): Promise<void> {
 		if (operation === OperationType.CREATE || operation === OperationType.UPDATE) {
 			// load the element without range checks for now
 			const entity = await this.config.loadSingle(listId, elementId)
@@ -81,7 +81,7 @@ export class ListElementListModel<ElementType extends ListElement> implements Li
 	async loadAndSelect(
 		itemId: Id,
 		shouldStop: () => boolean,
-		finder: (a: ElementType) => boolean = (item) => isSameId(getElementId(item), itemId),
+		finder: (a: ElementType) => boolean = (item) => isSameSingleId(getElementId(item), itemId),
 	): Promise<ElementType | null> {
 		return this.listModel.loadAndSelect(finder, shouldStop)
 	}
@@ -120,6 +120,10 @@ export class ListElementListModel<ElementType extends ListElement> implements Li
 
 	async loadAll() {
 		return this.listModel.loadAll()
+	}
+
+	async reload() {
+		return this.listModel.reload()
 	}
 
 	async retryLoading() {

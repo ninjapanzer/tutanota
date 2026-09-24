@@ -77,26 +77,26 @@ impl ImportableMailAttachment {
 	) -> ImportAttachment {
 		let owner_enc_file_session_key = essentials.mail_group_key.encrypt_key(
 			file_session_key,
-			aes::Iv::generate(&essentials.randomizer_facade),
+			aes::InitializationVector::generate(&essentials.randomizer_facade),
 		);
 
 		let enc_file_name = file_session_key
 			.encrypt_data(
 				self.meta_data.filename.as_ref(),
-				aes::Iv::generate(&essentials.randomizer_facade),
+				aes::InitializationVector::generate(&essentials.randomizer_facade),
 			)
 			.unwrap();
 		let enc_mime_type = file_session_key
 			.encrypt_data(
 				self.meta_data.content_type.as_ref(),
-				aes::Iv::generate(&essentials.randomizer_facade),
+				aes::InitializationVector::generate(&essentials.randomizer_facade),
 			)
 			.unwrap();
 		let enc_cid = self.meta_data.content_id.map(|cid| {
 			file_session_key
 				.encrypt_data(
 					cid.as_bytes(),
-					aes::Iv::generate(&essentials.randomizer_facade),
+					aes::InitializationVector::generate(&essentials.randomizer_facade),
 				)
 				.unwrap()
 		});
@@ -113,6 +113,7 @@ impl ImportableMailAttachment {
 				encFileName: enc_file_name,
 				encMimeType: enc_mime_type,
 				ownerEncFileHashSessionKey: None,
+				ownerKeyVersion: None,
 				referenceTokens: reference_tokens,
 			}),
 		}
@@ -632,6 +633,9 @@ impl ImportableMail {
 			references,
 			importedAttachments: vec![],
 			_errors: Default::default(),
+			imapModSeq: None,
+			imapUid: None,
+			labels: vec![],
 		}
 	}
 }

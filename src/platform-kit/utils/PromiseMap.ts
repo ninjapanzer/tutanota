@@ -1,3 +1,7 @@
+import { TypeChecks } from "../app-env/TsTypeChecks"
+
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
+
 /**
  * @file Vendored version of p-map: https://github.com/sindresorhus/p-map/
  * Vendored to avoid having dependency on AggregateError.
@@ -10,7 +14,7 @@ export interface Options {
   	Must be an integer from 1 and up or `Infinity`.
   	@default 1
    */
-	readonly concurrency?: number
+	readonly concurrency: number
 }
 
 /**
@@ -18,7 +22,7 @@ export interface Options {
 	@param element - Iterated element.
 	@param index - Index of the element in the source array.
  */
-export type Mapper<Element, NewElement> = (element: Element, index: number) => Promise<NewElement> | NewElement
+export type Mapper<Element, NewElement> = (element: Element, index: number) => Promise<NewElement>
 
 /**
 	@param iterable - Iterated over concurrently in the `mapper` function.
@@ -46,16 +50,18 @@ export type Mapper<Element, NewElement> = (element: Element, index: number) => P
 export async function pMap<Element, NewElement>(
 	iterable: Iterable<Element>,
 	mapper: Mapper<Element, NewElement>,
-	options: Options = {},
+	options: Options = { concurrency: 1 },
 ): Promise<Array<NewElement>> {
-	const { concurrency = 1 } = options
+	const concurrency = options.concurrency ?? 1
 	return new Promise((resolve, reject) => {
-		if (typeof mapper !== "function") {
+		if (!TypeChecks.isFunction(mapper)) {
 			throw new TypeError("Mapper function is required")
 		}
 
 		if (!((Number.isSafeInteger(concurrency) || concurrency === Number.POSITIVE_INFINITY) && concurrency >= 1)) {
-			throw new TypeError(`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${typeof concurrency})`)
+			throw new TypeError(
+				`Expected \`concurrency\` to be an integer from 1 and up or \`Infinity\`, got \`${concurrency}\` (${TypeChecks.getTypeOf(concurrency)})`,
+			)
 		}
 
 		const result: NewElement[] = []
@@ -75,7 +81,7 @@ export async function pMap<Element, NewElement>(
 			const index = currentIndex
 			currentIndex++
 
-			if (nextItem.done) {
+			if (nextItem.done === true) {
 				isIterableDone = true
 
 				if (resolvingCount === 0) {

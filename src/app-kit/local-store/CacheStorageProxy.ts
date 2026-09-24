@@ -1,11 +1,20 @@
-import { OfflineStorage, Range } from "./OfflineStorage.js"
-import { ProgrammingError } from "../../platform-kit/app-env"
-import { Entity, ListElementEntity, ServerModelParsedInstance, SomeEntity, TypeRef } from "../../platform-kit/meta"
-import { Nullable } from "../../platform-kit/utils"
+import { Range } from "./OfflineStorage.js"
+import { ProgrammingError } from "@tutao/app-env"
+import { Entity, ListElementEntity, PersistentEntity, TypeRef } from "@tutao/meta"
+import { Nullable } from "@tutao/utils"
 import { EphemeralCacheStorage } from "./EphemeralCacheStorage"
 import { CustomCacheHandlerMap } from "./CustomCacheHandler.js"
 import { CacheStorage, LastUpdateTime } from "./CacheStorage.js"
-import { CacheStorageInitReturn, CacheStorageLateInitializer, EphemeralStorageArgs, OfflineStorageArgs } from "./Types.js"
+import {
+	CacheStorageInitReturn,
+	CacheStorageLateInitializer,
+	EphemeralStorageArgs,
+	OfflineStorageArgs,
+	StorageArgs,
+} from "../../platform-kit/base/facades/CacheStorageLateInitializer"
+import { DecryptedParsedInstance } from "@tutao/instance-pipeline"
+import { CachingOfflineStorage } from "./CachingOfflineStorage"
+import { CacheSyncStatus } from "../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 /**
  * This is necessary so that we can release offline storage mode without having to rewrite the credentials handling system. Since it's possible that
@@ -19,39 +28,43 @@ import { CacheStorageInitReturn, CacheStorageLateInitializer, EphemeralStorageAr
  * @param factory A factory function to get a CacheStorage implementation when initialize is called
  * @return {CacheStorageLateInitializer} The uninitialized proxy and a function to initialize it
  */
-export type SomeStorage = OfflineStorage | EphemeralCacheStorage
+export type SomeStorage = CachingOfflineStorage | EphemeralCacheStorage
 
 export class LateInitializedCacheStorageImpl implements CacheStorageLateInitializer, CacheStorage {
 	private _inner: SomeStorage | null = null
 	constructor(
 		private readonly sendError: (error: Error) => Promise<void>,
 		private readonly ephemeralStorageProvider: () => Promise<EphemeralCacheStorage>,
-		private readonly offlineStorageProvider: () => Promise<null | OfflineStorage>,
+		private readonly offlineStorageProvider: () => Promise<CachingOfflineStorage | null>,
 	) {}
 
 	isInitialized(): boolean {
 		return this._inner?.isInitialized() ?? false
 	}
 
-	async getParsed(typeRef: TypeRef<unknown>, listId: string | null, id: string): Promise<ServerModelParsedInstance | null> {
+	async setCacheSyncStatus(cacheSyncStatus: CacheSyncStatus): Promise<void> {
+		return this._inner?.setCacheSyncStatus(cacheSyncStatus)
+	}
+
+	async getParsed(typeRef: TypeRef<Entity>, listId: string | null, id: string): Promise<DecryptedParsedInstance | null> {
 		return await this.inner.getParsed(typeRef, listId, id)
 	}
 
 	async provideFromRangeParsed(
-		typeRef: TypeRef<unknown>,
+		typeRef: TypeRef<Entity>,
 		listId: string,
 		start: string,
 		count: number,
 		reverse: boolean,
-	): Promise<ServerModelParsedInstance[]> {
+	): Promise<Array<DecryptedParsedInstance>> {
 		return await this.inner.provideFromRangeParsed(typeRef, listId, start, count, reverse)
 	}
 
-	async provideMultipleParsed(typeRef: TypeRef<unknown>, listId: Nullable<string>, elementIds: string[]): Promise<ServerModelParsedInstance[]> {
+	async provideMultipleParsed(typeRef: TypeRef<Entity>, listId: Nullable<string>, elementIds: string[]): Promise<Array<DecryptedParsedInstance>> {
 		return await this.inner.provideMultipleParsed(typeRef, listId, elementIds)
 	}
 
-	async getWholeListParsed(typeRef: TypeRef<unknown>, listId: string): Promise<ServerModelParsedInstance[]> {
+	async getWholeListParsed(typeRef: TypeRef<Entity>, listId: string): Promise<Array<DecryptedParsedInstance>> {
 		return await this.inner.getWholeListParsed(typeRef, listId)
 	}
 
@@ -63,7 +76,7 @@ export class LateInitializedCacheStorageImpl implements CacheStorageLateInitiali
 		return this._inner
 	}
 
-	async initialize(args: OfflineStorageArgs | EphemeralStorageArgs): Promise<CacheStorageInitReturn> {
+	async initialize(args: StorageArgs): Promise<CacheStorageInitReturn> {
 		// We might call this multiple times.
 		// This happens when persistent credentials login fails, and we need to start with new cache for new login.
 		const { storage, isPersistent, isNewOfflineDb } = await this.getStorage(args)
@@ -79,27 +92,7 @@ export class LateInitializedCacheStorageImpl implements CacheStorageLateInitiali
 		this._inner = null
 	}
 
-	private async getStorage(
-		args: OfflineStorageArgs | EphemeralStorageArgs,
-	): Promise<{ storage: SomeStorage; isPersistent: boolean; isNewOfflineDb: boolean }> {
-		if (args.type === "offline") {
-			try {
-				const storage = await this.offlineStorageProvider()
-				if (storage != null) {
-					const isNewOfflineDb = await storage.init(args)
-					return {
-						storage,
-						isPersistent: true,
-						isNewOfflineDb,
-					}
-				}
-			} catch (e) {
-				// Precaution in case something bad happens to offline database. We want users to still be able to log in.
-				console.error("Error while initializing offline cache storage", e)
-				this.sendError(e)
-			}
-		}
-		// both "else" case and fallback for unavailable storage and error cases
+	private async getEphemerialStorage(args: EphemeralStorageArgs): Promise<{ storage: SomeStorage; isPersistent: boolean; isNewOfflineDb: boolean }> {
 		const storage = await this.ephemeralStorageProvider()
 		storage.init(args)
 		return {
@@ -109,15 +102,46 @@ export class LateInitializedCacheStorageImpl implements CacheStorageLateInitiali
 		}
 	}
 
-	deleteIfExists<T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<void> {
+	private async getStorage(args: StorageArgs): Promise<{ storage: SomeStorage; isPersistent: boolean; isNewOfflineDb: boolean }> {
+		if (args instanceof OfflineStorageArgs) {
+			try {
+				const storage = await this.offlineStorageProvider()
+				if (storage != null) {
+					const isNewOfflineDb = await storage.init(args)
+					return {
+						storage,
+						isPersistent: true,
+						isNewOfflineDb,
+					}
+				} else {
+					return this.getEphemerialStorage(new EphemeralStorageArgs(args.userId))
+				}
+			} catch (e) {
+				// Precaution in case something bad happens to offline database. We want users to still be able to log in.
+				console.error("Error while initializing offline cache storage", e)
+				this.sendError(e)
+				return this.getEphemerialStorage(new EphemeralStorageArgs(args.userId))
+			}
+		} else if (args instanceof EphemeralStorageArgs) {
+			return this.getEphemerialStorage(args)
+		}
+
+		throw new Error("Invalid OfflineStorage args")
+	}
+
+	deleteIfExists<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<void> {
 		return this.inner.deleteIfExists(typeRef, listId, id)
+	}
+
+	deleteMultiple<T extends PersistentEntity>(typeRef: TypeRef<T>, ids: T["_id"][]): Promise<void> {
+		return this.inner.deleteMultiple(typeRef, ids)
 	}
 
 	deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void> {
 		return this.inner.deleteRange(typeRef, listId)
 	}
 
-	get<T extends Entity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<T | null> {
+	get<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<T | null> {
 		return this.inner.get<T>(typeRef, listId, id)
 	}
 
@@ -153,11 +177,11 @@ export class LateInitializedCacheStorageImpl implements CacheStorageLateInitiali
 		return this.inner.purgeStorage()
 	}
 
-	put(typeRef: TypeRef<unknown>, instance: ServerModelParsedInstance): Promise<void> {
+	put(typeRef: TypeRef<Entity>, instance: DecryptedParsedInstance): Promise<void> {
 		return this.inner.put(typeRef, instance)
 	}
 
-	putMultiple(typeRef: TypeRef<unknown>, instances: ServerModelParsedInstance[]): Promise<void> {
+	putMultiple(typeRef: TypeRef<Entity>, instances: Array<DecryptedParsedInstance>): Promise<void> {
 		return this.inner.putMultiple(typeRef, instances)
 	}
 
@@ -187,9 +211,5 @@ export class LateInitializedCacheStorageImpl implements CacheStorageLateInitiali
 
 	async deleteAllOwnedBy(owner: Id): Promise<void> {
 		return this.inner.deleteAllOwnedBy(owner)
-	}
-
-	clearExcludedData(timeRangeDate: Date): Promise<void> {
-		return this.inner.clearExcludedData(timeRangeDate)
 	}
 }

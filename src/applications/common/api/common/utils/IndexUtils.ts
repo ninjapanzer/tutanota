@@ -1,10 +1,9 @@
-import { AppName, isSameTypeRef, TypeRef } from "@tutao/meta"
-import type { IndexUpdate, SearchIndexMetadataEntry, SearchRestriction } from "../../worker/search/SearchTypes"
-import { FULL_INDEXED_TIMESTAMP, isTest, NOTHING_INDEXED_TIMESTAMP } from "@tutao/app-env"
+import { AppName, Entity, TypeModel, TypeRef } from "@tutao/meta"
+import { IndexUpdate, SearchCategoryType, SearchIndexMetadataEntry, SearchRestriction } from "../../worker/search/SearchTypes"
+import { EnvProvider, FULL_INDEXED_TIMESTAMP, NOTHING_INDEXED_TIMESTAMP } from "@tutao/app-env"
 import { GroupMembership, User } from "@tutao/entities/sys"
 import { GroupType } from "../../../../../entities/sys/Utils"
 import { ContactTypeRef, MailTypeRef, tutanotaTypeModels } from "@tutao/entities/tutanota"
-import { TypeModel } from "../../../../../platform-kit/meta/EntityTypes"
 
 export type TypeInfo = {
 	appId: number
@@ -59,7 +58,7 @@ export function typeRefToTypeInfo(typeRef: TypeRef<any>): TypeInfo {
 	return typeInfo
 }
 
-export function typeInfoToTypeRef(typeInfo: TypeInfo, appName: AppName): TypeRef<unknown> | null {
+export function typeInfoToTypeRef(typeInfo: TypeInfo, appName: AppName): TypeRef<Entity> | null {
 	if (typeInfos.get(appName)?.has(typeInfo.typeId)) {
 		return new TypeRef(appName, typeInfo.typeId)
 	} else {
@@ -254,7 +253,7 @@ export function getPerformanceTimestamp(): number {
 	return typeof performance === "undefined" ? Date.now() : performance.now() // performance is not available in Safari 10 worker scope
 }
 
-export function getIdFromEncSearchIndexEntry(entry: Uint8Array): Uint8Array {
+export function getIdFromEncSearchIndexEntry<TArray extends ArrayBufferLike>(entry: Uint8Array<TArray>): Uint8Array<TArray> {
 	return entry.subarray(0, 16)
 }
 
@@ -292,13 +291,13 @@ export function markEnd(name: string) {
 }
 
 export function shouldMeasure(): boolean {
-	return !env.dist && !isTest()
+	return !env.dist && !EnvProvider.isTest()
 }
 
 export function getSearchEndTimestamp(currentMailIndexTimestamp: number, restriction: SearchRestriction): number {
 	if (restriction.end) {
 		return restriction.end
-	} else if (isSameTypeRef(MailTypeRef, restriction.type)) {
+	} else if (restriction.type === SearchCategoryType.mail) {
 		return currentMailIndexTimestamp === NOTHING_INDEXED_TIMESTAMP ? Date.now() : currentMailIndexTimestamp
 	} else {
 		return FULL_INDEXED_TIMESTAMP

@@ -8,6 +8,7 @@
     <string name="unlockCredentials_action">Lås opp opplysninger</string>
     <string name="delete_action">Slett</string>
     <string name="markRead_action">Marker som lest</string>
+    <string name="archive_action">Arkiv</string>
     <string name="sendLogs_action">Send loggene</string>
     <string name="account_label">Bruker</string>
     <string name="calendars_label">Kalendre</string>
@@ -16,6 +17,7 @@
     <string name="widgetCredentialsError_msg">Logg inn i kalender-appen</string>
     <string name="widgetOpenApp_action">Åpne appen</string>
     <string name="widgetNoEvents_msg">Ingen hendelser</string>
+    <string name="widgetNoEventsToday_msg">Ingen hendelser i dag</string>
     <string name="widgetDescription_msg">Vis dagens kommende hendelser</string>
     <string name="birthdayCalendar_label">Fødselsdager</string>
     <string name="birthdayEvent_title">Fødselsdag for {name}</string>

@@ -1,8 +1,7 @@
 import m, { Children } from "mithril"
-import * as restError from "../../../platform-kit/rest-client/error"
 import { component_size } from "../../../ui/size.js"
 import { assertNotNull, noOp } from "../../../platform-kit/utils"
-import { assertMainOrNode, FeatureType } from "../../../platform-kit/app-env"
+import { EnvProvider, FeatureType } from "../../../platform-kit/app-env"
 import { Icon } from "../../../ui/base/Icon.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { ListColumnWrapper } from "../../../ui/ListColumnWrapper.js"
@@ -24,8 +23,9 @@ import { ManagedCustomerViewer } from "./ManagedCustomerViewer"
 import { CustomerInfo, CustomerInfoTypeRef, PartnerManagedCustomerTypeRef } from "@tutao/entities/sys"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { elementIdPart, listIdPart } from "../../../platform-kit/meta"
+import { NotFoundError } from "@tutao/rest-client/error"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 function getCustomerInfoDisplayName(groupInfo: CustomerInfo): string {
 	if (groupInfo.company) {
@@ -105,7 +105,7 @@ export class ManagedCustomerListView implements UpdatableSettingsViewer {
 					m(
 						".mr-negative-8",
 						m(IconButton, {
-							title: "addManagedCustomers_action",
+							label: "addManagedCustomers_action",
 							icon: Icons.Plus,
 							click: () => this.addButtonClicked(),
 						}),
@@ -149,12 +149,15 @@ export class ManagedCustomerListView implements UpdatableSettingsViewer {
 		window.open(campaignUrl)
 	}
 
-	async entityEventsReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(PartnerManagedCustomerTypeRef, update)) {
-				const partnerManagedCustomer = await locator.entityClient.load(PartnerManagedCustomerTypeRef, [update.instanceListId, update.instanceId])
+				const partnerManagedCustomer = await locator.entityClient.load(PartnerManagedCustomerTypeRef, [
+					assertNotNull(update.instanceListId),
+					update.instanceId,
+				])
 				const customerInfoId = partnerManagedCustomer.customerInfo
-				await this.listModel.entityEventReceived(listIdPart(customerInfoId), elementIdPart(customerInfoId), update.operation)
+				await this.listModel.onEntityUpdateReceived(listIdPart(customerInfoId), elementIdPart(customerInfoId), update.operation)
 			}
 
 			m.redraw()
@@ -183,7 +186,7 @@ export class ManagedCustomerListView implements UpdatableSettingsViewer {
 				try {
 					return await locator.entityClient.load<CustomerInfo>(CustomerInfoTypeRef, [_listId, elementId])
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						// we return null if the CustomerInfo does not exist
 						return null
 					} else {

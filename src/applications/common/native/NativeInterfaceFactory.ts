@@ -7,12 +7,15 @@ import {
 	DesktopSystemFacade,
 	ExportFacade,
 	ExternalCalendarFacade,
+	ImapSyncFacade,
+	ImapSyncSystemFacade,
 	InterWindowEventFacade,
 	MobileContactsFacade,
 	MobilePaymentsFacade,
 	MobileSystemFacade,
 	NativeCredentialsFacade,
 	NativeMailImportFacade,
+	OauthFacade,
 	SearchTextInAppFacade,
 	ThemeFacade,
 } from "@tutao/native-bridge/generatedIpc/types"
@@ -22,6 +25,7 @@ import {
 	ExportFacadeSendDispatcher,
 	ExternalCalendarFacadeSendDispatcher,
 	FileFacadeSendDispatcher,
+	ImapSyncSystemFacadeSendDispatcher,
 	InterWindowEventFacadeSendDispatcher,
 	MobileContactsFacadeSendDispatcher,
 	MobilePaymentsFacadeSendDispatcher,
@@ -29,18 +33,19 @@ import {
 	NativeCredentialsFacadeSendDispatcher,
 	NativeMailImportFacadeSendDispatcher,
 	NativePushFacadeSendDispatcher,
+	OauthFacadeSendDispatcher,
 	SearchTextInAppFacadeSendDispatcher,
 	SettingsFacadeSendDispatcher,
 	ThemeFacadeSendDispatcher,
 	WebGlobalDispatcher,
 } from "@tutao/native-bridge/generatedIpc/dispatchers"
 import { NativeFileApp } from "../../../app-kit/native-bridge/common/FileApp.js"
-import { AppType, isAdminClient, isBrowser, isDesktop, ProgrammingError } from "@tutao/app-env"
+import { AppType, EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { deviceConfig } from "../misc/DeviceConfig.js"
 import { CalendarFacade } from "../api/worker/facades/lazy/CalendarFacade.js"
 import { LoginController } from "../api/main/LoginController.js"
 import { WebMobileFacade } from "./WebMobileFacade.js"
-import { CryptoFacade } from "../../../platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../../platform-kit/base/base-crypto/CryptoFacade"
 import { EntityClient } from "../../../platform-kit/network/EntityClient"
 import { AlarmFacade } from "../api/worker/facades/lazy/AlarmFacade"
 
@@ -55,6 +60,7 @@ export type NativeInterfaces = {
 	nativeCredentialsFacade: NativeCredentialsFacade
 	mobilePaymentsFacade: MobilePaymentsFacade
 	externalCalendarFacade: ExternalCalendarFacade
+	imapSyncFacade: ImapSyncFacade
 }
 
 export type DesktopInterfaces = {
@@ -64,6 +70,8 @@ export type DesktopInterfaces = {
 	nativeMailImportFacade: NativeMailImportFacade
 	interWindowEventSender: InterWindowEventFacadeSendDispatcher
 	exportFacade: ExportFacade
+	desktopImapSyncFacade: ImapSyncSystemFacade
+	desktopOauthWindowFacade: OauthFacade
 }
 
 /**
@@ -73,6 +81,7 @@ export type DesktopInterfaces = {
 export function createNativeInterfaces(
 	mobileFacade: WebMobileFacade,
 	desktopFacade: DesktopFacade,
+	imapSyncFacade: ImapSyncFacade,
 	interWindowEventFacade: InterWindowEventFacade,
 	commonNativeFacade: CommonNativeFacade,
 	cryptoFacade: CryptoFacade,
@@ -82,11 +91,11 @@ export function createNativeInterfaces(
 	logins: LoginController,
 	app: AppType,
 ): NativeInterfaces {
-	if (isBrowser()) {
+	if (EnvProvider.get().isBrowser()) {
 		throw new ProgrammingError("Tried to make native interfaces in non-native")
 	}
 
-	const dispatcher = new WebGlobalDispatcher(commonNativeFacade, desktopFacade, interWindowEventFacade, mobileFacade)
+	const dispatcher = new WebGlobalDispatcher(commonNativeFacade, desktopFacade, imapSyncFacade, interWindowEventFacade, mobileFacade)
 	const native = new NativeInterfaceMain(dispatcher)
 	const nativePushFacadeSendDispatcher = new NativePushFacadeSendDispatcher(native)
 	const pushService = new NativePushServiceApp(
@@ -119,11 +128,12 @@ export function createNativeInterfaces(
 		nativeCredentialsFacade,
 		mobilePaymentsFacade,
 		externalCalendarFacade,
+		imapSyncFacade,
 	}
 }
 
 export function createDesktopInterfaces(native: NativeInterfaceMain): DesktopInterfaces {
-	if (!(isDesktop() || isAdminClient())) {
+	if (!(EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient())) {
 		throw new ProgrammingError("tried to create desktop interfaces in non-electron client")
 	}
 	return {
@@ -133,5 +143,7 @@ export function createDesktopInterfaces(native: NativeInterfaceMain): DesktopInt
 		nativeMailImportFacade: new NativeMailImportFacadeSendDispatcher(native),
 		interWindowEventSender: new InterWindowEventFacadeSendDispatcher(native),
 		exportFacade: new ExportFacadeSendDispatcher(native),
+		desktopImapSyncFacade: new ImapSyncSystemFacadeSendDispatcher(native),
+		desktopOauthWindowFacade: new OauthFacadeSendDispatcher(native),
 	}
 }

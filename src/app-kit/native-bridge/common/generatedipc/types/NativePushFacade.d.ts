@@ -1,7 +1,6 @@
 /* generated file, don't edit. */
 
 import { ExtendedNotificationMode } from "../types/ExtendedNotificationMode"
-
 /**
  * Push notifications and alarms operations
  */
@@ -13,7 +12,7 @@ export interface NativePushFacade {
 		userId: string,
 		sseOrigin: string,
 		pushIdentifierId: string,
-		pushIdentifierSessionKey: Uint8Array,
+		pushIdentifierSessionKey: Uint8Array<ArrayBuffer>,
 	): Promise<void>
 
 	removeUser(userId: string): Promise<void>

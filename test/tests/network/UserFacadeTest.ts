@@ -1,11 +1,13 @@
 import o from "@tutao/otest"
 import { UserFacade } from "../../../src/platform-kit/base/facades/UserFacade.js"
-import { KeyCache } from "../../../src/app-kit/local-store/KeyCache.js"
+import { KeyCache } from "../../../src/platform-kit/base/base-crypto/persistence/KeyCache.js"
 import { matchers, object, verify, when } from "testdouble"
 import { createTestEntity } from "../TestUtils.js"
-import { aes256RandomKey, encryptKey } from "../../../src/platform-kit/crypto"
+import { aes256RandomKey } from "../../../src/platform-kit/crypto"
 
 import { User, UserGroupKeyDistributionTypeRef } from "@tutao/entities/sys"
+import { encryptKey } from "../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
+import { idToElementId } from "../../../src/platform-kit/meta"
 
 o.spec("UserFacadeTest", function () {
 	let keyCache: KeyCache
@@ -39,7 +41,7 @@ o.spec("UserFacadeTest", function () {
 		const newUserGroupKey = aes256RandomKey()
 		const distributionEncUserGroupKey = encryptKey(distributionKey, newUserGroupKey)
 		const distributionUpdate = createTestEntity(UserGroupKeyDistributionTypeRef, {
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			distributionEncUserGroupKey,
 			userGroupKeyVersion: "1",
 		})
@@ -53,7 +55,7 @@ o.spec("UserFacadeTest", function () {
 		const newUserGroupKey = aes256RandomKey()
 		const distributionEncUserGroupKey = encryptKey(distributionKey, newUserGroupKey)
 		const distributionUpdate = createTestEntity(UserGroupKeyDistributionTypeRef, {
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			distributionEncUserGroupKey,
 			userGroupKeyVersion: "1",
 		})
@@ -67,7 +69,7 @@ o.spec("UserFacadeTest", function () {
 		const newUserGroupKey = aes256RandomKey()
 		const distributionEncUserGroupKey = encryptKey(newUserGroupKey, newUserGroupKey)
 		const distributionUpdate = createTestEntity(UserGroupKeyDistributionTypeRef, {
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			distributionEncUserGroupKey,
 			userGroupKeyVersion: "1",
 		})
@@ -83,7 +85,7 @@ o.spec("UserFacadeTest", function () {
 
 		const legacyDistributionEncUserGroupKey = encryptKey(legacyDistributionKey, newUserGroupKey)
 		const distributionUpdate = createTestEntity(UserGroupKeyDistributionTypeRef, {
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			distributionEncUserGroupKey: legacyDistributionEncUserGroupKey,
 			userGroupKeyVersion: "1",
 		})
@@ -98,7 +100,7 @@ o.spec("UserFacadeTest", function () {
 
 		const distributionEncUserGroupKey = encryptKey(distributionKey, newUserGroupKey)
 		const distributionUpdate = createTestEntity(UserGroupKeyDistributionTypeRef, {
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			distributionEncUserGroupKey: distributionEncUserGroupKey,
 			userGroupKeyVersion: "1",
 		})

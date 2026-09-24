@@ -5,7 +5,7 @@ import { EventPreviewView } from "../gui/eventpopup/EventPreviewView.js"
 import { createAsyncDropdown } from "../../../../ui/base/Dropdown.js"
 import { Dialog } from "../../../../ui/base/Dialog.js"
 import { CalendarEventPreviewViewModel } from "../gui/eventpopup/CalendarEventPreviewViewModel.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { SearchToken } from "../../../../ui/utils/QueryTokenUtils"
 
 export interface EventDetailsViewAttrs {
@@ -47,36 +47,36 @@ export class EventDetailsView implements Component<EventDetailsViewAttrs> {
 	}
 
 	private renderEditButton(callback?: () => void): Children {
-		if (this.model == null || !this.model.canEdit || styles.isSingleColumnLayout()) return null
+		if (this.model == null || !this.model.canEdit || Styles.get().isSingleColumnLayout()) return null
 		return m(IconButton, {
-			title: "edit_action",
+			label: "edit_action",
 			icon: Icons.PenFilled,
 			click: (event, dom) => handleEventEditButtonClick(this.model, event, dom, callback),
 		})
 	}
 
 	private renderDeleteButton(callback?: () => void): Children {
-		if (this.model == null || !this.model.canDelete || styles.isSingleColumnLayout()) return null
+		if (this.model == null || !this.model.canDelete || Styles.get().isSingleColumnLayout()) return null
 		return m(IconButton, {
-			title: "delete_action",
+			label: "delete_action",
 			icon: Icons.TrashFilled,
 			click: (event, dom) => handleEventDeleteButtonClick(this.model, event, dom, callback),
 		})
 	}
 
 	private renderSendUpdateButton(): Children {
-		if (this.model == null || !this.model.canSendUpdates || styles.isSingleColumnLayout()) return null
+		if (this.model == null || !this.model.canSendUpdates || Styles.get().isSingleColumnLayout()) return null
 		return m(IconButton, {
-			title: "sendUpdates_label",
+			label: "sendUpdates_label",
 			click: () => handleSendUpdatesClick(this.model),
 			icon: Icons.MailFilled,
 		})
 	}
 
 	private renderDuplicateButton(): Children {
-		if (this.model == null || !this.model.canEdit || styles.isSingleColumnLayout()) return null
+		if (this.model == null || !this.model.canEdit || Styles.get().isSingleColumnLayout()) return null
 		return m(IconButton, {
-			title: "duplicateEvent_label",
+			label: "duplicateEvent_label",
 			click: () => handleEventDuplicate(this.model!),
 			icon: Icons.DuplicateFilled,
 		})
@@ -111,30 +111,26 @@ export function handleEventEditButtonClick(previewModel: CalendarEventPreviewVie
 					{
 						label: "updateOneCalendarEvent_action",
 						click: () => {
-							// noinspection JSIgnoredPromiseFromCall
-							previewModel?.editSingle().finally(handleCallback)
+							previewModel?.editSingle().then(handleCallback)
 						},
 					},
 					{
 						label: "updateThisAndFutureEvents_action",
 						click: () => {
-							// noinspection JSIgnoredPromiseFromCall
-							previewModel.editThisAndFutureOccurrences()
+							previewModel.editThisAndFutureOccurrences().then(handleCallback)
 						},
 					},
 					{
 						label: "updateAllCalendarEvents_action",
 						click: () => {
-							// noinspection JSIgnoredPromiseFromCall
-							previewModel?.editAll().finally(handleCallback)
+							previewModel?.editAll().then(handleCallback)
 						},
 					},
 				]),
 			width: 300,
 		})(ev, receiver)
 	} else {
-		// noinspection JSIgnoredPromiseFromCall
-		previewModel?.editAll().finally(handleCallback)
+		previewModel?.editAll().then(handleCallback)
 	}
 }
 

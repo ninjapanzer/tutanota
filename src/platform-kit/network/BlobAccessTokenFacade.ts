@@ -1,22 +1,28 @@
-import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "./ServiceRequest"
-import { DateProvider, deduplicate, first, isEmpty, lazyMemoized } from "@tutao/utils"
+import { DateProvider, deduplicate, first, isEmpty, isNotNull, lazyMemoized, Nullable } from "@tutao/utils"
 import { SuspensionBehavior } from "../rest-client/types"
 import { LoggedInUserProvider } from "@tutao/instance-pipeline"
 import { TypeModelResolver } from "../instance-pipeline/EntityFunctions"
 import { ArchiveDataType, BlobAccessTokenKind } from "../../entities/sys/Utils"
 import { BlobServerAccessInfo, createBlobAccessTokenPostIn, createBlobReadData, createBlobWriteData, createInstanceId } from "../../entities/storage/TypeRefs"
-import { BlobAccessTokenService } from "../../entities/storage/Services"
+import { BlobAccessTokenService_POST } from "../../entities/storage/Services"
 import { BlobReferencingInstance } from "../../entities/storage/BlobUtils"
 import { TypeRef } from "@tutao/meta"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../instance-pipeline/RestClientOptions"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export interface BlobLoadOptions {
-	extraHeaders?: Dict
-	suspensionBehavior?: SuspensionBehavior
+	extraHeaders: Nullable<Dict>
+	suspensionBehavior: Nullable<SuspensionBehavior>
 	/** override origin for the request */
-	baseUrl?: string
+	baseUrl: Nullable<string>
+}
+export const DEFAULT_BLOB_LOAD_OPTIONS: BlobLoadOptions = {
+	extraHeaders: null,
+	suspensionBehavior: null,
+	baseUrl: null,
 }
 
 /**
@@ -48,7 +54,7 @@ export class BlobAccessTokenFacade {
 	 * @param ownerGroupId The ownerGroup were the data belongs to (e.g. group of type mail)
 	 */
 	async requestWriteToken(archiveDataType: ArchiveDataType, ownerGroupId: Id): Promise<BlobServerAccessInfo> {
-		const requestNewToken = async () => {
+		const requestNewToken = async (): Promise<BlobServerAccessInfo> => {
 			const tokenRequest = createBlobAccessTokenPostIn({
 				archiveDataType,
 				write: createBlobWriteData({
@@ -56,14 +62,14 @@ export class BlobAccessTokenFacade {
 				}),
 				read: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest)
+			const { blobAccessInfo } = await this.serviceExecutor.execute(BlobAccessTokenService_POST, tokenRequest, null)
 			return blobAccessInfo
 		}
 		const key = this.makeWriteCacheKey(ownerGroupId, archiveDataType)
 		return this.writeCache.getToken(key, [], requestNewToken)
 	}
 
-	private makeWriteCacheKey(ownerGroupId: string, archiveDataType: ArchiveDataType) {
+	private makeWriteCacheKey(ownerGroupId: string, archiveDataType: ArchiveDataType): string {
 		return ownerGroupId + archiveDataType
 	}
 
@@ -112,7 +118,10 @@ export class BlobAccessTokenFacade {
 				}),
 				write: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, blobLoadOptions)
+			const { blobAccessInfo } = await this.serviceExecutor.execute(BlobAccessTokenService_POST, tokenRequest, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
+				...blobLoadOptions,
+			})
 			return blobAccessInfo
 		})
 
@@ -138,7 +147,7 @@ export class BlobAccessTokenFacade {
 		const archiveIds = this.getArchiveIds([referencingInstance])
 		const archiveIdsToAccessInfo = new Map<Id, BlobServerAccessInfo>()
 		for (const archiveId of archiveIds) {
-			const requestNewToken = async () => {
+			const requestNewToken = async (): Promise<BlobServerAccessInfo> => {
 				const instanceListId = referencingInstance.listId
 				const instanceId = referencingInstance.elementId
 				const instanceIds = [createInstanceId({ instanceId })]
@@ -151,7 +160,12 @@ export class BlobAccessTokenFacade {
 					}),
 					write: null,
 				})
-				return (await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, blobLoadOptions)).blobAccessInfo
+				return (
+					await this.serviceExecutor.execute(BlobAccessTokenService_POST, tokenRequest, {
+						...DEFAULT_EXTRA_SERVICE_PARAMS,
+						...blobLoadOptions,
+					})
+				).blobAccessInfo
 			}
 			const blobServerAccessInfo = await this.readCache.getToken(archiveId, [referencingInstance.elementId], requestNewToken)
 			archiveIdsToAccessInfo.set(archiveId, blobServerAccessInfo)
@@ -184,7 +198,7 @@ export class BlobAccessTokenFacade {
 	 * @param archiveId ID for the archive to read blobs from
 	 */
 	async requestReadTokenArchive(archiveId: Id): Promise<BlobServerAccessInfo> {
-		const requestNewToken = async () => {
+		const requestNewToken = async (): Promise<BlobServerAccessInfo> => {
 			const tokenRequest = createBlobAccessTokenPostIn({
 				archiveDataType: null,
 				read: createBlobReadData({
@@ -194,7 +208,7 @@ export class BlobAccessTokenFacade {
 				}),
 				write: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest)
+			const { blobAccessInfo } = await this.serviceExecutor.execute(BlobAccessTokenService_POST, tokenRequest, null)
 			return blobAccessInfo
 		}
 		return this.readCache.getToken(archiveId, [], requestNewToken)
@@ -275,7 +289,7 @@ class BlobAccessTokenCache {
 		instanceIds: readonly Id[],
 		loader: () => Promise<BlobServerAccessInfo>,
 	): Promise<BlobServerAccessInfo> {
-		const archiveToken = archiveOrGroupKey ? this.archiveMap.get(archiveOrGroupKey) : null
+		const archiveToken = isNotNull(archiveOrGroupKey) ? (this.archiveMap.get(archiveOrGroupKey) ?? null) : null
 		if (archiveToken != null && canBeUsedForAnotherRequest(archiveToken, this.dateProvider)) {
 			return archiveToken
 		}

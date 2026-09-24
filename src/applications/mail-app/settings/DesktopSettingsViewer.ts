@@ -12,7 +12,7 @@ import { DropDownSelector } from "../../../ui/base/DropDownSelector.js"
 import { Dialog } from "../../../ui/base/Dialog"
 import type { UpdateHelpLabelAttrs } from "./DesktopUpdateHelpLabel"
 import { DesktopUpdateHelpLabel } from "./DesktopUpdateHelpLabel"
-import { assertMainOrNode, DesktopConfigKey } from "../../../platform-kit/app-env"
+import { DesktopConfigKey, EnvProvider } from "../../../platform-kit/app-env"
 import { locator } from "../../common/api/main/CommonLocator"
 import { IconButton, IconButtonAttrs } from "../../../ui/base/IconButton.js"
 import { ButtonSize } from "../../../ui/base/ButtonSize.js"
@@ -22,7 +22,7 @@ import { MailExportMode } from "../../common/mailFunctionality/SharedMailUtils.j
 import { ifAllowedTutaLinks } from "../../common/gui/base/TutaLinkUtils"
 import { SpellcheckLanguageDialog } from "../../../ui/dialogs/SpellcheckLanguageDialog"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 enum DownloadLocationStrategy {
 	ALWAYS_ASK,
@@ -133,7 +133,7 @@ export class DesktopSettingsViewer implements UpdatableSettingsViewer {
 			},
 		}
 		const editSpellcheckLanguageButtonAttrs: IconButtonAttrs = {
-			title: "checkSpelling_action",
+			label: "checkSpelling_action",
 			click: () => this.spellCheckLanguageDialog.showSpellcheckLanguageDialog().then((newLabel) => this.spellCheckLang(newLabel)),
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,
@@ -215,11 +215,11 @@ export class DesktopSettingsViewer implements UpdatableSettingsViewer {
 		}
 		const changeDefaultDownloadPathAttrs: IconButtonAttrs = attachDropdown({
 			mainButtonAttrs: {
-				title: "edit_action",
+				label: "edit_action",
 				icon: Icons.PenFilled,
 				size: ButtonSize.Compact,
 			},
-			childAttrs: () => [
+			childAttrs: async () => [
 				{
 					label: "alwaysAsk_action",
 					click: () => this.setDefaultDownloadPath(DownloadLocationStrategy.ALWAYS_ASK),
@@ -342,5 +342,5 @@ export class DesktopSettingsViewer implements UpdatableSettingsViewer {
 	}
 
 	// this is all local for now
-	entityEventsReceived: () => Promise<void> = () => Promise.resolve()
+	onEntityUpdatesReceived: () => Promise<void> = () => Promise.resolve()
 }

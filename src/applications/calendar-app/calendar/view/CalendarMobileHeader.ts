@@ -9,7 +9,7 @@ import { MobileHeaderBackButton, MobileHeaderMenuButton, MobileHeaderTitle } fro
 import { AppHeaderAttrs } from "../../../../ui/Header.js"
 import { attachDropdown } from "../../../../ui/base/Dropdown.js"
 import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { theme } from "../../../../ui/theme.js"
 import { ClickHandler } from "../../../../ui/base/GuiUtils.js"
 import { TodayIconButton } from "./TodayIconButton.js"
@@ -18,8 +18,8 @@ import { locator } from "../../../common/api/main/CommonLocator.js"
 import { NavButton } from "../../../../ui/base/NavButton.js"
 import { CalendarViewType, formatJSDate } from "../../../common/api/common/utils/CommonCalendarUtils.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
-import { isApp } from "../../../../platform-kit/app-env"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 
 export interface CalendarMobileHeaderAttrs extends AppHeaderAttrs {
 	viewType: CalendarViewType
@@ -67,11 +67,11 @@ export class CalendarMobileHeader implements Component<CalendarMobileHeaderAttrs
 					click: attrs.onToday,
 				}),
 				this.renderViewSelector(attrs),
-				client.isCalendarApp()
+				ClientDetector.get().isCalendarApp()
 					? this.renderSearchNavigationButton()
 					: m(IconButton, {
 							icon: Icons.Plus,
-							title: "newEvent_action",
+							label: "newEvent_action",
 							click: attrs.onCreateEvent,
 						}),
 			],
@@ -90,7 +90,7 @@ export class CalendarMobileHeader implements Component<CalendarMobileHeaderAttrs
 					})
 				},
 			})
-		} else if (styles.isMobileDesktopLayout()) {
+		} else if (Styles.get().isMobileDesktopLayout()) {
 			return null
 		}
 
@@ -119,7 +119,7 @@ export class CalendarMobileHeader implements Component<CalendarMobileHeaderAttrs
 	}
 
 	private renderDateNavigation(attrs: CalendarMobileHeaderAttrs) {
-		if (isApp() || !(styles.isSingleColumnLayout() || styles.isTwoColumnLayout())) {
+		if (EnvProvider.get().isApp() || !(Styles.get().isSingleColumnLayout() || Styles.get().isTwoColumnLayout())) {
 			return null
 		}
 
@@ -132,9 +132,9 @@ export class CalendarMobileHeader implements Component<CalendarMobileHeaderAttrs
 			attachDropdown({
 				mainButtonAttrs: {
 					icon: getIconForViewType(attrs.viewType),
-					title: "view_label",
+					label: "view_label",
 				},
-				childAttrs: () => {
+				childAttrs: async () => {
 					const calendarViewValues: Array<{ name: TranslationKey; value: CalendarViewType }> = [
 						{
 							name: "agenda_label",

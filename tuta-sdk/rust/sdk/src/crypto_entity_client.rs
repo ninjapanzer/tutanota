@@ -27,10 +27,11 @@ use crate::rest_error::HttpError;
 use crate::tutanota_constants::{
 	EncryptionAuthStatus, PublicKeyIdentifierType, SYSTEM_GROUP_MAIL_ADDRESS,
 };
-use crate::util::{convert_version_to_u64, Versioned};
+use crate::util::convert_version_to_u64;
 use crate::{ApiCallError, ListLoadDirection};
 use crate::{GeneratedId, TypeRef};
 use crypto_primitives::key::GenericAesKey;
+use crypto_primitives::versioned::Versioned;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -105,17 +106,16 @@ impl CryptoEntityClient {
 		let type_ref = T::type_ref();
 		let type_model = self.entity_client.resolve_server_type_ref(&type_ref)?;
 
-		let raw_entity: crate::json_element::RawEntity =
-			serde_json::from_str(json_str).map_err(|e| {
-				ApiCallError::internal(format!("decrypt_inline: malformed JSON: {e}"))
-			})?;
+		let raw_entity: crate::json_element::RawEntity = serde_json::from_str(json_str)
+			.map_err(|e| ApiCallError::internal(format!("decrypt_inline: malformed JSON: {e}")))?;
 		let parsed = self.entity_client.parse_raw(&type_ref, raw_entity)?;
 
 		// Unencrypted types skip the crypto pipeline entirely.
 		if !type_model.marked_encrypted() {
-			let typed = self.instance_mapper.parse_entity::<T>(parsed).map_err(|e| {
-				ApiCallError::internal_with_err(e, "decrypt_inline: map failed")
-			})?;
+			let typed = self
+				.instance_mapper
+				.parse_entity::<T>(parsed)
+				.map_err(|e| ApiCallError::internal_with_err(e, "decrypt_inline: map failed"))?;
 			return Ok(Some(typed));
 		}
 
@@ -624,12 +624,12 @@ mod tests {
 	use crate::type_model_provider::TypeModelProvider;
 	use crate::util::entity_test_utils::generate_email_entity;
 	use crate::util::test_utils::{create_test_entity_dict, leak, mock_type_model_provider};
-	use crate::util::Versioned;
 	use crate::{GeneratedId, IdTupleGenerated};
-	use crypto_primitives::aes::{Aes256Key, Iv};
+	use crypto_primitives::aes::{Aes256Key, InitializationVector};
 	use crypto_primitives::key::GenericAesKey;
 	use crypto_primitives::randomizer_facade::test_util::make_thread_rng_facade;
 	use crypto_primitives::randomizer_facade::RandomizerFacade;
+	use crypto_primitives::versioned::Versioned;
 
 	#[tokio::test]
 	async fn no_auth_for_encrypted_instances_except_mail() {
@@ -663,7 +663,7 @@ mod tests {
 	async fn can_load_mail() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = false;
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";
@@ -765,7 +765,7 @@ mod tests {
 	async fn load_mail_authentication_succeeds() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = true; // important
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";
@@ -903,7 +903,7 @@ mod tests {
 	async fn load_mail_authentication_fails() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = true; // important
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";
@@ -1047,7 +1047,7 @@ mod tests {
 	async fn load_mail_authentication_system_sender_succeeds() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = false; // important: makes sure this is verified against the system pub key
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";
@@ -1186,7 +1186,7 @@ mod tests {
 	async fn no_auth_for_rsa_mail() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = true; // important
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";
@@ -1323,7 +1323,7 @@ mod tests {
 	async fn auth_result_rsa_despite_tuta_crypt() {
 		// Generate an encrypted type to feed into a mock of the entity client
 		let sk = GenericAesKey::Aes256(Aes256Key::from_bytes(&random::<[u8; 32]>()).unwrap());
-		let iv = Iv::from_bytes(&random::<[u8; 16]>()).unwrap();
+		let iv = InitializationVector::from_bytes(&random::<[u8; 16]>()).unwrap();
 		let is_confidential = true; // important
 		const SUBJECT: &str = "Subject";
 		const SENDER_NAME: &str = "Sender";

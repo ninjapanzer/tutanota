@@ -1,14 +1,14 @@
-import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../../../platform-kit/network/EntityClient.js"
 import { assertNotNull, DateProvider, delay, findAndRemove, getFirstOrThrow, KeyVersion, ofClass } from "@tutao/utils"
 import { getEnabledMailAddressesForGroupInfo } from "../../../../../../platform-kit/network/GroupUtils.js"
-import * as restError from "@tutao/rest-client/error"
-import { AdminKeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/AdminKeyLoaderFacade"
+import { PreconditionFailedError } from "@tutao/rest-client/error"
+import { AdminKeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/AdminKeyLoaderFacade"
 import { VersionedKey } from "@tutao/crypto"
 import {
-	ChangePrimaryAddressService,
+	ChangePrimaryAddressService_PUT,
 	createChangePrimaryAddressServicePutIn,
 	createMailAddressProperties,
 	createMailboxProperties,
@@ -24,17 +24,22 @@ import {
 	createMailAddressAliasServiceDataDelete,
 	createMultipleMailAddressAvailabilityData,
 	createStringWrapper,
-	DomainMailAddressAvailabilityService,
+	DomainMailAddressAvailabilityService_GET,
 	GroupInfo,
 	GroupInfoTypeRef,
 	GroupTypeRef,
-	MailAddressAliasService,
+	MailAddressAliasService_DELETE,
+	MailAddressAliasService_GET,
+	MailAddressAliasService_POST,
 	MailAddressAliasServiceReturn,
-	MultipleMailAddressAvailabilityService,
+	MultipleMailAddressAvailabilityService_GET,
 	UserTypeRef,
 } from "@tutao/entities/sys"
+import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { idToElementId } from "@tutao/meta"
+import { ReportMovedMailsType } from "../../../../../../entities/tutanota/Utils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /**
  * utility to rate limit requests while keeping them as responsive as possible in normal usage.
@@ -145,7 +150,7 @@ export class MailAddressFacade {
 	 */
 	getAliasCounters(userGroupId: Id): Promise<MailAddressAliasServiceReturn> {
 		const data = createMailAddressAliasGetIn({ targetGroup: userGroupId })
-		return this.serviceExecutor.get(MailAddressAliasService, data)
+		return this.serviceExecutor.execute(MailAddressAliasService_GET, data, null)
 	}
 
 	/**
@@ -159,7 +164,7 @@ export class MailAddressFacade {
 				// another check came in while we were waiting
 				return false
 			}
-			const availability = await this.serviceExecutor.get(DomainMailAddressAvailabilityService, data)
+			const availability = await this.serviceExecutor.execute(DomainMailAddressAvailabilityService_GET, data, null)
 			return availability.available
 		} else if (signupToken != null) {
 			const data = createMultipleMailAddressAvailabilityData({
@@ -169,7 +174,7 @@ export class MailAddressFacade {
 			if (!(await this.availabilityBucket.nextToken())) {
 				return false
 			}
-			const result = await this.serviceExecutor.get(MultipleMailAddressAvailabilityService, data)
+			const result = await this.serviceExecutor.execute(MultipleMailAddressAvailabilityService_GET, data, null)
 			return getFirstOrThrow(result.availabilities).available
 		} else {
 			throw new ProgrammingError("tried to get mail address availability while not fully logged in without a signup token")
@@ -178,7 +183,7 @@ export class MailAddressFacade {
 
 	/**
 	 * Add an {@param alias} to {@param targetGroupId}.
-	 * {@param targetGroupId} is *not* a Mail group, it is currently only a user group.
+	 * {@param targetGroupId} can be a user group or a shared mail grou.
 	 *
 	 * Can only be done by an admin.
 	 */
@@ -187,12 +192,12 @@ export class MailAddressFacade {
 			group: targetGroupId,
 			mailAddress: alias,
 		})
-		await this.serviceExecutor.post(MailAddressAliasService, data)
+		await this.serviceExecutor.execute(MailAddressAliasService_POST, data, null)
 	}
 
 	/**
 	 * Enable/disable an {@param alias} on {@param targetGroupId}.
-	 * {@param targetGroupId} is *not* a Mail group, it is currently only a user group.
+	 * {@param targetGroupId} can be a user group or a shared mail group.
 	 *
 	 * {@param restore} means whether the alias will be enabled or disabled.
 	 *
@@ -204,7 +209,7 @@ export class MailAddressFacade {
 			restore,
 			group: targetGroupId,
 		})
-		await this.serviceExecutor.delete(MailAddressAliasService, deleteData)
+		await this.serviceExecutor.execute(MailAddressAliasService_DELETE, deleteData, null)
 	}
 
 	async setPrimaryMailAddress(userId: Id, address: string): Promise<void> {
@@ -212,7 +217,7 @@ export class MailAddressFacade {
 			address,
 			user: userId,
 		})
-		await this.serviceExecutor.put(ChangePrimaryAddressService, data)
+		await this.serviceExecutor.execute(ChangePrimaryAddressService_PUT, data, null)
 	}
 
 	/**
@@ -247,7 +252,7 @@ export class MailAddressFacade {
 	 * remove the sender name of the given mail address.
 	 * If no user is given, the operation will be attempted as an admin of the group.
 	 */
-	async removeSenderName(mailGroupId: Id, mailAddress: string, viaUser: Id): Promise<Map<string, string>> {
+	async removeSenderName(mailGroupId: Id, mailAddress: string, viaUser?: Id): Promise<Map<string, string>> {
 		const mailboxProperties = await this.getOrCreateMailboxProperties(mailGroupId, viaUser)
 		findAndRemove(mailboxProperties.mailAddressProperties, (p) => p.mailAddress === mailAddress)
 		const updatedProperties = await this.updateMailboxProperties(mailboxProperties, viaUser)
@@ -256,7 +261,7 @@ export class MailAddressFacade {
 
 	private async getOrCreateMailboxProperties(mailGroupId: Id, viaUser?: Id): Promise<MailboxProperties> {
 		// Using non-caching entityClient because we are not a member of the user's mail group, and we won't receive updates for it
-		const mailboxGroupRoot = await this.nonCachingEntityClient.load(MailboxGroupRootTypeRef, mailGroupId)
+		const mailboxGroupRoot = await this.nonCachingEntityClient.load(MailboxGroupRootTypeRef, idToElementId(mailGroupId))
 
 		if (mailboxGroupRoot.mailboxProperties == null) {
 			const currentGroupKey = viaUser
@@ -269,7 +274,8 @@ export class MailAddressFacade {
 			viaUser
 				? await this.adminKeyLoaderFacade.getGroupKeyViaUser(mailGroupId, version, viaUser)
 				: await this.adminKeyLoaderFacade.getGroupKeyViaAdminEncGKey(mailGroupId, version)
-		const mailboxProperties = await this.nonCachingEntityClient.load(MailboxPropertiesTypeRef, mailboxGroupRoot.mailboxProperties, {
+		const mailboxProperties = await this.nonCachingEntityClient.load(MailboxPropertiesTypeRef, idToElementId(mailboxGroupRoot.mailboxProperties), {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 			ownerKeyProvider: groupKeyProvider,
 		})
 
@@ -296,12 +302,12 @@ export class MailAddressFacade {
 	}
 
 	private async loadUserGroupInfo(userId: Id): Promise<GroupInfo> {
-		const user = await this.nonCachingEntityClient.load(UserTypeRef, userId)
+		const user = await this.nonCachingEntityClient.load(UserTypeRef, idToElementId(userId))
 		return await this.nonCachingEntityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo)
 	}
 
 	private async loadMailGroupInfo(groupId: Id): Promise<GroupInfo> {
-		const group = await this.nonCachingEntityClient.load(GroupTypeRef, groupId)
+		const group = await this.nonCachingEntityClient.load(GroupTypeRef, idToElementId(groupId))
 		return await this.nonCachingEntityClient.load(GroupInfoTypeRef, group.groupInfo)
 	}
 
@@ -309,33 +315,41 @@ export class MailAddressFacade {
 		const _ownerGroup = mailboxGroupRoot._ownerGroup
 		const mailboxProperties = createMailboxProperties({
 			...(_ownerGroup != null ? { _ownerGroup } : null), // only set it if it is not null
-			reportMovedMails: "",
+			reportMovedMails: ReportMovedMailsType.ALWAYS_ASK,
 			mailAddressProperties: [],
 		})
 		// Using non-caching entityClient because we are not a member of the user's mail group and we won't receive updates for it
 		return assertNotNull(
-			await this.nonCachingEntityClient.setup(null, mailboxProperties, undefined, { ownerKey: groupKey }).catch(
-				ofClass(restError.PreconditionFailedError, (e) => {
-					// in admin case it is much harder to run into it because we use non-caching entityClient but it is still possible
-					if (e.data && e.data.startsWith("exists:")) {
-						const existingId = e.data.substring("exists:".length)
-						console.log("mailboxProperties already exists", existingId)
-						return existingId
-					} else {
-						throw new ProgrammingError(`Could not create mailboxProperties, precondition: ${e.data}`)
-					}
-				}),
-			),
+			await this.nonCachingEntityClient
+				.setup(null, mailboxProperties, undefined, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, ownerKey: groupKey })
+				.catch(
+					ofClass(PreconditionFailedError, (e) => {
+						// in admin case it is much harder to run into it because we use non-caching entityClient but it is still possible
+						if (e.data && e.data.startsWith("exists:")) {
+							const existingId = e.data.substring("exists:".length)
+							console.log("mailboxProperties already exists", existingId)
+							return existingId
+						} else {
+							throw new ProgrammingError(`Could not create mailboxProperties, precondition: ${e.data}`)
+						}
+					}),
+				),
 		)
 	}
 
 	private async updateMailboxProperties(mailboxProperties: MailboxProperties, viaUser?: Id): Promise<MailboxProperties> {
+		const ownerKey = viaUser
+			? await this.adminKeyLoaderFacade.getCurrentGroupKeyViaUser(assertNotNull(mailboxProperties._ownerGroup), viaUser)
+			: await this.adminKeyLoaderFacade.getCurrentGroupKeyViaAdminEncGKey(assertNotNull(mailboxProperties._ownerGroup))
+		await this.nonCachingEntityClient.update(mailboxProperties, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, ownerKey })
 		const groupKeyProvider = async (version: KeyVersion) =>
 			viaUser
 				? await this.adminKeyLoaderFacade.getGroupKeyViaUser(assertNotNull(mailboxProperties._ownerGroup), version, viaUser)
 				: await this.adminKeyLoaderFacade.getGroupKeyViaAdminEncGKey(assertNotNull(mailboxProperties._ownerGroup), version)
-		await this.nonCachingEntityClient.update(mailboxProperties, { ownerKeyProvider: groupKeyProvider })
-		return await this.nonCachingEntityClient.load(MailboxPropertiesTypeRef, mailboxProperties._id, { ownerKeyProvider: groupKeyProvider })
+		return await this.nonCachingEntityClient.load(MailboxPropertiesTypeRef, mailboxProperties._id, {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+			ownerKeyProvider: groupKeyProvider,
+		})
 	}
 
 	private async collectSenderNames(mailboxProperties: MailboxProperties): Promise<Map<string, string>> {

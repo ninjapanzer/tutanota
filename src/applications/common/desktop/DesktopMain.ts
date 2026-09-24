@@ -27,7 +27,7 @@ import { DesktopConfigMigrator } from "./config/migrations/DesktopConfigMigrator
 import { DesktopKeyStoreFacade } from "./DesktopKeyStoreFacade.js"
 import { SchedulerImpl } from "../api/common/utils/Scheduler.js"
 import { DesktopThemeFacade } from "./DesktopThemeFacade"
-import { BuildConfigKey, DesktopConfigKey, ProgrammingError } from "../../../platform-kit/app-env"
+import { BuildConfigKey, DesktopConfigKey, ProgrammingError } from "@tutao/app-env"
 import { DesktopNativeCredentialsFacade } from "./credentials/DesktopNativeCredentialsFacade.js"
 import { WebDialogController } from "./WebDialog.js"
 import path from "node:path"
@@ -72,12 +72,11 @@ import { customFetch } from "./net/NetAgent"
 import { DesktopMailImportFacade } from "./mailimport/DesktopMailImportFacade.js"
 import { MailboxExportPersistence } from "./export/MailboxExportPersistence.js"
 import { DesktopExportLock } from "./export/DesktopExportLock"
-import { InstancePipeline, NamedClientModel } from "../../../platform-kit/instance-pipeline"
+import { ClientOnlyTypeModelResolver, InstancePipeline, NamedClientModel } from "../../../platform-kit/instance-pipeline"
 import { CommandExecutor } from "./CommandExecutor"
 import { makeSuspensionAwareFetch } from "./net/SuspensionAwareFetch"
 import { restSuspension } from "../../../platform-kit/rest-client"
 import { DesktopErrorHandler } from "./DesktopErrorHandler"
-import { initClientModels } from "../api/common/ClientModelInfoInitializer"
 import { AppNameEnum } from "@tutao/meta"
 import { baseModelInfo, baseTypeModels } from "@tutao/entities/base"
 import { sysModelInfo, sysTypeModels } from "@tutao/entities/sys"
@@ -87,6 +86,13 @@ import { storageModelInfo, storageTypeModels } from "@tutao/entities/storage"
 import { monitorModelInfo, monitorTypeModels } from "@tutao/entities/monitor"
 import { usageModelInfo, usageTypeModels } from "@tutao/entities/usage"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
+import { initClientModels } from "../api/common/ClientModelInfoInitializer"
+import { loadWasmFromFileOrNetwork } from "../../../platform-kit/utils/WebAssembly"
+import { DesktopOauthWindowFacade } from "./DesktopOauthWindowFacade"
+import { ImapSyncEventListener } from "./imapimport/imapsync/ImapSyncEventListener"
+import { createImapSync } from "./imapimport/imapsync/ImapSync"
+import { DesktopImapSyncSystemFacade, ImapInitFolderSyncFactory, ImapSyncFactory } from "./imapimport/DesktopImapSyncSystemFacade"
+import { CertificateProvider } from "./CertificateProvider"
 
 mp()
 
@@ -121,12 +127,7 @@ const commandExecutor = new CommandExecutor(child_process)
 const desktopUtils = new DesktopUtils(process, tfs, electron, commandExecutor, windowsRegistryFacade)
 
 // Argon2 is already built for the web part, we don't need to have another copy.
-const loadArgon2 = async () => {
-	const wasmSourcePath = path.join(electron.app.getAppPath(), "argon2.wasm")
-	const wasmSource: Buffer = await fs.promises.readFile(wasmSourcePath)
-	const { exports } = (await WebAssembly.instantiate(wasmSource)).instance
-	return exports as unknown as Argon2IDExports
-}
+const loadArgon2 = (): Promise<Argon2IDExports> => loadWasmFromFileOrNetwork("../argon2.wasm", import.meta.url)
 const desktopCrypto = new DesktopNativeCryptoFacade(fs, cryptoFns, tfs, loadArgon2())
 const opts = {
 	registerAsMailHandler: process.argv.some((arg) => arg === "-r"),
@@ -160,7 +161,11 @@ if (opts.registerAsMailHandler && opts.unregisterAsMailHandler) {
 			app.exit(1)
 		})
 } else {
-	createComponents().then(startupInstance)
+	createComponents()
+		.then(startupInstance)
+		.catch((e) => {
+			log.error(TAG, "fatal error during startup, no window will be shown:", e)
+		})
 }
 
 const err: DesktopErrorHandler = new DesktopErrorHandler(desktopUtils)
@@ -212,9 +217,8 @@ async function createComponents(): Promise<Components> {
 
 	// We need a custom instance pipeline for everything native as we only process them with the client type model
 	// When upgrading things in SseFacade and AlarmStorage, we need to deprecate the old clients potentially
-	const nativeInstancePipeline = new InstancePipeline(
-		clientModelInfo.resolveClientTypeReference.bind(clientModelInfo),
-		clientModelInfo.resolveClientTypeReference.bind(clientModelInfo),
+	const nativeInstancePipeline = InstancePipeline.newNativeOnly(
+		new ClientOnlyTypeModelResolver(clientModelInfo),
 		() => {
 			// Alarms are always encrypted using session keys by the client and never by the server.
 			// That is because, as they need to work offline, they cannot rely on being able to load group keys.
@@ -223,7 +227,7 @@ async function createComponents(): Promise<Components> {
 		SYMMETRIC_CIPHER_FACADE,
 	)
 	const sseStorage = new SseStorage(conf)
-	const alarmStorage = new DesktopAlarmStorage(conf, desktopCrypto, keyStoreFacade, nativeInstancePipeline, clientModelInfo)
+	const alarmStorage = new DesktopAlarmStorage(conf, desktopCrypto, keyStoreFacade, nativeInstancePipeline)
 	const updater = new ElectronUpdater(conf, notifier, desktopCrypto, app, appIcon, new UpdaterWrapper(), fs)
 	const shortcutManager = new LocalShortcutManager()
 	const credentialsDb = new DesktopCredentialsStorage(makeDbPath("credentials"), app)
@@ -315,7 +319,6 @@ async function createComponents(): Promise<Components> {
 		suspensionAwareFetch,
 		app.getVersion(),
 		nativeInstancePipeline,
-		clientModelInfo,
 	)
 	const sseClient = new SseClient(desktopNet, new DesktopSseDelay(), schedulerImpl)
 	const sse = new TutaSseFacade(
@@ -328,7 +331,6 @@ async function createComponents(): Promise<Components> {
 		suspensionAwareFetch,
 		dateProvider,
 		nativeInstancePipeline,
-		clientModelInfo,
 	)
 
 	// It should be ok to await this, all we are waiting for is dynamic imports
@@ -372,17 +374,42 @@ async function createComponents(): Promise<Components> {
 				await window.commonNativeFacade.uploadProgress(fileId, bytes)
 			},
 		}
+		const certificateProvider = new CertificateProvider(commandExecutor)
+		const imapSyncFactory: ImapSyncFactory = (accountSyncId: IdTuple) => {
+			const wrappedListener: ImapSyncEventListener = {
+				onMultipleMails: async (mails, type) => await window.imapSyncFacade.onMultipleMails(accountSyncId, mails, type),
+				onMailbox: async (mb, type) => await window.imapSyncFacade.onMailbox(accountSyncId, mb, type),
+				onMailboxStatus: async (stat) => await window.imapSyncFacade.onMailboxStatus(accountSyncId, stat),
+				onPostpone: async (until) => await window.imapSyncFacade.onPostpone(accountSyncId, until),
+				onFinish: async () => await window.imapSyncFacade.onFinish(accountSyncId),
+				onError: async (err) => await window.imapSyncFacade.onError(accountSyncId, err),
+			}
+			return createImapSync(wrappedListener, certificateProvider)
+		}
+		const imapInitFolderSyncFactory: ImapInitFolderSyncFactory = () => {
+			const noopListener = {
+				onMultipleMails: async () => {},
+				onMailbox: async () => {},
+				onMailboxStatus: async () => {},
+				onPostpone: async () => {},
+				onFinish: async () => {},
+				onError: async () => {},
+			}
+			return createImapSync(noopListener, certificateProvider)
+		}
 		const dispatcher = new DesktopGlobalDispatcher(
 			desktopCommonSystemFacade,
 			new DesktopDesktopSystemFacade(wm, window, sock),
 			new DesktopExportFacade(tfs, electron, conf, window, dragIcons, mailboxExportPersistence, fs, dateProvider, desktopExportLock),
 			new DesktopExternalCalendarFacade(electron.app.userAgentFallback),
 			new DesktopFileFacade(window, conf, dateProvider, customFetch, electron, tfs, fs, path, commandExecutor, process, progressTracker),
+			new DesktopImapSyncSystemFacade(imapSyncFactory, imapInitFolderSyncFactory),
 			new DesktopInterWindowEventFacade(window, wm),
 			nativeCredentialsFacade,
 			desktopCrypto,
 			desktopImportFacade,
 			pushFacade,
+			new DesktopOauthWindowFacade(electron, path, shortcutManager),
 			new DesktopSearchTextInAppFacade(window),
 			settingsFacade,
 			sqlCipherFacade,
@@ -442,6 +469,7 @@ async function startupInstance(components: Components) {
 
 async function onAppReady(components: Components) {
 	const { wm, keyStoreFacade, conf } = components
+	err.init(wm)
 	// We await for it to not open any windows on top of keychain dialogs
 	await unlockDeviceKeychain(keyStoreFacade, wm, conf, desktopUtils)
 	app.on("window-all-closed", async () => {
@@ -449,7 +477,6 @@ async function onAppReady(components: Components) {
 			app.quit()
 		}
 	})
-	err.init(wm)
 	// only create a window if there are none (may already have created one, e.g. for mailto handling)
 	// also don't show the window when we're an autolaunched tray app
 	const w = await wm.getLastFocused(!((await conf.getVar(DesktopConfigKey.runAsTrayApp)) && opts.wasAutoLaunched))
@@ -508,7 +535,7 @@ async function unlockDeviceKeychain(keyStoreFacade: DesktopKeyStoreFacade, wm: W
 	await keyStoreFacade.getDeviceKey().catch(async () => {
 		const { response } = await electron.dialog.showMessageBox({
 			type: "error",
-			title: "Tuta Mail",
+			title: "Tuta",
 			message: lang.getTranslation("secretStorageError_msg", { "{url}": InfoLink.SecretStorage }).text,
 			buttons: [lang.getTranslation("continue_action").text, lang.getTranslation("clearLocalData_action").text, lang.getTranslation("quit_action").text],
 			defaultId: 2,

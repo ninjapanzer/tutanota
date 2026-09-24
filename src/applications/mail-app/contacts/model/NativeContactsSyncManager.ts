@@ -17,13 +17,13 @@ import { ContactModel } from "../../../common/contactsFunctionality/ContactModel
 import { DeviceConfig } from "../../../common/misc/DeviceConfig.js"
 import { PermissionError } from "../../../common/api/common/error/PermissionError.js"
 import { ContactStoreError } from "../../../common/api/common/error/ContactStoreError.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { Dialog } from "../../../../ui/base/Dialog.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { locator } from "../../../common/api/main/CommonLocator"
-import { assertMainOrNode, isApp, isIOSApp, ProgrammingError } from "../../../../platform-kit/app-env"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EnvProvider, ProgrammingError } from "../../../../platform-kit/app-env"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	Contact,
 	ContactTypeRef,
@@ -36,10 +36,10 @@ import {
 	createContactRelationship,
 	createContactWebsite,
 } from "@tutao/entities/tutanota"
-import { elementIdPart, getElementId, OperationType, StrippedEntity } from "../../../../platform-kit/meta"
+import { elementIdPart, getElementId, OperationType } from "../../../../platform-kit/meta"
 import { GroupType } from "../../../../entities/sys/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class NativeContactsSyncManager {
 	private entityUpdateLock: Promise<void> = Promise.resolve()
@@ -52,16 +52,17 @@ export class NativeContactsSyncManager {
 		private readonly contactModel: ContactModel,
 		private readonly deviceConfig: DeviceConfig,
 	) {
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates) => this.nativeContactEntityEventsListener(updates),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		this.eventController.addEntityUpdatesListener({
+			id: "NativeContactsSyncManager",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.NORMAL,
 		})
 	}
 
-	private async nativeContactEntityEventsListener(events: ReadonlyArray<EntityUpdateData>) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		await this.entityUpdateLock
 
-		await this.processContactEventUpdate(events)
+		await this.processContactEventUpdate(updates)
 	}
 
 	private async processContactEventUpdate(events: ReadonlyArray<EntityUpdateData>) {
@@ -167,7 +168,7 @@ export class NativeContactsSyncManager {
 	 * it can interfere with
 	 */
 	async canSync(): Promise<boolean> {
-		if (!isApp()) {
+		if (!EnvProvider.get().isApp()) {
 			throw new ProgrammingError("Can only check Contact permissions on app")
 		}
 
@@ -176,7 +177,7 @@ export class NativeContactsSyncManager {
 			return false
 		}
 
-		return !isIOSApp() || this.checkIfExternalCloudSyncOnIos()
+		return !EnvProvider.get().isIOSApp() || this.checkIfExternalCloudSyncOnIos()
 	}
 
 	/**
@@ -184,7 +185,7 @@ export class NativeContactsSyncManager {
 	 * @returns false if no permission or iCloud sync is enabled and the user cancelled, or true if permission is granted and iCloud sync is disabled (or the user bypassed the warning dialog)
 	 */
 	private async checkIfExternalCloudSyncOnIos(): Promise<boolean> {
-		assert(isIOSApp(), "Can only check cloud syncing on iOS")
+		assert(EnvProvider.get().isIOSApp(), "Can only check cloud syncing on iOS")
 
 		let localContactStorage = await this.mobileContactsFacade.isLocalStorageAvailable()
 		if (!localContactStorage) {
@@ -308,8 +309,8 @@ export class NativeContactsSyncManager {
 		// We need to wait until the user is fully logged in to handle encrypted entities
 		await this.loginController.waitForFullLogin()
 		for (const contact of syncResult.createdOnDevice) {
-			const newContact = createContact(this.createContactFromNative(contact))
-			const entityId = await this.entityClient.setup(listId, newContact)
+			const newContact = this.createContactFromNative(contact)
+			const entityId = await this.entityClient.setup(listId, newContact, null, null)
 			const loginUsername = this.loginController.getUserController().loginUsername
 			// save the contact right away so that we don't lose the server id to native contact mapping if we don't process entity update quickly enough
 			await this.mobileContactsFacade.saveContacts(loginUsername, [
@@ -328,7 +329,7 @@ export class NativeContactsSyncManager {
 				try {
 					await this.entityClient.update(updatedContact)
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						console.warn("Not found contact to update during sync: ", cleanContact._id, e)
 					} else {
 						throw e
@@ -344,7 +345,7 @@ export class NativeContactsSyncManager {
 				try {
 					await this.entityClient.erase(cleanContact)
 				} catch (e) {
-					if (e instanceof restError.NotFoundError) {
+					if (e instanceof NotFoundError) {
 						console.warn("Not found contact to delete during sync: ", cleanContact._id, e)
 					} else {
 						throw e
@@ -358,11 +359,8 @@ export class NativeContactsSyncManager {
 		entityUpdateDefer.resolve()
 	}
 
-	private createContactFromNative(contact: StructuredContact): StrippedEntity<Contact> {
-		return {
-			_ownerGroup: getFirstOrThrow(
-				this.loginController.getUserController().user.memberships.filter((membership) => membership.groupType === GroupType.Contact),
-			).group,
+	private createContactFromNative(contact: StructuredContact): Contact {
+		const newContact = createContact({
 			oldBirthdayDate: null,
 			presharedPassword: null,
 			oldBirthdayAggregate: null,
@@ -390,12 +388,16 @@ export class NativeContactsSyncManager {
 			comment: contact.notes,
 			title: contact.title ?? "",
 			role: contact.role,
-		}
+		})
+		newContact._ownerGroup = getFirstOrThrow(
+			this.loginController.getUserController().user.memberships.filter((membership) => membership.groupType === GroupType.Contact),
+		).group
+		return newContact
 	}
 
 	private mergeNativeContactWithTutaContact(contact: StructuredContact, partialContact: Contact): Contact {
 		// TODO: iOS requires a special entitlement from Apple to access these fields
-		const canMergeCommentField = !isIOSApp()
+		const canMergeCommentField = !EnvProvider.get().isIOSApp()
 
 		return {
 			...partialContact,

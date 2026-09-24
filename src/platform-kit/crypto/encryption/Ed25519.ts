@@ -12,8 +12,8 @@ import { SigningKeyPairType } from "../CryptoTypes"
 
 export { generateEd25519KeyPair, signWithEd25519, verifyEd25519Signature, Ed25519PrivateKey, Ed25519PublicKey, Ed25519KeyPair, Ed25519Signature }
 
-export async function initEd25519(webAssemblySrc: BufferSource | string): Promise<void> {
-	// the initialization function internally manage wether or not the wasm module has already been
+export async function initEd25519(webAssemblySrc: string): Promise<void> {
+	// the initialization function internally manage weather or not the wasm module has already been
 	// initialized, no need for an internal state
 
 	// we assume the wasm file has been provided at this url by the build process
@@ -22,27 +22,37 @@ export async function initEd25519(webAssemblySrc: BufferSource | string): Promis
 	await initializeEd25519WasmModule({ module_or_path: webAssemblySrc })
 }
 
-export function bytesToEd25519PublicKey(publicKey: Uint8Array): Ed25519PublicKey {
+export async function initEd25519ForTesting(webAssemblySrc: BufferSource): Promise<void> {
+	// the initialization function internally manage weather or not the wasm module has already been
+	// initialized, no need for an internal state
+
+	// we assume the wasm file has been provided at this url by the build process
+	// this prevent writing a plugin that would be run on all files of the project and make rolldown even faster
+	// if you change the name of this file be sure to change copyCryptoPrimitiveCrateIntoWasmDir accordingly
+	await initializeEd25519WasmModule({ module_or_path: webAssemblySrc })
+}
+
+export function bytesToEd25519PublicKey(publicKey: Uint8Array<ArrayBuffer>): Ed25519PublicKey {
 	return Array.from(publicKey)
 }
 
-export function ed25519PublicKeyToBytes(publicKey: Ed25519PublicKey): Uint8Array {
+export function ed25519PublicKeyToBytes(publicKey: Ed25519PublicKey): Uint8Array<ArrayBuffer> {
 	return new Uint8Array(publicKey)
 }
 
-export function bytesToEd25519PrivateKey(privateKey: Uint8Array): Ed25519PrivateKey {
+export function bytesToEd25519PrivateKey(privateKey: Uint8Array<ArrayBuffer>): Ed25519PrivateKey {
 	return Array.from(privateKey)
 }
 
-export function ed25519PrivateKeyToBytes(privateKey: Ed25519PrivateKey): Uint8Array {
+export function ed25519PrivateKeyToBytes(privateKey: Ed25519PrivateKey): Uint8Array<ArrayBuffer> {
 	return new Uint8Array(privateKey)
 }
 
-export function bytesToEd25519Signature(signature: Uint8Array): Ed25519Signature {
+export function bytesToEd25519Signature(signature: Uint8Array<ArrayBuffer>): Ed25519Signature {
 	return Array.from(signature)
 }
 
-export function ed25519SignatureToBytes(signature: Ed25519Signature): Uint8Array {
+export function ed25519SignatureToBytes(signature: Ed25519Signature): Uint8Array<ArrayBuffer> {
 	return new Uint8Array(signature)
 }
 export type SigningKeyPair = {
@@ -53,4 +63,4 @@ export type SigningPublicKey = {
 	type: SigningKeyPairType
 	key: Ed25519PublicKey
 }
-export type EncodedEd25519Signature = Uint8Array
+export type EncodedEd25519Signature = Uint8Array<ArrayBuffer>

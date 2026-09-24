@@ -9,13 +9,14 @@ import {
 	ReceivedGroupInvitationTypeRef,
 	UserGroupRootTypeRef,
 } from "@tutao/entities/sys"
-import { getInvitationGroupType, GroupMemberInfo, GroupType, GroupTypeNameByCode } from "../../../entities/sys/Utils"
-import { ShareCapability } from "@tutao/app-env"
+import { getInvitationGroupType, GroupMemberInfo, GroupType } from "../../../entities/sys/Utils"
+import { enumKeyByValue, ShareCapability } from "@tutao/app-env"
 import { lang } from "../../../ui/utils/LanguageViewModel"
 import { downcast, ofClass, promiseMap } from "@tutao/utils"
 import type { EntityClient } from "../../../platform-kit/network/EntityClient"
-import * as restError from "@tutao/rest-client/error"
+import { NotFoundError } from "@tutao/rest-client/error"
 import { UserController } from "../api/main/UserController"
+import { idToElementId } from "@tutao/meta"
 
 export function getCapabilityText(capability: ShareCapability): string {
 	switch (capability) {
@@ -54,10 +55,10 @@ export function loadReceivedGroupInvitations(
 	type: GroupType,
 ): Promise<Array<ReceivedGroupInvitation>> {
 	return entityClient
-		.load(UserGroupRootTypeRef, userController.userGroupInfo.group)
+		.load(UserGroupRootTypeRef, idToElementId(userController.userGroupInfo.group))
 		.then((userGroupRoot) => entityClient.loadAll(ReceivedGroupInvitationTypeRef, userGroupRoot.invitations))
 		.then((invitations) => invitations.filter((invitation) => getInvitationGroupType(invitation) === type))
-		.catch(ofClass(restError.NotFoundError, () => []))
+		.catch(ofClass(NotFoundError, () => []))
 }
 
 export const TemplateGroupPreconditionFailedReason = Object.freeze({
@@ -68,11 +69,11 @@ export const TemplateGroupPreconditionFailedReason = Object.freeze({
 export function getDefaultGroupName(groupType: GroupType): string {
 	switch (groupType) {
 		case GroupType.Calendar:
-			return lang.get("privateCalendar_label")
+			return lang.getTranslationText("privateCalendar_label")
 		case GroupType.Template:
-			return lang.get("templateGroupDefaultName_label")
+			return lang.getTranslationText("templateGroupDefaultName_label")
 		default:
-			return GroupTypeNameByCode[groupType]
+			return enumKeyByValue(GroupType, groupType)
 	}
 }
 

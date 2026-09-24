@@ -5,19 +5,19 @@ import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import { ShareCapability } from "../../../../platform-kit/app-env"
-import { downcast, LazyLoaded, noOp, promiseMap, SortedArray } from "../../../../platform-kit/utils"
+import { assertNotNull, downcast, LazyLoaded, noOp, promiseMap, SortedArray } from "../../../../platform-kit/utils"
 import type { TemplateGroupInstance } from "../../templates/model/TemplateGroupModel.js"
 import { loadTemplateGroupInstance } from "../../templates/model/TemplatePopupModel.js"
 import type { UserController } from "../../../common/api/main/UserController.js"
 import { EventController } from "../../../common/api/main/EventController.js"
 import { EmailTemplate, EmailTemplateTypeRef, KnowledgeBaseEntry, KnowledgeBaseEntryTypeRef } from "@tutao/entities/tutanota"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { getElementId, getEtId, getLetId, isSameId, OperationType } from "../../../../platform-kit/meta"
+import { elementIdPart, elementIdToId, getElementId, getLetId, isSameId, isSameSingleId, OperationType } from "../../../../platform-kit/meta"
 import { hasCapabilityOnGroup } from "../../../../entities/sys/Utils"
 
 export const SELECT_NEXT_ENTRY = "next"
@@ -38,7 +38,7 @@ export class KnowledgeBaseModel {
 	_filterValue: string
 	readonly _eventController: EventController
 	readonly _entityClient: EntityClient
-	readonly _entityEventReceived: EntityEventsListener
+	readonly entityUpdatesListener: EntityUpdatesListener
 	_groupInstances: Array<TemplateGroupInstance>
 	_initialized: LazyLoaded<KnowledgeBaseModel>
 	readonly userController: UserController
@@ -54,14 +54,15 @@ export class KnowledgeBaseModel {
 		this.selectedEntry = stream<KnowledgeBaseEntry | null>(null)
 		this._filterValue = ""
 
-		this._entityEventReceived = {
+		this.entityUpdatesListener = {
+			id: "KnowledgeBaseModel",
 			onEntityUpdatesReceived: (updates) => {
-				return this._entityUpdate(updates)
+				return this.onEntityUpdatesReceived(updates)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		}
 
-		this._eventController.addEntityListener(this._entityEventReceived)
+		this._eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 
 		this._groupInstances = []
 		this._allKeywords = []
@@ -209,7 +210,7 @@ export class KnowledgeBaseModel {
 	}
 
 	dispose() {
-		this._eventController.removeEntityListener(this._entityEventReceived)
+		this._eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	loadTemplate(templateId: IdTuple): Promise<EmailTemplate> {
@@ -217,45 +218,48 @@ export class KnowledgeBaseModel {
 	}
 
 	isReadOnly(entry: KnowledgeBaseEntry): boolean {
-		const instance = this._groupInstances.find((instance) => isSameId(entry._ownerGroup, getEtId(instance.group)))
+		const instance = this._groupInstances.find((instance) => isSameSingleId(entry._ownerGroup, elementIdToId(instance.group._id)))
 
 		return !instance || !hasCapabilityOnGroup(this.userController.user, instance.group, ShareCapability.Write)
 	}
 
-	_entityUpdate(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(KnowledgeBaseEntryTypeRef, update)) {
 				if (update.operation === OperationType.CREATE) {
-					return this._entityClient.load(KnowledgeBaseEntryTypeRef, [update.instanceListId, update.instanceId]).then((entry) => {
+					return this._entityClient.load(KnowledgeBaseEntryTypeRef, [assertNotNull(update.instanceListId), update.instanceId]).then((entry) => {
 						this._allEntries.insert(entry)
 
 						this.filter(this._filterValue)
 					})
 				} else if (update.operation === OperationType.UPDATE) {
-					return this._entityClient.load(KnowledgeBaseEntryTypeRef, [update.instanceListId, update.instanceId]).then((updatedEntry) => {
-						this._allEntries.removeFirst((e) => isSameId(getElementId(e), update.instanceId))
+					return this._entityClient
+						.load(KnowledgeBaseEntryTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
+						.then((updatedEntry) => {
+							this._allEntries.removeFirst((e) => isSameSingleId(elementIdPart(e._id), update.instanceId))
 
-						this._allEntries.insert(updatedEntry)
+							this._allEntries.insert(updatedEntry)
 
-						this.filter(this._filterValue)
-						const oldSelectedEntry = this.selectedEntry()
+							this.filter(this._filterValue)
+							const oldSelectedEntry = this.selectedEntry()
 
-						if (oldSelectedEntry && isSameId(oldSelectedEntry._id, updatedEntry._id)) {
-							this.selectedEntry(updatedEntry)
-						}
-					})
+							if (oldSelectedEntry && isSameId(oldSelectedEntry._id, updatedEntry._id)) {
+								this.selectedEntry(updatedEntry)
+							}
+						})
 				} else if (update.operation === OperationType.DELETE) {
 					const selected = this.selectedEntry()
 
-					if (selected && isSameId(getLetId(selected), [update.instanceListId, update.instanceId])) {
+					if (selected && isSameId(getLetId(selected), [assertNotNull(update.instanceListId), update.instanceId])) {
 						this.selectedEntry(null)
 					}
 
-					this._allEntries.removeFirst((e) => isSameId(getElementId(e), update.instanceId))
+					this._allEntries.removeFirst((e) => isSameSingleId(getElementId(e), update.instanceId))
 
 					this.filter(this._filterValue)
 				}
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

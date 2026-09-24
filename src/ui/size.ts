@@ -1,6 +1,6 @@
-import { assertMainOrNodeBoot } from "../platform-kit/app-env"
+import { EnvProvider } from "../platform-kit/app-env"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 export const size = {
 	/*
 	 Base & core size
@@ -65,6 +65,9 @@ export const size = {
 	},
 	get icon_32(): number {
 		return this.core_32
+	},
+	get icon_40(): number {
+		return this.core_40
 	},
 	get icon_64(): number {
 		return this.core_64

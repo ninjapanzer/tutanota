@@ -1,8 +1,8 @@
 import { lang } from "./LanguageViewModel"
-import { cleanMailAddress, isSameDay, isSameDayOfDate, pad } from "../../platform-kit/utils"
-import { assertMainOrNodeBoot } from "../../platform-kit/app-env"
+import { cleanMailAddress, isSameDay, isSameDayOfDate, pad } from "@tutao/utils"
+import { EnvProvider } from "@tutao/app-env"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 
 export function formatMonthWithYear(date: Date): string {
 	return lang.formats.monthWithYear.format(date)
@@ -75,16 +75,52 @@ export function formatTimeOrDateOrYesterday(date: Date): string {
 	}
 }
 
-export function formatTime(date: Date): string {
-	return lang.formats.time.format(date)
+/**
+ * Formats a string to represent the time information according to the user settings, optionally applying a timezone
+ * @param date
+ * @param timeZone - Timezone to apply
+ */
+export function formatTime(date: Date, timeZone?: Intl.DateTimeFormatOptions["timeZone"]): string {
+	const currentOptions = lang.formats.time.resolvedOptions()
+	const options: Intl.DateTimeFormatOptions = {
+		day: currentOptions.day,
+		month: currentOptions.month,
+		year: currentOptions.year,
+		hour: currentOptions.hour,
+		minute: currentOptions.minute,
+		hourCycle: currentOptions.hourCycle,
+		timeZone,
+	} as Intl.DateTimeFormatOptions
+
+	const timeFormat = new Intl.DateTimeFormat(lang.languageTag, options)
+
+	return timeFormat.format(date)
 }
 
 export function formatShortTime(date: Date): string {
 	return lang.formats.shortTime.format(date)
 }
 
-export function formatDateTime(date: Date): string {
-	return lang.formats.dateTime.format(date)
+/**
+ * Formats a string to represent the date and time information according to the user settings, optionally applying a timezone
+ * @param date
+ * @param timeZone - Timezone to apply
+ */
+export function formatDateTime(date: Date, timeZone?: Intl.DateTimeFormatOptions["timeZone"]): string {
+	const currentOptions = lang.formats.dateTime.resolvedOptions()
+	const options: Intl.DateTimeFormatOptions = {
+		day: currentOptions.day,
+		month: currentOptions.month,
+		year: currentOptions.year,
+		hour: currentOptions.hour,
+		minute: currentOptions.minute,
+		hourCycle: currentOptions.hourCycle,
+		timeZone,
+	} as Intl.DateTimeFormatOptions
+
+	const dateTimeFormat = new Intl.DateTimeFormat(lang.languageTag, options)
+
+	return dateTimeFormat.format(date)
 }
 
 export function formatDateTimeShort(date: Date): string {
@@ -122,6 +158,14 @@ export function dateWithWeekdayWoMonth(date: Date): string {
 export function formatMonthShortWithFullYear(date: Date): string {
 	return lang.formats.monthShortWithFullYear.format(date)
 }
+// returns time in "1h 2m 3s" format
+export function formatDurationNarrow(totalSeconds: number): string {
+	const hours = Math.round(totalSeconds / 3600)
+	const minutes = Math.round((totalSeconds % 3600) / 60)
+	const seconds = Math.round(totalSeconds % 60)
+	const time = lang.formats.durationNarrow.format({ hours, minutes, seconds: minutes === 0 ? seconds : undefined })
+	return time
+}
 
 /**
  * Formats the given size in bytes to a better human readable string using B, KB, MB, GB, TB.
@@ -143,41 +187,10 @@ export function formatStorageSize(sizeInBytes: number): string {
 	return sizeInBytes + narrowNoBreakSpace + units[unitIndex]
 }
 
-export function urlEncodeHtmlTags(text: string): string {
-	return stripControlCharacters(text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"))
-}
-
-export function convertTextToHtml(text: string) {
-	return text.replace(/(\r)?\n/g, "<br>")
-}
-
-export function stripControlCharacters(text: string): string {
-	// In Unicode, "Control-characters" are U+0000—U+001F (C0 controls), U+007F (delete), and U+0080—U+009F (C1 controls).
-	return text.replace(/[\x00-\x1F\x7F\x80-\x9F]/g, "")
-}
-
-export function timeStringFromParts(hours: number, minutes: number, amPm: boolean): string {
-	let minutesString = pad(minutes, 2)
-
-	if (amPm) {
-		if (hours === 0) {
-			return `12:${minutesString} am`
-		} else if (hours === 12) {
-			return `12:${minutesString} pm`
-		} else if (hours > 12) {
-			return `${hours - 12}:${minutesString} pm`
-		} else {
-			return `${hours}:${minutesString} am`
-		}
-	} else {
-		let hoursString = pad(hours, 2)
-		return hoursString + ":" + minutesString
-	}
-}
-
 export function formatMailAddressFromParts(name: string, domain: string): string {
 	return cleanMailAddress(`${name}@${domain}`)
 }
+
 export function formatNotificationForDisplay(eventStartTime: Date, summary: string, isAllDay: boolean): { title: string; body: string } {
 	let dateString: string
 

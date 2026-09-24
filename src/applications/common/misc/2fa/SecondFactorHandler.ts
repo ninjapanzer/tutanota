@@ -1,12 +1,12 @@
 import m from "mithril"
 import { isSameId, OperationType } from "@tutao/meta"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { Challenge, createSecondFactorAuthData, Session, SessionTypeRef } from "@tutao/entities/sys"
 import { Dialog } from "../../../../ui/base/Dialog"
-import { assertMainOrNode, SessionState } from "@tutao/app-env"
+import { EnvProvider, SessionState } from "@tutao/app-env"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { neverNull } from "@tutao/utils"
-import * as restError from "@tutao/rest-client/error"
+import { NotFoundError } from "@tutao/rest-client/error"
 import { EventController } from "../../api/main/EventController"
 import type { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { WebauthnClient } from "./webauthn/WebauthnClient"
@@ -14,7 +14,7 @@ import { SecondFactorAuthDialog } from "./SecondFactorAuthDialog"
 import type { LoginFacade } from "../../../../platform-kit/base/facades/LoginFacade"
 import { DomainConfigProvider } from "../../api/common/DomainConfigProvider.js"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Handles showing and hiding of the following dialogs:
@@ -42,13 +42,14 @@ export class SecondFactorHandler {
 		}
 
 		this.otherLoginListenerInitialized = true
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates) => this.entityEventsReceived(updates),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		this.eventController.addEntityUpdatesListener({
+			id: "SecondFactorHandler",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.HIGH,
 		})
 	}
 
-	private async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		for (const update of updates) {
 			const sessionId: IdTuple = [neverNull(update.instanceListId), update.instanceId]
 
@@ -59,7 +60,7 @@ export class SecondFactorHandler {
 					try {
 						session = await this.entityClient.load(SessionTypeRef, sessionId)
 					} catch (e) {
-						if (e instanceof restError.NotFoundError) {
+						if (e instanceof NotFoundError) {
 							console.log("Failed to load session", e)
 						} else {
 							throw e
@@ -83,7 +84,7 @@ export class SecondFactorHandler {
 					try {
 						session = await this.entityClient.load(SessionTypeRef, sessionId)
 					} catch (e) {
-						if (e instanceof restError.NotFoundError) {
+						if (e instanceof NotFoundError) {
 							console.log("Failed to load session", e)
 						} else {
 							throw e
@@ -142,6 +143,7 @@ export class SecondFactorHandler {
 						u2f: null,
 						webauthn: null,
 					}),
+					null,
 				)
 
 				if (this.otherLoginDialog) {

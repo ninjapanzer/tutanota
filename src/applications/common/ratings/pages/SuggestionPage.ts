@@ -8,10 +8,10 @@ import { px } from "../../../../ui/size.js"
 import { showSnackBar } from "../../../../ui/base/SnackBar.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { noOp } from "@tutao/utils"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
 import { SURVEY_VERSION_NUMBER } from "../../subscription/LeavingUserSurveyConstants"
 import { DynamicColorSvg } from "../../../../ui/base/DynamicColorSvg.js"
-import { createSurveyData, createSurveyDataPostIn, SurveyService } from "@tutao/entities/sys"
+import { createSurveyData, createSurveyDataPostIn, SurveyService_POST } from "@tutao/entities/sys"
 
 interface SuggestionPageAttrs {
 	dialog: Dialog
@@ -33,8 +33,8 @@ export class SuggestionPage implements Component<SuggestionPageAttrs> {
 					".block.center-h",
 					{
 						style: {
-							width: "30%",
-							maxWidth: px(160),
+							width: "80%",
+							maxWidth: px(320),
 						},
 					},
 					m(DynamicColorSvg, {
@@ -78,8 +78,8 @@ export class SuggestionPage implements Component<SuggestionPageAttrs> {
 
 	private async onSendButtonClick() {
 		const send = async () => {
-			await locator.serviceExecutor.post(
-				SurveyService,
+			await locator.serviceExecutor.execute(
+				SurveyService_POST,
 				createSurveyDataPostIn({
 					surveyData: createSurveyData({
 						version: SURVEY_VERSION_NUMBER,
@@ -87,9 +87,11 @@ export class SuggestionPage implements Component<SuggestionPageAttrs> {
 						details: this.textFieldInput,
 						reason: "33", // 33 == "Provide details"
 						clientVersion: env.versionNumber,
-						clientPlatform: client.getClientPlatform().valueOf().toString(),
+						clientPlatform: ClientDetector.get().getClientPlatform().valueOf().toString(),
 					}),
+					surveyType: SurveyDataType.SATISFACTION_EVALUATION.toString(),
 				}),
+				null,
 			)
 		}
 
@@ -129,5 +131,6 @@ export enum SurveyDataType {
 	DOWNGRADE = 0,
 	DELETE = 1,
 	TERMINATION = 2, // used when terminating from the website form.
-	SATISFACTION_EVALUATION = 3,
+	REVOKE = 3,
+	SATISFACTION_EVALUATION = 4,
 }

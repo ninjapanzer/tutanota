@@ -1,7 +1,7 @@
 import { decode } from "cborg"
 import { downcast, getFirstOrThrow, partitionAsync, stringToUtf8Uint8Array } from "@tutao/utils"
 import { WebAuthnFacade, WebauthnKeyDescriptor } from "@tutao/native-bridge/generatedIpc/types"
-import { Const, getApiBaseUrl } from "@tutao/app-env"
+import { Const, DomainConfig, EnvProvider } from "@tutao/app-env"
 import { DomainConfigProvider } from "../../../api/common/DomainConfigProvider.js"
 import { createU2fRegisteredDevice, createWebauthnResponseData, U2fChallenge, U2fKey, U2fRegisteredDevice, WebauthnResponseData } from "@tutao/entities/sys"
 
@@ -36,7 +36,7 @@ export class WebauthnClient {
 		// https://www.w3.org/TR/webauthn-2/#user-handle
 		const name = `userId="${userId}"`
 		const registrationResult = await this.webauthn.register({ challenge, userId, name, displayName, domain: this.selectRegistrationUrl() })
-		const attestationObject = this.parseAttestationObject(registrationResult.attestationObject)
+		const attestationObject = this.parseAttestationObject(registrationResult.attestationObject.buffer)
 		const publicKey = this.parsePublicKey(downcast(attestationObject).authData)
 
 		return createU2fRegisteredDevice({
@@ -84,7 +84,7 @@ export class WebauthnClient {
 		// take https://app.tuta.com/webauthn and convert it to apis://app.tuta.com
 		const authUrlObject = new URL(authenticationUrl)
 		const domainConfig = this.domainConfigProvider.getDomainConfigForHostname(authUrlObject.hostname, authUrlObject.protocol, authUrlObject.port)
-		const apiUrl = getApiBaseUrl(domainConfig)
+		const apiUrl = EnvProvider.get().getApiBaseUrl(domainConfig)
 
 		return { responseData, apiBaseUrl: apiUrl }
 	}
@@ -135,7 +135,7 @@ export class WebauthnClient {
 		return key.appId.endsWith(Const.U2f_APPID_SUFFIX)
 	}
 
-	private getChallenge(): Uint8Array {
+	private getChallenge(): Uint8Array<ArrayBuffer> {
 		// Should be replaced with our own entropy generator in the future.
 		const random = new Uint8Array(32)
 		crypto.getRandomValues(random)
@@ -146,7 +146,7 @@ export class WebauthnClient {
 		return decode(new Uint8Array(raw))
 	}
 
-	private parsePublicKey(authData: Uint8Array): Map<number, number | Uint8Array> {
+	private parsePublicKey(authData: Uint8Array<ArrayBuffer>): Map<number, number | Uint8Array<ArrayBuffer>> {
 		// get the length of the credential ID
 		const dataView = new DataView(new ArrayBuffer(2))
 		const idLenBytes = authData.slice(53, 55)
@@ -163,7 +163,7 @@ export class WebauthnClient {
 		})
 	}
 
-	private serializePublicKey(publicKey: Map<number, number | Uint8Array>): Uint8Array {
+	private serializePublicKey(publicKey: Map<number, number | Uint8Array<ArrayBuffer>>): Uint8Array<ArrayBuffer> {
 		const encoded = new Uint8Array(65)
 		encoded[0] = 0x04
 		const x = publicKey.get(-2)

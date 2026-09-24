@@ -1,16 +1,14 @@
-import { identity, Nullable } from "@tutao/utils"
+import { identity } from "@tutao/utils"
 import type { LoginController } from "./LoginController"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
-import { assertMainOrNode } from "@tutao/app-env"
-import { ProgressTracker } from "./ProgressTracker"
-import { ProgressMonitorId } from "../../../../platform-kit/network/ProgressMonitorInterface"
-import { EntityEventsListener, EntityUpdateData } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EnvProvider } from "@tutao/app-env"
+import { EntityUpdateData, EntityUpdatesListener } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { OperationStatusUpdate, WebsocketCounterData } from "@tutao/entities/sys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
-export type ExposedEventController = Pick<EventController, "onEntityUpdateReceived" | "onCountersUpdateReceived" | "onOperationStatusUpdate">
+export type ExposedEventController = Pick<EventController, "onEntityUpdatesReceived" | "onCountersUpdateReceived" | "onOperationStatusUpdate">
 
 const TAG = "[EventController]"
 
@@ -18,26 +16,21 @@ export type OperationStatusUpdateListener = (update: OperationStatusUpdate) => P
 
 export class EventController {
 	private countersStream: Stream<WebsocketCounterData> = stream()
-	private entityListeners: Set<EntityEventsListener> = new Set()
+	private entityUpdatesListeners: Set<EntityUpdatesListener> = new Set()
 	private readonly operationListeners: Set<OperationStatusUpdateListener> = new Set()
 
-	constructor(
-		private readonly logins: LoginController,
-		private readonly progressTracker: ProgressTracker,
-	) {}
+	constructor(private readonly logins: LoginController) {}
 
-	addEntityListener(listener: EntityEventsListener) {
-		if (this.entityListeners.has(listener)) {
-			console.warn(TAG, "Adding the same listener twice!")
-		} else {
-			this.entityListeners.add(listener)
+	addEntityUpdatesListener(listener: EntityUpdatesListener) {
+		if (!this.entityUpdatesListeners.has(listener)) {
+			this.entityUpdatesListeners.add(listener)
 		}
 	}
 
-	removeEntityListener(listener: EntityEventsListener) {
-		const wasRemoved = this.entityListeners.delete(listener)
+	removeEntityUpdatesListener(listener: EntityUpdatesListener) {
+		const wasRemoved = this.entityUpdatesListeners.delete(listener)
 		if (!wasRemoved) {
-			console.warn(TAG, "Could not remove listener, possible leak?", listener)
+			console.log(TAG, `Could not remove entityListener with id ${listener.id}, possible leak?`)
 		}
 	}
 
@@ -54,26 +47,17 @@ export class EventController {
 		return this.countersStream.map(identity)
 	}
 
-	async onEntityUpdateReceived(
-		entityUpdates: readonly EntityUpdateData[],
-		eventOwnerGroupId: Id,
-		progressMonitorId: Nullable<ProgressMonitorId>,
-		isInitialSyncDone: boolean,
-	): Promise<void> {
+	async onEntityUpdatesReceived(entityUpdates: readonly EntityUpdateData[], eventOwnerGroupId: Id, isInitialSyncDone: boolean): Promise<void> {
 		if (this.logins.isUserLoggedIn()) {
 			// the UserController must be notified first as other event receivers depend on it to be up-to-date
-			await this.logins.getUserController().entityEventsReceived(entityUpdates, eventOwnerGroupId)
+			await this.logins.getUserController().onEntityUpdatesReceived(entityUpdates, eventOwnerGroupId)
 
-			const listenersByPriorities = Array.from(this.entityListeners).sort(
+			const listenersByPriorities = Array.from(this.entityUpdatesListeners.values()).sort(
 				(listenerA, listenerB) => listenerB.priority.valueOf() - listenerA.priority.valueOf(),
 			)
 
 			for (const listener of listenersByPriorities) {
 				await listener.onEntityUpdatesReceived(entityUpdates, eventOwnerGroupId, isInitialSyncDone)
-			}
-
-			if (progressMonitorId !== null && !(await this.progressTracker.getMonitor(progressMonitorId)?.isDone())) {
-				await this.progressTracker.workDoneForMonitor(progressMonitorId, 1)
 			}
 		}
 	}

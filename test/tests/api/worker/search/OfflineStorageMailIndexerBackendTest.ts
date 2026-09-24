@@ -26,11 +26,15 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 				groupId: mailGroupId,
 				type: GroupType.Mail,
 				indexedTimestamp: 123456,
+				lastIndexedEntityListId: "",
+				lastIndexedEntityElementId: "",
 			},
 			{
 				groupId: contactGroupId,
 				type: GroupType.Contact,
 				indexedTimestamp: FULL_INDEXED_TIMESTAMP,
+				lastIndexedEntityListId: "",
+				lastIndexedEntityElementId: "",
 			},
 		])
 
@@ -50,6 +54,8 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 					groupId: contactGroupId,
 					type: GroupType.Contact,
 					indexedTimestamp: FULL_INDEXED_TIMESTAMP,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 			])
 
@@ -64,6 +70,8 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 					groupId: mailGroupId,
 					type: GroupType.Mail,
 					indexedTimestamp: 123456,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 			])
 
@@ -78,6 +86,8 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 					groupId: mailGroupId,
 					type: GroupType.Mail,
 					indexedTimestamp: 123400,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 			])
 
@@ -91,16 +101,22 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 					groupId: "greater",
 					type: GroupType.Mail,
 					indexedTimestamp: 123456,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 				{
 					groupId: "equal",
 					type: GroupType.Mail,
 					indexedTimestamp: 123400,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 				{
 					groupId: "less",
 					type: GroupType.Mail,
 					indexedTimestamp: FULL_INDEXED_TIMESTAMP,
+					lastIndexedEntityListId: "",
+					lastIndexedEntityElementId: "",
 				},
 			])
 
@@ -130,24 +146,8 @@ o.spec("OfflineStorageMailIndexerBackend", function () {
 		verify(persistence.updateIndexingTimestamp("mailGroupId", 12345))
 	})
 
-	o.test("enableIndexing", async function () {
-		await backend.enableIndexing()
-
-		verify(persistence.setMailIndexingEnabled(true))
-	})
-
-	o.spec("isMailIndexingEnabled", function () {
-		o.test("is enabled", async function () {
-			when(persistence.isMailIndexingEnabled()).thenResolve(true)
-
-			o.check(await backend.isMailIndexingEnabled()).equals(true)
-		})
-
-		o.test("is disabled", async function () {
-			when(persistence.isMailIndexingEnabled()).thenResolve(false)
-
-			o.check(await backend.isMailIndexingEnabled()).equals(false)
-		})
+	o.test("isMailIndexingEnabled", async function () {
+		o.check(await backend.isMailIndexingEnabled()).equals(true)
 	})
 
 	o.test("onMailCreated", async function () {

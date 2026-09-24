@@ -4,19 +4,19 @@ import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import type { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import type { LoginController } from "../../../common/api/main/LoginController"
-import { LazyLoaded, promiseMap, SortedArray } from "../../../../platform-kit/utils"
+import { assertNotNull, LazyLoaded, promiseMap, SortedArray } from "../../../../platform-kit/utils"
 import type { TemplateGroupInstance } from "./TemplateGroupModel.js"
 import { search } from "../../../common/api/common/utils/PlainTextSearch.js"
 import { EventController } from "../../../common/api/main/EventController.js"
 import { EmailTemplate, EmailTemplateContent, EmailTemplateTypeRef, TemplateGroupRootTypeRef } from "@tutao/entities/tutanota"
 import { GroupInfoTypeRef, GroupMembership, GroupTypeRef } from "@tutao/entities/sys"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { getElementId, getEtId, isSameId, OperationType } from "../../../../platform-kit/meta"
+import { elementIdToId, getElementId, idToElementId, isSameSingleId, OperationType } from "../../../../platform-kit/meta"
 
 /**
  *   Model that holds main logic for the Template Feature.
@@ -39,7 +39,7 @@ export class TemplatePopupModel {
 	readonly selectedTemplate: Stream<EmailTemplate | null>
 	initialized: LazyLoaded<TemplatePopupModel>
 	readonly _eventController: EventController
-	readonly _entityEventReceived: EntityEventsListener
+	readonly entityUpdatesListener: EntityUpdatesListener
 	readonly _logins: LoginController
 	readonly _entityClient: EntityClient
 	_groupInstances: Array<TemplateGroupInstance>
@@ -57,11 +57,12 @@ export class TemplatePopupModel {
 		this._searchFilter = new TemplateSearchFilter()
 		this._groupInstances = []
 
-		this._entityEventReceived = {
+		this.entityUpdatesListener = {
+			id: "TemplatePopupModel",
 			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => {
-				return this._entityUpdate(updates, eventOwnerGroupId)
+				return this.onEntityUpdatesReceived(updates, eventOwnerGroupId)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		}
 
 		this.initialized = new LazyLoaded(() => {
@@ -82,7 +83,7 @@ export class TemplatePopupModel {
 				})
 		})
 
-		this._eventController.addEntityListener(this._entityEventReceived)
+		this._eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	init(): Promise<TemplatePopupModel> {
@@ -94,7 +95,7 @@ export class TemplatePopupModel {
 	}
 
 	dispose() {
-		this._eventController.removeEntityListener(this._entityEventReceived)
+		this._eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	isSelectedTemplate(template: EmailTemplate): boolean {
@@ -169,11 +170,11 @@ export class TemplatePopupModel {
 		return this._allTemplates.array.find((template) => template.tag === tag) ?? null
 	}
 
-	_entityUpdate(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<any> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<any> {
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(EmailTemplateTypeRef, update)) {
 				if (update.operation === OperationType.CREATE) {
-					return this._entityClient.load(EmailTemplateTypeRef, [update.instanceListId, update.instanceId]).then((template) => {
+					return this._entityClient.load(EmailTemplateTypeRef, [assertNotNull(update.instanceListId), update.instanceId]).then((template) => {
 						this._allTemplates.insert(template)
 
 						this._rerunSearch()
@@ -181,8 +182,8 @@ export class TemplatePopupModel {
 						this.setSelectedTemplate(template)
 					})
 				} else if (update.operation === OperationType.UPDATE) {
-					return this._entityClient.load(EmailTemplateTypeRef, [update.instanceListId, update.instanceId]).then((template) => {
-						this._allTemplates.removeFirst((t) => isSameId(getElementId(t), update.instanceId))
+					return this._entityClient.load(EmailTemplateTypeRef, [assertNotNull(update.instanceListId), update.instanceId]).then((template) => {
+						this._allTemplates.removeFirst((t) => isSameSingleId(getElementId(t), update.instanceId))
 
 						this._allTemplates.insert(template)
 
@@ -197,7 +198,7 @@ export class TemplatePopupModel {
 						this.setSelectedTemplate(null)
 					}
 
-					this._allTemplates.removeFirst((t) => isSameId(getElementId(t), update.instanceId))
+					this._allTemplates.removeFirst((t) => isSameSingleId(getElementId(t), update.instanceId))
 
 					this._rerunSearch()
 				}
@@ -208,6 +209,7 @@ export class TemplatePopupModel {
 					return this.initialized.getAsync().then(() => this._rerunSearch())
 				}
 			}
+			return Promise.resolve()
 		})
 	}
 
@@ -220,7 +222,7 @@ export class TemplatePopupModel {
 		if (selected == null) {
 			return null
 		} else {
-			return this._groupInstances.find((instance) => isSameId(getEtId(instance.group), selected._ownerGroup)) ?? null
+			return this._groupInstances.find((instance) => isSameSingleId(elementIdToId(instance.group._id), selected._ownerGroup)) ?? null
 		}
 	}
 }
@@ -231,8 +233,8 @@ export function loadTemplateGroupInstances(memberships: Array<GroupMembership>, 
 
 export function loadTemplateGroupInstance(groupMembership: GroupMembership, entityClient: EntityClient): Promise<TemplateGroupInstance> {
 	return entityClient.load(GroupInfoTypeRef, groupMembership.groupInfo).then((groupInfo) =>
-		entityClient.load(TemplateGroupRootTypeRef, groupInfo.group).then((groupRoot) =>
-			entityClient.load(GroupTypeRef, groupInfo.group).then((group) => {
+		entityClient.load(TemplateGroupRootTypeRef, idToElementId(groupInfo.group)).then((groupRoot) =>
+			entityClient.load(GroupTypeRef, idToElementId(groupInfo.group)).then((group) => {
 				return {
 					groupInfo,
 					group,

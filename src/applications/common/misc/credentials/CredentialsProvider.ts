@@ -8,7 +8,7 @@ import {
 } from "@tutao/native-bridge/generatedIpc/types"
 import { InterWindowEventFacadeSendDispatcher } from "@tutao/native-bridge/generatedIpc/dispatchers"
 import { CredentialType } from "../../../../platform-kit/network/types"
-import { isAdminClient, isBrowser } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 
 /**
  * Main entry point to interact with credentials, i.e. storing and retrieving credentials from/to persistence.
@@ -30,7 +30,7 @@ export class CredentialsProvider {
 	/**
 	 * Change the encrypted password for the stored credentials.
 	 */
-	async replacePassword(credentials: CredentialsInfo, encryptedPassword: string, encryptedPassphraseKey: Uint8Array): Promise<void> {
+	async replacePassword(credentials: CredentialsInfo, encryptedPassword: string, encryptedPassphraseKey: Uint8Array<ArrayBuffer>): Promise<void> {
 		const encryptedCredentials = await this.getCredentialsByUserId(credentials.userId)
 		if (encryptedCredentials == null) {
 			throw new Error(`Trying to replace password for credentials but credentials are not persisted: ${credentials.userId}`)
@@ -125,5 +125,5 @@ export class CredentialsProvider {
 }
 
 export function usingKeychainAuthenticationWithOptions(): boolean {
-	return !isBrowser() && !isAdminClient()
+	return !EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()
 }

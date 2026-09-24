@@ -1,8 +1,8 @@
-import { assertMainOrNode, isWebClient, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { LoginController } from "../api/main/LoginController.js"
 import Stream from "mithril/stream"
 import { locator } from "../api/main/CommonLocator.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { isSupportVisibilityEnabled, SupportVisibilityMask } from "./SupportVisibilityMask"
 import { MultiPageDialog } from "../../../ui/dialogs/MultiPageDialog"
 import m from "mithril"
@@ -20,12 +20,14 @@ import { Dialog } from "../../../ui/base/Dialog.js"
 import { Thunk } from "@tutao/utils"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import { size } from "../../../ui/size"
-import { CacheMode } from "../../../platform-kit/network/EntityRestClient"
 import { SupportCategory, SupportData, SupportDataTypeRef, SupportTopic } from "@tutao/entities/tutanota"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { windowFacade } from "../misc/WindowFacade"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../platform-kit/instance-pipeline/RestClientOptions"
+import { idToElementId } from "@tutao/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 type SupportDialogPageName =
 	| "home"
@@ -80,7 +82,10 @@ export async function showSupportDialog(logins: LoginController) {
 
 	const supportData = await showProgressDialog(
 		"pleaseWait_msg",
-		locator.entityClient.load(SupportDataTypeRef, "--------1---", { cacheMode: CacheMode.WriteOnly }),
+		locator.entityClient.load(SupportDataTypeRef, idToElementId("--------1---"), {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+			cacheMode: CacheMode.WriteOnly,
+		}),
 	)
 	data.categories = filterCategories(supportData)
 
@@ -185,7 +190,13 @@ export async function showSupportDialog(logins: LoginController) {
 				title: lang.get("supportMenu_label"),
 				leftAction: {
 					type: ButtonType.Secondary,
-					click: withConfirmation(() => goBack(), "supportBackLostRequest_msg"),
+					click: withConfirmation(async () => {
+						goBack()
+
+						// set manually, since onChange is not fired when we go back
+						data.supportRequestHtml = ""
+						data.isSupportRequestEmpty = true
+					}, "supportBackLostRequest_msg"),
 					label: "back_action",
 					title: "back_action",
 				},
@@ -252,7 +263,7 @@ export async function showSupportDialog(logins: LoginController) {
 			help: "close_alt",
 			key: Keys.ESC,
 			exec: () => {
-				dialog.onClose()
+				withConfirmation(() => dialog.onClose(), "supportBackLostRequest_msg")()
 			},
 		})
 		.show()
@@ -325,9 +336,10 @@ function filterCategories(supportData: SupportData) {
 			const visibility = Number(topic.visibility)
 
 			const meetsPlatform =
-				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.TutaCalendarMobile) && client.isCalendarApp()) ||
-				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.TutaMailMobile) && client.isMailApp()) ||
-				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.DesktopOrWebApp) && (client.isDesktopDevice() || isWebClient()))
+				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.TutaCalendarMobile) && ClientDetector.get().isCalendarApp()) ||
+				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.TutaMailMobile) && ClientDetector.get().isMailApp()) ||
+				(isSupportVisibilityEnabled(visibility, SupportVisibilityMask.DesktopOrWebApp) &&
+					(ClientDetector.get().isDesktopDevice() || EnvProvider.get().isWebClient()))
 
 			const isFreeAccount = !locator.logins.getUserController().isPaidAccount()
 			const meetsCustomerStatus =

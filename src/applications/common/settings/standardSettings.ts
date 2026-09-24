@@ -3,23 +3,36 @@ import { SettingsViewSection } from "./Interfaces"
 import { LoginSettingsViewer } from "./login/LoginSettingsViewer"
 import { AppearanceSettingsViewer } from "./AppearanceSettingsViewer"
 import { WhitelabelSettingsViewer } from "./whitelabel/WhitelabelSettingsViewer"
-import { FeatureType, isIOSApp } from "@tutao/app-env"
+import { EnvProvider, FeatureType } from "@tutao/app-env"
 import { shouldHideBusinessPlans } from "../subscription/utils/SubscriptionUtils"
-import { SubscriptionViewer } from "../subscription/SubscriptionViewer"
+import { SubscriptionSettingsViewer } from "./subscription/SubscriptionSettingsViewer"
 import { PaymentViewer } from "../subscription/PaymentViewer"
 import { ReferralSettingsViewer } from "./ReferralSettingsViewer"
 import { CredentialsProvider } from "../misc/credentials/CredentialsProvider"
 import { LoginController } from "../api/main/LoginController"
 import { CustomerFacade } from "../api/worker/facades/lazy/CustomerFacade"
 import { MobileGlobalSettingsViewer } from "./MobileGlobalSettingsViewer"
-import { MobilePaymentsFacade, MobileSystemFacade } from "@tutao/native-bridge/generatedIpc/types"
-import { Icons } from "../../../ui/base/icons/Icons"
+import { CalendarSettingsViewer } from "./CalendarSettingsViewer"
 import { EntityClient } from "../../../platform-kit/network/EntityClient"
+import { Icons } from "../../../ui/base/icons/Icons"
+import { MobilePaymentsFacade, MobileSystemFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { ThemeController } from "../../../ui/ThemeController"
 import { WhitelabelThemeGenerator } from "../../../ui/WhitelabelThemeGenerator"
 import { lang } from "../../../ui/utils/LanguageViewModel"
+import { UserController } from "../api/main/UserController"
+import { isFreeSignupOnly } from "../misc/LoginUtils"
 
-export function loginSettings(credentialsProvider: CredentialsProvider, systemFacade: MobileSystemFacade): SettingsFolder<unknown> {
+export function calendarSettings(entityClient: EntityClient, userController: UserController): SettingsFolder<void> {
+	return new SettingsFolder(
+		() => "calendar_label",
+		() => Icons.CalendarFilled,
+		"calendar",
+		() => new CalendarSettingsViewer(entityClient, userController),
+		undefined,
+	)
+}
+
+export function loginSettings(credentialsProvider: CredentialsProvider, systemFacade: MobileSystemFacade | null): SettingsFolder<unknown> {
 	return new SettingsFolder(
 		() => "login_label",
 		() => Icons.PersonFilled,
@@ -58,6 +71,7 @@ export function subscriptionSettingsSection(logins: LoginController, mobilePayme
 	function shouldShowSubscriptionSetting(): boolean {
 		return !logins.isEnabled(FeatureType.WhitelabelChild) && logins.getUserController().isGlobalAdmin()
 	}
+
 	return {
 		name: lang.getTranslation("subscriptionSettings_label"),
 		settings: [
@@ -65,7 +79,7 @@ export function subscriptionSettingsSection(logins: LoginController, mobilePayme
 				() => "adminSubscription_action",
 				() => Icons.TrophyFilled,
 				"subscription",
-				() => new SubscriptionViewer(isIOSApp() ? mobilePaymentsFacade : null),
+				() => new SubscriptionSettingsViewer(EnvProvider.get().isIOSApp() ? mobilePaymentsFacade : null),
 				undefined,
 			).setIsVisibleHandler(() => shouldShowSubscriptionSetting()),
 			new SettingsFolder<void>(
@@ -74,7 +88,7 @@ export function subscriptionSettingsSection(logins: LoginController, mobilePayme
 				"invoice",
 				() => new PaymentViewer(),
 				undefined,
-			).setIsVisibleHandler(() => shouldShowSubscriptionSetting()),
+			).setIsVisibleHandler(() => shouldShowSubscriptionSetting() && !logins.getUserController().isFreeAccount()),
 			new SettingsFolder(
 				() => "referralSettings_label",
 				() => Icons.ShareFilled,
@@ -90,6 +104,7 @@ export function subscriptionSettingsSection(logins: LoginController, mobilePayme
 		],
 	}
 }
+
 export function adminSettingsSection(
 	logins: LoginController,
 	entityClient: EntityClient,
@@ -97,17 +112,20 @@ export function adminSettingsSection(
 	whitelabelThemeGenerator: WhitelabelThemeGenerator,
 	customerFacade: CustomerFacade,
 ): SettingsViewSection {
+	const settings = [
+		new SettingsFolder(
+			() => "globalSettings_label",
+			() => Icons.GearWheelFilled,
+			"global",
+			() => new MobileGlobalSettingsViewer(entityClient, logins, customerFacade),
+			undefined,
+		).setIsVisibleHandler(() => logins.getUserController().isGlobalAdmin()),
+	]
+	if (!isFreeSignupOnly()) {
+		settings.push(whitelabelSettings(entityClient, logins, themeController, whitelabelThemeGenerator))
+	}
 	return {
 		name: lang.getTranslation("adminSettings_label"),
-		settings: [
-			new SettingsFolder(
-				() => "globalSettings_label",
-				() => Icons.GearWheelFilled,
-				"global",
-				() => new MobileGlobalSettingsViewer(entityClient, logins, customerFacade),
-				undefined,
-			).setIsVisibleHandler(() => logins.getUserController().isGlobalAdmin()),
-			whitelabelSettings(entityClient, logins, themeController, whitelabelThemeGenerator),
-		],
+		settings,
 	}
 }

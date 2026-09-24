@@ -14,9 +14,9 @@ import { showNewsDialog } from "../../misc/news/NewsDialog.js"
 import { LoginController } from "../../api/main/LoginController.js"
 import { NewsModel } from "../../misc/news/NewsModel.js"
 import { DesktopSystemFacade } from "@tutao/native-bridge/generatedIpc/types"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { IconButton } from "../../../../ui/base/IconButton.js"
-import { FeatureType, isBrowser, isIOSApp, UpgradePromptType } from "@tutao/app-env"
+import { EnvProvider, FeatureType, UpgradePromptType } from "@tutao/app-env"
 
 export interface DrawerMenuAttrs {
 	logins: LoginController
@@ -41,7 +41,7 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				...landmarkAttrs(AriaLandmarks.Contentinfo, "drawer menu"),
 				style: {
 					"padding-left": getSafeAreaInsetLeft(),
-					"border-top-right-radius": styles.isDesktopLayout() ? px(size.radius_12) : "",
+					"border-top-right-radius": Styles.get().isDesktopLayout() ? px(size.radius_12) : "",
 				},
 			},
 			[
@@ -50,7 +50,7 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 					? m(".news-button", [
 							m(IconButton, {
 								icon: Icons.LightbulbFilled,
-								title: "news_label",
+								label: "news_label",
 								click: () => showNewsDialog(newsModel),
 								colors: ButtonColor.DrawerNav,
 							}),
@@ -70,9 +70,9 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				logins.isGlobalAdminUserLoggedIn() && userController.isPaidAccount() && !customer?.businessUse
 					? m(IconButton, {
 							icon: Icons.GiftFilled,
-							title: "buyGiftCard_label",
+							label: "buyGiftCard_label",
 							click: () => {
-								m.route.set("/settings/subscription")
+								m.route.set("/settings/invoice")
 								import("../../subscription/giftcards/PurchaseGiftCardDialog").then(({ showPurchaseGiftCardDialog }) => {
 									return showPurchaseGiftCardDialog()
 								})
@@ -83,23 +83,23 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				desktopSystemFacade
 					? m(IconButton, {
 							icon: Icons.BrowserAddOutline,
-							title: "openNewWindow_action",
+							label: "openNewWindow_action",
 							click: () => {
 								desktopSystemFacade.openNewWindow()
 							},
 							colors: ButtonColor.DrawerNav,
 						})
 					: null,
-				!isIOSApp() && isLoggedIn && userController.isFreeAccount()
+				!EnvProvider.get().isIOSApp() && !EnvProvider.get().isAndroidApp() && isLoggedIn && userController.isFreeAccount()
 					? m(IconButton, {
 							icon: Icons.TrophyFilled,
-							title: "upgradePremium_label",
+							label: "upgradePremium_label",
 							click: () => showUpgradeDialog(UpgradePromptType.DRAWER_MENU_UPGRADE_BUTTON),
 							colors: ButtonColor.DrawerNav,
 						})
 					: null,
 				m(IconButton, {
-					title: "showHelp_action",
+					label: "showHelp_action",
 					icon: Icons.QuestionmarkFilled,
 					click: (e, dom) =>
 						createDropdown({
@@ -122,7 +122,7 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				isPartnerEnabled
 					? m(IconButton, {
 							icon: Icons.HeartFilled,
-							title: { testId: "partner_label", text: "Partner" },
+							label: { testId: "partner_label", text: "Partner" },
 							click: () => m.route.set(PARTNER_PREFIX),
 							colors: ButtonColor.DrawerNav,
 						})
@@ -130,14 +130,14 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				isInternalUser
 					? m(IconButton, {
 							icon: Icons.GearWheelFilled,
-							title: "settings_label",
+							label: "settings_label",
 							click: () => m.route.set(SETTINGS_PREFIX),
 							colors: ButtonColor.DrawerNav,
 						})
 					: null,
 				m(IconButton, {
 					icon: Icons.Logout,
-					title: "switchAccount_action",
+					label: "switchAccount_action",
 					click: () => m.route.set(LogoutUrl),
 					colors: ButtonColor.DrawerNav,
 				}),
@@ -149,7 +149,7 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 export function isPartnerEnabled(loginController: LoginController): boolean {
 	return (
 		loginController.isInternalUserLoggedIn() &&
-		isBrowser() &&
+		EnvProvider.get().isBrowser() &&
 		loginController.isEnabled(FeatureType.SolutionPartner) &&
 		loginController.getUserController().isGlobalAdmin()
 	)

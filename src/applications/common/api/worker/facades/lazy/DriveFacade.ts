@@ -1,4 +1,4 @@
-import { KeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/KeyLoaderFacade"
+import { KeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/KeyLoaderFacade"
 import { EntityClient, loadMultipleFromLists } from "../../../../../../platform-kit/network/EntityClient"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest"
 import { ProgrammingError } from "@tutao/app-env"
@@ -6,11 +6,11 @@ import { BlobFacade } from "./BlobFacade"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade"
 import { aes256RandomKey, CryptoWrapper, VersionedKey } from "@tutao/crypto"
 import { assertNotNull, first, groupBy, isEmpty, partition, promiseMap, Require } from "@tutao/utils"
-import { getElementId, getListId, isSameId, isSameTypeRef, listIdPart } from "@tutao/meta"
+import { getElementId, getListId, idToElementId, isSameId, isSameTypeRef, listIdPart } from "@tutao/meta"
 import { BlobReferenceTokenWrapper } from "@tutao/entities/sys"
 import { ArchiveDataType, GroupType } from "../../../../../../entities/sys/Utils"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade"
-import * as restError from "@tutao/rest-client/error"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade"
+import { ConnectionError, NotFoundError } from "@tutao/rest-client/error"
 import { MoveCycleError } from "../../../common/error/MoveCycleError"
 import { MoveToTrashError } from "../../../common/error/MoveToTrashError"
 import { MoveDestinationIsSourceError } from "../../../common/error/MoveDestinationIsSourceError"
@@ -27,22 +27,29 @@ import {
 	createDrivePostIn,
 	createDriveRenameData,
 	createDriveUploadedFile,
-	DriveCopyService,
+	DriveCopyService_POST,
 	DriveFile,
 	DriveFileRef,
 	DriveFileRefTypeRef,
 	DriveFileTypeRef,
 	DriveFolder,
-	DriveFolderService,
+	DriveFolderService_DELETE,
+	DriveFolderService_POST,
+	DriveFolderService_PUT,
 	DriveFolderTypeRef,
 	DriveGroupRoot,
 	DriveGroupRootTypeRef,
-	DriveItemService,
+	DriveItemService_DELETE,
+	DriveItemService_POST,
+	DriveItemService_PUT,
 	DriveRenameData,
-	DriveService,
+	DriveService_POST,
 } from "@tutao/entities/drive"
 import { TransferId } from "../../../../../../entities/drive/Utils"
 import { getCleanedMimeType } from "../../utils/DataFile"
+import { ExposedCacheStorage } from "../../../../../../app-kit/local-store/CacheStorage"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { isDriveFile } from "../../../common/drive/DriveUtils"
 
 export interface BreadcrumbEntry {
 	folderName: string
@@ -57,10 +64,6 @@ export type DriveCryptoInfo = {
 export interface FolderContents {
 	files: DriveFile[]
 	folders: DriveFolder[]
-}
-
-function isDriveFile(source: DriveFile | DriveFolder): source is DriveFile {
-	return isSameTypeRef(source._type, DriveFileTypeRef)
 }
 
 export interface DriveRootFolders {
@@ -86,6 +89,7 @@ export class DriveFacade {
 		private readonly serviceExecutor: IServiceExecutor,
 		private readonly cryptoFacade: CryptoFacade,
 		private readonly cryptoWrapper: CryptoWrapper,
+		private readonly cacheStorage: ExposedCacheStorage,
 	) {}
 
 	public async rename(item: DriveFile | DriveFolder, newName: string) {
@@ -97,7 +101,7 @@ export class DriveFacade {
 			newName,
 		})
 
-		await this.serviceExecutor.put(DriveItemService, data, { sessionKey })
+		await this.serviceExecutor.execute(DriveItemService_PUT, data, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 	}
 
 	public async moveToTrash(fileIds: readonly IdTuple[], folderIds: readonly IdTuple[]) {
@@ -107,7 +111,7 @@ export class DriveFacade {
 				folders: foldersChunk,
 				restore: false,
 			})
-			await this.serviceExecutor.delete(DriveFolderService, deleteData)
+			await this.serviceExecutor.execute(DriveFolderService_DELETE, deleteData, null)
 		}
 	}
 
@@ -118,7 +122,7 @@ export class DriveFacade {
 				folders: foldersChunk,
 				restore: true,
 			})
-			await this.serviceExecutor.delete(DriveFolderService, deleteData)
+			await this.serviceExecutor.execute(DriveFolderService_DELETE, deleteData, null)
 		}
 	}
 
@@ -129,21 +133,31 @@ export class DriveFacade {
 			files: files.map((f) => f._id),
 			folders: folders.map((f) => f._id),
 		})
-		const result = await this.serviceExecutor.delete(DriveItemService, deleteData)
+		const result = await this.serviceExecutor.execute(DriveItemService_DELETE, deleteData, null)
 		return result.operationId
 	}
 
-	public async loadRootFolders(): Promise<DriveRootFolders> {
-		const { fileGroupId } = await this.getCryptoInfo()
+	public async loadRootFolders(cacheMode: "cached" | "withNetwork"): Promise<DriveRootFolders> {
+		const fileGroupId = this.userFacade.getGroupId(GroupType.File)
 
 		let driveGroupRoot: DriveGroupRoot
-		try {
-			driveGroupRoot = await this.entityClient.load(DriveGroupRootTypeRef, fileGroupId)
-		} catch (e) {
-			if (e instanceof restError.NotFoundError) {
-				driveGroupRoot = await this.createGroupRoot(fileGroupId)
+
+		if (cacheMode === "withNetwork") {
+			try {
+				driveGroupRoot = await this.entityClient.load(DriveGroupRootTypeRef, idToElementId(fileGroupId))
+			} catch (e) {
+				if (e instanceof NotFoundError) {
+					driveGroupRoot = await this.createGroupRoot(fileGroupId)
+				} else {
+					throw e
+				}
+			}
+		} else {
+			const maybeDriveGroupRoot = await this.cacheStorage.get(DriveGroupRootTypeRef, null, fileGroupId)
+			if (maybeDriveGroupRoot) {
+				driveGroupRoot = maybeDriveGroupRoot
 			} else {
-				throw e
+				throw new ConnectionError("cannot load DriveGroupRoot from cache")
 			}
 		}
 
@@ -208,12 +222,11 @@ export class DriveFacade {
 			referenceTokens: blobRefTokens,
 			fileName: fileName,
 			mimeType: getCleanedMimeType(isWebFile(file) ? file.file.type : file.mimeType),
-			ownerEncSessionKey: ownerEncSessionKey,
-			ownerKeyVersion: String(fileGroupKey.version),
-			_ownerGroup: assertNotNull(fileGroupId),
 		})
+		uploadedFile.ownerEncSessionKey = ownerEncSessionKey
+		uploadedFile.ownerKeyVersion = String(fileGroupKey.version)
 		const data = createDriveItemPostIn({ uploadedFile: uploadedFile, parent: to })
-		const response = await this.serviceExecutor.post(DriveItemService, data, { sessionKey })
+		const response = await this.serviceExecutor.execute(DriveItemService_POST, data, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 
 		return await this.entityClient.load(DriveFileTypeRef, response.createdFile)
 	}
@@ -223,7 +236,7 @@ export class DriveFacade {
 	 * @param parentFolder not implemented yet, used for creating a folder inside a folder that is not the root drive
 	 */
 	public async createFolder(folderName: string, parentFolder: IdTuple): Promise<DriveFolder> {
-		const { fileGroupId, fileGroupKey } = await this.getCryptoInfo()
+		const { fileGroupKey } = await this.getCryptoInfo()
 
 		const sessionKey = aes256RandomKey()
 		const ownerEncSessionKey = this.cryptoWrapper.encryptKey(fileGroupKey.object, sessionKey)
@@ -231,10 +244,10 @@ export class DriveFacade {
 		const newFolder = createDriveFolderServicePostIn({
 			folderName,
 			parent: parentFolder,
-			ownerEncSessionKey,
-			ownerKeyVersion: String(fileGroupKey.version),
 		})
-		const response = await this.serviceExecutor.post(DriveFolderService, newFolder, { sessionKey })
+		newFolder.ownerEncSessionKey = ownerEncSessionKey
+		newFolder.ownerKeyVersion = String(fileGroupKey.version)
+		const response = await this.serviceExecutor.execute(DriveFolderService_POST, newFolder, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey })
 		return this.entityClient.load(DriveFolderTypeRef, response.folder)
 	}
 
@@ -270,7 +283,7 @@ export class DriveFacade {
 			items: [...fileItems, ...folderItems],
 			destination: destination._id,
 		})
-		const result = await this.serviceExecutor.post(DriveCopyService, copyData)
+		const result = await this.serviceExecutor.execute(DriveCopyService_POST, copyData, null)
 		return result.operationId
 	}
 
@@ -296,7 +309,7 @@ export class DriveFacade {
 		for (const { left: filesChunk, right: foldersChunk } of splitListElementsIntoChunksByList(50, getListId, files, folders)) {
 			const items: DriveRenameData[] = [
 				...(await promiseMap(filesChunk, async (file) => {
-					let encNewName: Uint8Array | null
+					let encNewName: Uint8Array<ArrayBuffer> | null
 					const newName = renamedFiles.get(getElementId(file))
 					if (newName) {
 						const sk = assertNotNull(await this.cryptoFacade.resolveSessionKey(file))
@@ -307,7 +320,7 @@ export class DriveFacade {
 					return createDriveRenameData({ file: file._id, folder: null, encNewName })
 				})),
 				...(await promiseMap(foldersChunk, async (folder) => {
-					let encNewName: Uint8Array | null
+					let encNewName: Uint8Array<ArrayBuffer> | null
 					const newName = renamedFiles.get(getElementId(folder))
 					if (newName) {
 						const sk = assertNotNull(await this.cryptoFacade.resolveSessionKey(folder))
@@ -324,7 +337,7 @@ export class DriveFacade {
 				items,
 				destination: destinationId,
 			})
-			await this.serviceExecutor.put(DriveFolderService, data)
+			await this.serviceExecutor.execute(DriveFolderService_PUT, data, null)
 		}
 	}
 
@@ -339,6 +352,9 @@ export class DriveFacade {
 		} while (currentParent.parent != null)
 		return result
 	}
+	async getFileGroupId(): Promise<Id> {
+		return this.userFacade.getGroupId(GroupType.File)
+	}
 
 	private async getCryptoInfo(): Promise<DriveCryptoInfo> {
 		const fileGroupId = this.userFacade.getGroupId(GroupType.File)
@@ -352,16 +368,14 @@ export class DriveFacade {
 		const trashFolderSessionKey = aes256RandomKey()
 		const encRootFolderSessionKey = this.cryptoWrapper.encryptKey(fileGroupKey.object, rootFolderSessionKey)
 		const encTrashFolderSessionKey = this.cryptoWrapper.encryptKey(fileGroupKey.object, trashFolderSessionKey)
-		await this.serviceExecutor.post(
-			DriveService,
-			createDrivePostIn({
-				fileGroupId: fileGroupId,
-				ownerKeyVersion: String(fileGroupKey.version),
-				ownerEncRootFolderSessionKey: encRootFolderSessionKey,
-				ownerEncTrashFolderSessionKey: encTrashFolderSessionKey,
-			}),
-		)
-		return this.entityClient.load(DriveGroupRootTypeRef, fileGroupId)
+		const data = createDrivePostIn({
+			fileGroupId: fileGroupId,
+			ownerEncRootFolderSessionKey: encRootFolderSessionKey,
+			ownerEncTrashFolderSessionKey: encTrashFolderSessionKey,
+		})
+		data.ownerKeyVersion = String(fileGroupKey.version)
+		await this.serviceExecutor.execute(DriveService_POST, data, null)
+		return this.entityClient.load(DriveGroupRootTypeRef, idToElementId(fileGroupId))
 	}
 }
 

@@ -27,7 +27,7 @@ use crate::GeneratedId;
 use crate::{crypto, ApiCallError, HeadersProvider, TypeRef};
 use base64::Engine;
 use crypto::sha256;
-use crypto_primitives::aes::Iv;
+use crypto_primitives::aes::InitializationVector;
 use crypto_primitives::key::GenericAesKey;
 use crypto_primitives::randomizer_facade::RandomizerFacade;
 use std::collections::HashMap;
@@ -247,10 +247,7 @@ impl BlobFacade {
 				))
 			})?;
 			let decrypted = session_key.decrypt_data(&encrypted).map_err(|e| {
-				ApiCallError::internal(format!(
-					"Failed to decrypt blob {}: {e}",
-					blob.blobId
-				))
+				ApiCallError::internal(format!("Failed to decrypt blob {}: {e}", blob.blobId))
 			})?;
 			out.extend_from_slice(&decrypted);
 		}
@@ -296,15 +293,12 @@ impl BlobFacade {
 		let parsed = self
 			.instance_mapper
 			.serialize_entity(blob_get_in)
-			.map_err(|e| {
-				ApiCallError::internal(format!("Failed to serialize BlobGetIn: {e}"))
-			})?;
+			.map_err(|e| ApiCallError::internal(format!("Failed to serialize BlobGetIn: {e}")))?;
 		let raw = self
 			.json_serializer
 			.serialize(&BlobGetIn::type_ref(), parsed)?;
-		let body = serde_json::to_vec(&raw).map_err(|e| {
-			ApiCallError::internal(format!("Failed to JSON-encode BlobGetIn: {e}"))
-		})?;
+		let body = serde_json::to_vec(&raw)
+			.map_err(|e| ApiCallError::internal(format!("Failed to JSON-encode BlobGetIn: {e}")))?;
 
 		let query_params = self.create_query_params_multiple_blobs(access_info.blobAccessToken);
 		let encoded = rest_client::encode_query_params(query_params);
@@ -370,9 +364,11 @@ impl BlobFacade {
 		if got_unauthorized {
 			Err(HttpError::NotAuthorizedError.into())
 		} else {
-			Err(last_error.unwrap_or_else(|| ApiCallError::InternalSdkError {
-				error_message: "no blob servers available".to_owned(),
-			}))
+			Err(
+				last_error.unwrap_or_else(|| ApiCallError::InternalSdkError {
+					error_message: "no blob servers available".to_owned(),
+				}),
+			)
 		}
 	}
 
@@ -488,7 +484,10 @@ impl BlobFacade {
 			for blob in blobs {
 				let encrypted_blob = file_datum
 					.session_key
-					.encrypt_data(blob, Iv::generate(&self.randomizer_facade))
+					.encrypt_data(
+						blob,
+						InitializationVector::generate(&self.randomizer_facade),
+					)
 					.map_err(|e| ApiCallError::internal_with_err(e, "Cannot encrypt blob"))?;
 				let short_hash: Vec<u8> = sha256(&encrypted_blob).into_iter().take(6).collect();
 
@@ -636,7 +635,10 @@ impl BlobFacade {
 			.await?;
 
 		let encrypted_blob = session_key
-			.encrypt_data(blob, Iv::generate(&self.randomizer_facade))
+			.encrypt_data(
+				blob,
+				InitializationVector::generate(&self.randomizer_facade),
+			)
 			.map_err(|_e| ApiCallError::internal(String::from("failed to encrypt blob")))?;
 		let query_params =
 			self.create_query_params_single_blob_legacy(&encrypted_blob, blob_access_token);
@@ -1565,7 +1567,8 @@ mod tests {
 				let uri = url.parse::<Uri>().unwrap();
 				assert_eq!("w1.api.tuta.com", uri.host().unwrap());
 				assert!(
-					uri.path().contains(&format!("/maildetailsblob/{list_id_check}")),
+					uri.path()
+						.contains(&format!("/maildetailsblob/{list_id_check}")),
 					"path should contain list_id, got: {}",
 					uri.path()
 				);
@@ -1606,7 +1609,12 @@ mod tests {
 
 		use crate::entities::generated::tutanota::MailDetailsBlob;
 		let result = blob_facade
-			.load_blob_element(&MailDetailsBlob::type_ref(), &archive_id, &element_id, &archive_id)
+			.load_blob_element(
+				&MailDetailsBlob::type_ref(),
+				&archive_id,
+				&element_id,
+				&archive_id,
+			)
 			.await
 			.expect("should succeed");
 		assert_eq!(expected_body, result);
@@ -1697,7 +1705,12 @@ mod tests {
 
 		use crate::entities::generated::tutanota::MailDetailsBlob;
 		let result = blob_facade
-			.load_blob_element(&MailDetailsBlob::type_ref(), &archive_id, &element_id, &archive_id)
+			.load_blob_element(
+				&MailDetailsBlob::type_ref(),
+				&archive_id,
+				&element_id,
+				&archive_id,
+			)
 			.await
 			.expect("should succeed after retry");
 		assert_eq!(expected_body, result);
@@ -1745,7 +1758,12 @@ mod tests {
 
 		use crate::entities::generated::tutanota::MailDetailsBlob;
 		let err = blob_facade
-			.load_blob_element(&MailDetailsBlob::type_ref(), &archive_id, &element_id, &archive_id)
+			.load_blob_element(
+				&MailDetailsBlob::type_ref(),
+				&archive_id,
+				&element_id,
+				&archive_id,
+			)
 			.await
 			.expect_err("should return error");
 
@@ -1824,15 +1842,24 @@ mod tests {
 		let result = parse_multiple_blobs_response(&data).unwrap();
 		assert_eq!(result.len(), 3);
 		assert_eq!(
-			result.get(&GeneratedId(BASE64_EXT.encode([0u8; 9]))).unwrap().as_slice(),
+			result
+				.get(&GeneratedId(BASE64_EXT.encode([0u8; 9])))
+				.unwrap()
+				.as_slice(),
 			b"first"
 		);
 		assert_eq!(
-			result.get(&GeneratedId(BASE64_EXT.encode([0xFFu8; 9]))).unwrap().as_slice(),
+			result
+				.get(&GeneratedId(BASE64_EXT.encode([0xFFu8; 9])))
+				.unwrap()
+				.as_slice(),
 			b"second is bigger"
 		);
 		assert_eq!(
-			result.get(&GeneratedId(BASE64_EXT.encode([0x42u8; 9]))).unwrap().len(),
+			result
+				.get(&GeneratedId(BASE64_EXT.encode([0x42u8; 9])))
+				.unwrap()
+				.len(),
 			1024
 		);
 	}

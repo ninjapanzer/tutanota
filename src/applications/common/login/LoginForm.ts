@@ -5,11 +5,12 @@ import { liveDataAttrs } from "../../../ui/AriaUtils"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { Autocomplete, LegacyTextField, LegacyTextFieldType } from "../../../ui/base/LegacyTextField.js"
 import { Checkbox } from "../../../ui/base/Checkbox.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
 import { PasswordField } from "../misc/passwords/PasswordField.js"
-import { isAdminClient, isApp, isBrowser, isDesktop, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { useKeyHandler } from "../../../ui/utils/KeyManager.js"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 export type LoginFormAttrs = {
 	onSubmit: (username: string, password: string) => unknown
@@ -53,8 +54,8 @@ export class LoginForm implements Component<LoginFormAttrs> {
 
 	view(vnode: Vnode<LoginFormAttrs>): Children {
 		const a = vnode.attrs
-		const canSaveCredentials = client.localStorage()
-		if (a.savePassword && (isApp() || isDesktop())) {
+		const canSaveCredentials = ClientDetector.get().localStorage()
+		if (a.savePassword && (EnvProvider.get().isApp() || EnvProvider.get().isDesktop())) {
 			a.savePassword(true)
 		}
 		return m(
@@ -76,7 +77,7 @@ export class LoginForm implements Component<LoginFormAttrs> {
 						autocompleteAs: Autocomplete.email,
 						onDomInputCreated: (dom) => {
 							this.mailAddressTextField = dom
-							if (!client.isMobileDevice()) {
+							if (!ClientDetector.get().isMobileDevice()) {
 								dom.focus() // have email address auto-focus so the user can immediately type their username (unless on mobile)
 							}
 						},
@@ -94,7 +95,7 @@ export class LoginForm implements Component<LoginFormAttrs> {
 					}),
 				),
 				a.savePassword
-					? isApp() || isDesktop()
+					? EnvProvider.get().isApp() || EnvProvider.get().isDesktop()
 						? m("small.block.content-fg", lang.get("dataWillBeStored_msg"))
 						: m(
 								".pt-16",
@@ -120,7 +121,9 @@ export class LoginForm implements Component<LoginFormAttrs> {
 										? lang.makeTranslation(
 												"onlyPrivateComputer_msg",
 												lang.get("onlyPrivateComputer_msg") +
-													(!isBrowser() && !isAdminClient() ? "\n" + lang.get("dataWillBeStored_msg") : ""),
+													(!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()
+														? "\n" + lang.get("dataWillBeStored_msg")
+														: ""),
 											)
 										: "functionNotSupported_msg",
 									disabled: !canSaveCredentials,
@@ -130,7 +133,7 @@ export class LoginForm implements Component<LoginFormAttrs> {
 				m(
 					".pt-16",
 					m(PrimaryButton, {
-						label: isApp() || isDesktop() ? "addAccount_action" : "login_action",
+						label: EnvProvider.get().isApp() || EnvProvider.get().isDesktop() ? "addAccount_action" : "login_action",
 						onclick: () => a.onSubmit(a.mailAddress(), a.password()),
 					}),
 				),

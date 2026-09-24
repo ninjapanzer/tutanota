@@ -1,16 +1,16 @@
 import m from "mithril"
 import { Dialog } from "../../../ui/base/Dialog"
 import { lang } from "../../../ui/utils/LanguageViewModel"
-import * as restError from "@tutao/rest-client/error"
+import { InvalidDataError, LockedError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { Autocomplete, LegacyTextField, LegacyTextFieldType } from "../../../ui/base/LegacyTextField.js"
 import { neverNull } from "@tutao/utils"
 import { getCleanedMailAddress } from "../misc/parsing/MailAddressParser"
 import { locator } from "../api/main/CommonLocator"
 import { getEtId } from "@tutao/meta"
 import { PasswordField } from "../misc/passwords/PasswordField.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { SurveyData } from "@tutao/entities/sys"
-import { isIOSApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { CloseEventBusOption } from "../../../platform-kit/network/Constants"
 
 export function showDeleteAccountDialog(surveyData: SurveyData | null = null) {
@@ -23,7 +23,7 @@ export function showDeleteAccountDialog(surveyData: SurveyData | null = null) {
 		child: {
 			view: () =>
 				m("#delete-account-dialog", [
-					!(isIOSApp() && client.isCalendarApp())
+					!(EnvProvider.get().isIOSApp() && ClientDetector.get().isCalendarApp())
 						? m(LegacyTextField, {
 								label: "targetAddress_label",
 								value: takeover,
@@ -80,9 +80,9 @@ async function deleteAccount(takeover: string, password: string, surveyData: Sur
 			await locator.loginFacade.deleteAccount(password, neverNull(cleanedTakeover), surveyData)
 			return true
 		} catch (e) {
-			if (e instanceof restError.PreconditionFailedError) await Dialog.message("passwordWrongInvalid_msg")
-			if (e instanceof restError.TooManyRequestsError) await Dialog.message("takeoverAccountInvalid_msg")
-			if (e instanceof restError.LockedError) await Dialog.message("operationStillActive_msg")
+			if (e instanceof PreconditionFailedError) await Dialog.message("passwordWrongInvalid_msg")
+			if (e instanceof InvalidDataError) await Dialog.message("takeoverAccountInvalid_msg")
+			if (e instanceof LockedError) await Dialog.message("operationStillActive_msg")
 			return false
 		}
 	}

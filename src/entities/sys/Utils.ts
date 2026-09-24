@@ -1,7 +1,7 @@
-import { reverse, ShareCapability } from "../../platform-kit/app-env"
+import { ShareCapability } from "../../platform-kit/app-env"
 import { Group, GroupInfo, GroupMember, GroupMembership, ReceivedGroupInvitation, User } from "./TypeRefs"
-import { downcast } from "../../platform-kit/utils"
-import { getEtId, isSameId } from "../../platform-kit/meta"
+import { downcast, isNotNull } from "../../platform-kit/utils"
+import { elementIdToId, idToElementId, isSameId, isSameSingleId } from "../../platform-kit/meta"
 
 export enum GroupType {
 	User = "0",
@@ -139,6 +139,7 @@ export enum SubscriptionType {
 	Personal,
 	Business,
 	PaidPersonal,
+	FreeOnly,
 }
 
 export enum BookingItemFeatureType {
@@ -169,7 +170,6 @@ export enum PaymentMethodType {
 	AppStore = "5",
 }
 
-export const PaymentMethodTypeToName = reverse(PaymentMethodType) // Group invitations without a type set were sent when Calendars were the only shareable kind of user group
 /**
  * Whether or not a user has a given capability for a shared group. If the group type is not shareable, this will always return false
  * @param user
@@ -182,11 +182,11 @@ export function hasCapabilityOnGroup(user: User, group: Group, requiredCapabilit
 		return false
 	}
 
-	if (isSharedGroupOwner(group, user._id)) {
+	if (isSharedGroupOwner(group, elementIdToId(user._id))) {
 		return true
 	}
 
-	const membership = user.memberships.find((gm: GroupMembership) => isSameId(gm.group, group._id))
+	const membership = user.memberships.find((gm: GroupMembership) => isSameId(idToElementId(gm.group), group._id))
 
 	if (membership) {
 		return membership.capability != null && Number(requiredCapability) <= Number(membership.capability)
@@ -195,8 +195,8 @@ export function hasCapabilityOnGroup(user: User, group: Group, requiredCapabilit
 	return false
 }
 
-export function isSharedGroupOwner(sharedGroup: Group, user: Id | User): boolean {
-	return !!(sharedGroup.user && isSameId(sharedGroup.user, typeof user === "string" ? user : getEtId(user)))
+export function isSharedGroupOwner(sharedGroup: Group, user: Id): boolean {
+	return isNotNull(sharedGroup.user) && isSameSingleId(sharedGroup.user, user)
 }
 
 export type GroupMemberInfo = {
@@ -211,8 +211,6 @@ export function getMemberCapability(memberInfo: GroupMemberInfo, group: Group): 
 
 	return downcast(memberInfo.member.capability)
 }
-
-export const GroupTypeNameByCode = reverse(GroupType)
 
 const DEFAULT_GROUP_TYPE = GroupType.Calendar
 

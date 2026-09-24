@@ -1,0 +1,57 @@
+import { EnvProvider } from "@tutao/app-env"
+import { CredentialsProvider } from "../../../common/misc/credentials/CredentialsProvider"
+import { MobilePaymentsFacade, MobileSystemFacade } from "@tutao/native-bridge/generatedIpc/types"
+import { EntityClient } from "../../../../platform-kit/network/EntityClient"
+import { LoginController } from "../../../common/api/main/LoginController"
+import { ThemeController } from "../../../../ui/ThemeController"
+import { WhitelabelThemeGenerator } from "../../../../ui/WhitelabelThemeGenerator"
+import { CustomerFacade } from "../../../common/api/worker/facades/lazy/CustomerFacade"
+import { SettingsViewSection } from "../../../common/settings/Interfaces"
+import { lang } from "../../../../ui/utils/LanguageViewModel"
+import {
+	adminSettingsSection,
+	appearanceSettings,
+	calendarSettings,
+	loginSettings,
+	subscriptionSettingsSection,
+} from "../../../common/settings/standardSettings"
+import { SettingsFolder } from "../../../common/settings/SettingsFolder"
+import { Icons } from "../../../../ui/base/icons/Icons"
+import { NotificationSettingsViewer } from "./NotificationSettingsViewer"
+
+EnvProvider.assertMainOrNode()
+
+export function makeCalendarAppSettings(
+	credentialsProvider: CredentialsProvider,
+	systemFacade: MobileSystemFacade,
+	entityClient: EntityClient,
+	logins: LoginController,
+	themeController: ThemeController,
+	whitelabelThemeGenerator: WhitelabelThemeGenerator,
+	mobilePaymentsFacade: MobilePaymentsFacade,
+	customerFacade: CustomerFacade,
+): readonly SettingsViewSection[] {
+	return [
+		{
+			name: lang.getTranslation("userSettings_label"),
+			settings: [
+				loginSettings(credentialsProvider, systemFacade),
+				calendarSettings(entityClient, logins.getUserController()),
+				appearanceSettings(),
+				notificationSettings(),
+			],
+		},
+		adminSettingsSection(logins, entityClient, themeController, whitelabelThemeGenerator, customerFacade),
+		subscriptionSettingsSection(logins, mobilePaymentsFacade),
+	]
+}
+
+export function notificationSettings(): SettingsFolder<unknown> {
+	return new SettingsFolder(
+		() => "notificationSettings_action",
+		() => Icons.BellFilled,
+		"notifications",
+		() => new NotificationSettingsViewer(),
+		undefined,
+	)
+}

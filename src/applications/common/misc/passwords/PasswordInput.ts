@@ -7,10 +7,10 @@ import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { theme } from "../../../../ui/theme.js"
 import { scaleToVisualPasswordStrength } from "./PasswordUtils.js"
 import { px, size } from "../../../../ui/size.js"
-import { lang } from "../../../../ui/utils/LanguageViewModel.js"
+import { lang, Translation } from "../../../../ui/utils/LanguageViewModel.js"
 
 export interface PasswordInputAttributes {
-	ariaLabel: string
+	ariaLabel: Translation
 	password: string
 	strength: number
 	oninput: (newValue: string) => unknown
@@ -48,7 +48,7 @@ export class PasswordInput implements ClassComponent<PasswordInputAttributes> {
 			}),
 			m(IconButton, {
 				size: ButtonSize.Compact,
-				title: this.showPassword ? "concealPassword_action" : "revealPassword_action",
+				label: this.showPassword ? "concealPassword_action" : "revealPassword_action",
 				icon: this.showPassword ? Icons.EyeCrossedFilled : Icons.EyeFilled,
 				click: () => (this.showPassword = !this.showPassword),
 			}),

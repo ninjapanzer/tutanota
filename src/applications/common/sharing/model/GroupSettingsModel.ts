@@ -13,7 +13,7 @@
  *   - current user is not the group owner. In this case we display both names, it is only possible to edit "customized
  *     name"
  */
-import { getEtId, isSameId } from "@tutao/meta"
+import { getEtId, idToElementId, isSameSingleId } from "@tutao/meta"
 import { createGroupSettings, GroupSettings } from "@tutao/entities/tutanota"
 import { GroupInfo, GroupTypeRef } from "@tutao/entities/sys"
 import { isSharedGroupOwner } from "../../../../entities/sys/Utils"
@@ -21,7 +21,7 @@ import { LoginController } from "../../api/main/LoginController"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { getCustomSharedGroupName, getSharedGroupName, loadGroupMembers } from "../GroupUtils"
 import { noOp, ofClass } from "@tutao/utils"
-import * as restError from "@tutao/rest-client/error"
+import { LockedError } from "@tutao/rest-client/error"
 
 /** When there is only a single name that can be edited */
 export interface SingleGroupNameData {
@@ -46,7 +46,7 @@ export class GroupSettingsModel {
 	) {}
 
 	async getGroupNameData(groupInfo: GroupInfo): Promise<Readonly<GroupNameData>> {
-		const group = await this.entityClient.load(GroupTypeRef, groupInfo.group)
+		const group = await this.entityClient.load(GroupTypeRef, idToElementId(groupInfo.group))
 		const groupMembers = await loadGroupMembers(group, this.entityClient)
 
 		const userSettingsGroupRoot = this.loginController.getUserController().userSettingsGroupRoot
@@ -104,7 +104,7 @@ export class GroupSettingsModel {
 
 	async updateGroupSettings(groupInfo: GroupInfo, newSettings: Partial<GroupSettings>) {
 		const { userSettingsGroupRoot } = this.loginController.getUserController()
-		const existingGroupSettings = userSettingsGroupRoot.groupSettings.find((gc) => isSameId(gc.group, groupInfo.group)) ?? null
+		const existingGroupSettings = userSettingsGroupRoot.groupSettings.find((gc) => isSameSingleId(gc.group, groupInfo.group)) ?? null
 
 		if (existingGroupSettings) {
 			Object.assign(existingGroupSettings, newSettings)
@@ -120,6 +120,6 @@ export class GroupSettingsModel {
 			userSettingsGroupRoot.groupSettings.push(newGroupSettings)
 		}
 
-		await this.entityClient.update(userSettingsGroupRoot).catch(ofClass(restError.LockedError, noOp))
+		await this.entityClient.update(userSettingsGroupRoot).catch(ofClass(LockedError, noOp))
 	}
 }

@@ -29,7 +29,7 @@ pipeline {
 
 	options {
 		// as long as tests like node/browser/android are run sequentially the timeout needs to be higher than 10 minutes
-		timeout(time: 15, unit: 'MINUTES')
+		timeout(time: 20, unit: 'MINUTES')
 		// this prevents jenkins from running the "Check out from version control" step in every stage.
 		// we're running several stages in parallel on the same folder, which means git will run in parallel, which
 		// it can't because it places a lock file in .git
@@ -132,7 +132,7 @@ pipeline {
 							// must be done before we can load libraries
 							initWorkspace(changeset, params.SOURCE_BRANCH, params.TARGET_BRANCH, params.CLEAN_WORKSPACE)
 							def util = load "ci/jenkins-lib/util.groovy"
-							def NODE_MAC_PATH = util.findNodeMacPath("22")
+							def NODE_MAC_PATH = util.findNodeMacPath("24")
 							withEnv(["PATH+NODE_MAC_PATH=${NODE_MAC_PATH}"]) {
 								installNpmPackages()
 								prepareSwift()
@@ -559,7 +559,7 @@ void testAndroid() {
 		mkdir -p build-drive-app
 		cd app-android
 		./gradlew lint -PtargetABI=x86_64 --quiet
-		./gradlew test -PtargetABI=x86_64
+		./gradlew unittest -PtargetABI=x86_64
 		./gradlew itest -PtargetABI=x86_64
 	'''
 }

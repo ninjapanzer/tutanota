@@ -1,12 +1,12 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { client } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../../../platform-kit/app-env/boot/ClientDetector.js"
 import { formatDate, formatDateWithWeekdayAndYear, formatMonthWithFullYear } from "../../../../../ui/utils/Formatter.js"
-import type { MaybeTranslation } from "../../../../../ui/utils/LanguageViewModel.js"
+import type { MaybeTranslation, Translation } from "../../../../../ui/utils/LanguageViewModel.js"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
 import { px } from "../../../../../ui/size.js"
 import { theme } from "../../../../../ui/theme.js"
 
-import { getStartOfDay, isSameDayOfDate, memoized, NBSP } from "../../../../../platform-kit/utils"
+import { getStartOfDay, isSameDayOfDate, memoized, NBSP, Nullable } from "../../../../../platform-kit/utils"
 import { DateTime } from "luxon"
 import { getAllDayDateLocal } from "../../../../common/api/common/utils/CommonCalendarUtils.js"
 import { LegacyTextField, LegacyTextFieldType } from "../../../../../ui/base/LegacyTextField.js"
@@ -15,9 +15,10 @@ import { parseDate } from "../../../../common/misc/DateParser.js"
 import renderSwitchMonthArrowIcon from "../../../../../ui/base/buttons/ArrowButton.js"
 import { getCalendarMonth } from "../CalendarGuiUtils.js"
 import { isKeyPressed, keyboardEventToKeyPress, keyHandler, KeyPress, useKeyHandler } from "../../../../../ui/utils/KeyManager.js"
-import { isApp, isIOSApp, Keys, TabIndex } from "../../../../../platform-kit/app-env"
+import { EnvProvider, TabIndex } from "../../../../../platform-kit/app-env"
 import { AriaPopupType } from "../../../../../ui/AriaUtils.js"
 import { InputButton, InputButtonAttributes, InputButtonVariant } from "../../../../../ui/base/InputButton.js"
+import { Keys } from "../../../../../ui/utils/KeyboardKeys"
 
 export enum PickerPosition {
 	TOP,
@@ -25,10 +26,10 @@ export enum PickerPosition {
 }
 
 export interface DatePickerAttrs {
-	date?: Date
+	date: Nullable<Date>
 	onDateSelected: (date: Date) => unknown
 	startOfTheWeekOffset: number
-	label: MaybeTranslation
+	label: Translation
 	nullSelectionText?: MaybeTranslation
 	disabled?: boolean
 	rightAlignDropdown?: boolean
@@ -54,7 +55,7 @@ export class DatePicker implements Component<DatePickerAttrs> {
 	private domInput: HTMLElement | null = null
 	private documentInteractionListener: ((e: MouseEvent) => unknown) | null = null
 	private textFieldHasFocus: boolean = false
-	private previousPassedDownDate?: Date
+	private previousPassedDownDate: Nullable<Date> = null
 
 	constructor({ attrs }: Vnode<DatePickerAttrs>) {
 		this.inputText = attrs.date ? formatDate(attrs.date) : ""
@@ -62,7 +63,7 @@ export class DatePicker implements Component<DatePickerAttrs> {
 	}
 
 	view({ attrs }: Vnode<DatePickerAttrs>): Children {
-		const date = attrs.date
+		const date = attrs.date ?? null
 
 		// If the user is interacting with the textfield, then we want the textfield to accept their input, so never override the text
 		// Otherwise, we want to it to reflect whatever date has been passed in, because it may have been changed programmatically
@@ -79,13 +80,13 @@ export class DatePicker implements Component<DatePickerAttrs> {
 			this.showingDropdown ? this.renderDropdown(attrs) : null,
 			// For mobile devices we render a native date picker, it's easier to use and more accessible.
 			// We render invisible input which opens native picker on interaction.
-			client.isMobileDevice() && !attrs.useInputButton ? this.renderMobileDateInput(attrs) : null,
+			ClientDetector.get().isMobileDevice() && !attrs.useInputButton ? this.renderMobileDateInput(attrs) : null,
 		])
 	}
 
 	private renderInputButtonPicker({ disabled, date, onDateSelected, label, nullSelectionText }: DatePickerAttrs): Children {
 		return m.fragment({}, [
-			isApp()
+			EnvProvider.get().isApp()
 				? m("input.fill-absolute.invisible.tutaui-button-outline", {
 						disabled,
 						type: LegacyTextFieldType.Date,
@@ -105,8 +106,8 @@ export class DatePicker implements Component<DatePickerAttrs> {
 					})
 				: null,
 			m(InputButton, {
-				tabIndex: Number(isApp() ? TabIndex.Programmatic : TabIndex.Default),
-				ariaLabel: lang.getTranslationText(label),
+				tabIndex: Number(EnvProvider.get().isApp() ? TabIndex.Programmatic : TabIndex.Default),
+				ariaLabel: label,
 				inputValue: this.inputText,
 				oninput: (newValue: string) => (this.inputText = newValue),
 				display: date ? formatDateWithWeekdayAndYear(date) : nullSelectionText ? lang.getTranslationText(nullSelectionText) : NBSP,
@@ -136,7 +137,7 @@ export class DatePicker implements Component<DatePickerAttrs> {
 						event.stopPropagation()
 					}
 				},
-				containerStyle: isApp()
+				containerStyle: EnvProvider.get().isApp()
 					? {
 							zIndex: "2",
 							position: "inherit",
@@ -306,7 +307,7 @@ export class DatePicker implements Component<DatePickerAttrs> {
 			// On iOS we use "onfocusout" instead of "oninput" because the native date picker changes the input immediately, triggering an "oninput" event.
 			// And tapping "done" has the same effect as tapping outside the picker, it only closes the picker.
 			// Note that "onfocusout" firing on picker opening and closing only happens on iOS.
-			[isIOSApp() ? "onfocusout" : "oninput"]: ({ target }: { target: HTMLInputElement }) => {
+			[EnvProvider.get().isIOSApp() ? "onfocusout" : "oninput"]: ({ target }: { target: HTMLInputElement }) => {
 				this.handleNativeInput(target, onDateSelected)
 			},
 		})

@@ -1,19 +1,20 @@
 import { Commands, Request, Transport } from "../../../../app-kit/native-bridge/shared/MessageTypes"
 import { WebWorkerTransport } from "../../../../app-kit/native-bridge/common/threading/WebTransport.js"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import type { DeferredObject } from "@tutao/utils"
 import { defer, downcast } from "@tutao/utils"
 import { handleUncaughtError } from "../../misc/ErrorHandler"
 import { DelayedImpls, exposeLocalDelayed, exposeRemote } from "../common/WorkerProxy"
 import type { RestClient } from "@tutao/rest-client"
-import { EntropyDataChunk } from "../../../../platform-kit/base/facades/EntropyFacade.js"
+import { EntropySource } from "@tutao/crypto"
 import { objToError } from "../common/utils/ErrorUtils.js"
 import { CommonLocator } from "./CommonLocator.js"
 import { CommonWorkerInterface, MainInterface } from "../worker/workerInterfaces.js"
 import { MessageDispatcher } from "../../../../app-kit/native-bridge/shared/MessageDispatcher.js"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { EntropyDataChunk } from "../../../../platform-kit/crypto/random/EntropyDataChunk"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 type ProgressUpdater = (progress: number) => unknown
 type MainRequest = Request<MainRequestType>
@@ -47,7 +48,7 @@ export class WorkerClient {
 			}
 			this._dispatcher = new MessageDispatcher(new WebWorkerTransport(worker), this.queueCommands(locator), "main-worker", objToError)
 			await this._dispatcher.postRequest(
-				new Request("setup", [window.env, this.getInitialEntropy(), client.browserData(), locator.clientModelInfo.getApps()]),
+				new Request("setup", [window.env, this.getInitialEntropy(), ClientDetector.get().browserData(), locator.clientModelInfo.getApps()]),
 			)
 		} else {
 			// node: we do not use workers but connect the client and the worker queues directly with each other
@@ -55,7 +56,7 @@ export class WorkerClient {
 			// @ts-ignore
 			const WorkerImpl = globalThis.testWorker
 			const workerImpl = new WorkerImpl(this, true)
-			await workerImpl.init(client.browserData())
+			await workerImpl.init(ClientDetector.get().browserData())
 			workerImpl._queue._transport = {
 				postMessage: (msg: any) => this._dispatcher.handleMessage(msg),
 			}
@@ -139,7 +140,7 @@ export class WorkerClient {
 		for (let i = 0; i < valueList.length; i++) {
 			// 32 because we have 32-bit values Uint32Array
 			entropy.push({
-				source: "random",
+				source: EntropySource.Random,
 				entropy: 32,
 				data: valueList[i],
 			})

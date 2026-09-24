@@ -1,16 +1,24 @@
-import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../../../app-kit/local-store/IdentityKeyTrustDatabase"
 import { KeyVerificationMismatchError } from "../../../network/error/KeyVerificationMismatchError"
-import { assertWorkerOrNode, EncryptionKeyVerificationState, IdentityKeySourceOfTrust, ProgrammingError } from "@tutao/app-env"
-import { concat, uint8ArrayToHex, Versioned } from "@tutao/utils"
-import { ed25519PublicKeyToBytes, PublicKey, PublicKeyIdentifier, PublicKeyIdentifierType, sha256Hash, SigningKeyPairType } from "@tutao/crypto"
-import { PublicKeySignatureFacade } from "../../crypto/PublicKeySignatureFacade"
-import { PublicIdentityKeyProvider } from "../../crypto/PublicIdentityKeyProvider"
-import { SigningPublicKey } from "../../../crypto/encryption/Ed25519"
-import { MaybeSignedPublicKey } from "../../../../app-kit/local-store/PublicEncryptionKeyCache"
+import { EncryptionKeyVerificationState, EnvProvider, IdentityKeySourceOfTrust, ProgrammingError } from "@tutao/app-env"
+import { concat, isNotNull, uint8ArrayToHex, Versioned } from "@tutao/utils"
+import {
+	ed25519PublicKeyToBytes,
+	PublicKey,
+	PublicKeyIdentifier,
+	PublicKeyIdentifierType,
+	sha256Hash,
+	SigningKeyPairType,
+	SigningPublicKey,
+} from "@tutao/crypto"
+import { PublicKeySignatureFacade } from "../../base-crypto/PublicKeySignatureFacade"
+import { PublicIdentityKeyProvider } from "../../base-crypto/PublicIdentityKeyProvider"
+import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../base-crypto/persistence/IdentityKeyTrustDatabase"
+import { MaybeSignedPublicKey } from "../../base-crypto/MaybeSignedPublicKey"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
-export type TrustedIdentity = TrustDBEntry & { fingerprint: Hex }
+export type FingerPrintHex = { fingerprint: Hex }
+export type TrustedIdentity = TrustDBEntry & FingerPrintHex
 
 export type VerifiedPublicEncryptionKey = {
 	publicEncryptionKey: Versioned<PublicKey>
@@ -33,7 +41,7 @@ export class KeyVerificationFacade {
 	) {}
 
 	//visible for testing
-	concatenateFingerprint(publicKey: Versioned<SigningPublicKey>): Uint8Array {
+	concatenateFingerprint(publicKey: Versioned<SigningPublicKey>): Uint8Array<ArrayBuffer> {
 		let keyMetadata = concat(new Uint8Array([publicKey.version, publicKey.object.type]))
 		return concat(keyMetadata, ed25519PublicKeyToBytes(publicKey.object.key))
 	}
@@ -65,7 +73,7 @@ export class KeyVerificationFacade {
 
 		// there is no identity key for the mailAddress (a legitimate case for now)
 		if (trustedIdentity == null) {
-			if (publicKeySignature) {
+			if (isNotNull(publicKeySignature)) {
 				throw new KeyVerificationMismatchError("signature but no identity key for: " + mailAddress)
 			}
 			return {
@@ -126,11 +134,11 @@ export class KeyVerificationFacade {
 		return identities
 	}
 
-	async untrust(mailAddress: string) {
+	async untrust(mailAddress: string): Promise<void> {
 		return this.identityKeyTrustDatabase.untrust(mailAddress)
 	}
 
-	async trust(mailAddress: string, identityKey: Versioned<SigningPublicKey>, sourceOfTrust: IdentityKeySourceOfTrust) {
+	async trust(mailAddress: string, identityKey: Versioned<SigningPublicKey>, sourceOfTrust: IdentityKeySourceOfTrust): Promise<TrustDBEntry> {
 		return this.identityKeyTrustDatabase.trust(mailAddress, identityKey, sourceOfTrust)
 	}
 

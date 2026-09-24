@@ -7,14 +7,14 @@ import { memoized, noOp } from "../../../../../platform-kit/utils"
 import { lang, TranslationKey } from "../../../../../ui/utils/LanguageViewModel.js"
 import { BannerButton, BannerButtonAttrs } from "../../../../../ui/base/buttons/BannerButton.js"
 import { pureComponent } from "../../../../../ui/base/PureComponent.js"
-import { formatEventDuration } from "../CalendarGuiUtils.js"
 import { getLocationUrl } from "./EventPreviewView.js"
 import { isoDateToBirthday } from "../../../../common/api/common/utils/BirthdayUtils.js"
 import { createDropdown } from "../../../../../ui/base/Dropdown.js"
 import { writeMail } from "../../../../mail-app/contacts/view/ContactView.js"
 import { getContactTitle } from "../../../../common/contactsFunctionality/ContactUtils"
 import { CalendarEvent, Contact } from "@tutao/entities/tutanota"
-import { client } from "../../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../../platform-kit/app-env/boot/ClientDetector"
+import { formatEventDuration } from "../DateTimeTextFormatterUtils"
 
 export type ContactPreviewViewAttrs = {
 	event: CalendarEvent
@@ -112,7 +112,7 @@ const ActionButtons = pureComponent((contact: Contact) => {
 			contact.mailAddresses.map((mailAddress, index) => ({
 				label: lang.makeTranslation("mailAddress_label", `${renderSuffix(mailAddress.customTypeName)}${mailAddress.address}`),
 				click: () => {
-					if (client.isCalendarApp()) {
+					if (ClientDetector.get().isCalendarApp()) {
 						simulateMailToClick(mailAddress.address)
 						return
 					}
@@ -151,9 +151,9 @@ const ActionButtons = pureComponent((contact: Contact) => {
 
 	const onSendMailClick = (event: MouseEvent, dom: HTMLElement) => {
 		if (singleEmailAdress) {
-			if (client.isCalendarApp()) {
+			if (ClientDetector.get().isCalendarApp()) {
 				return
-			} else if (!client.isCalendarApp()) {
+			} else if (!ClientDetector.get().isCalendarApp()) {
 				return writeMail({
 					name: `${contact.firstName} ${contact.lastName}`.trim(),
 					address: contact.mailAddresses[0].address,
@@ -168,7 +168,9 @@ const ActionButtons = pureComponent((contact: Contact) => {
 	return m(".full-width.flex.items-center.flex-end.mt-8.gap-8.mr-8", [
 		contact.mailAddresses.length
 			? m(
-					singleEmailAdress && client.isCalendarApp() ? `a[href="mailto:${contact.mailAddresses[0].address}"][target=_blank].no-text-decoration` : "",
+					singleEmailAdress && ClientDetector.get().isCalendarApp()
+						? `a[href="mailto:${contact.mailAddresses[0].address}"][target=_blank].no-text-decoration`
+						: "",
 					m(
 						BannerButton,
 						makeActionButtonAttrs(onSendMailClick, "sendMail_label", emailButtonColors, renderIcon(Icons.MailFilled, emailButtonColors.color)),

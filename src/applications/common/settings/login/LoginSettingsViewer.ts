@@ -9,11 +9,10 @@ import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { elementIdPart, getElementId } from "@tutao/meta"
 import { assertNotNull, LazyLoaded, neverNull, ofClass } from "@tutao/utils"
 import { formatDateTimeFromYesterdayOn } from "../../../../ui/utils/Formatter.js"
-import { assertMainOrNode, CredentialEncryptionMode, isDesktop, SessionState } from "@tutao/app-env"
+import { CredentialEncryptionMode, EnvProvider, SessionState } from "@tutao/app-env"
 import { SecondFactorsEditForm } from "./secondfactor/SecondFactorsEditForm.js"
 
-import * as restError from "@tutao/rest-client/error"
-import { isOfflineError } from "@tutao/rest-client/error"
+import { isOfflineError, NotFoundError } from "@tutao/rest-client/error"
 import * as RecoverCodeDialog from "./RecoverCodeDialog.js"
 import { attachDropdown } from "../../../../ui/base/Dropdown.js"
 import { ExpanderButton, ExpanderPanel } from "../../../../ui/base/Expander.js"
@@ -37,7 +36,7 @@ import { TextField } from "../../../../ui/base/TextField"
 import { theme } from "../../../../ui/theme"
 import { Checkbox } from "../../../../ui/base/Checkbox"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class LoginSettingsViewer implements UpdatableSettingsViewer {
 	private readonly _mailAddress = stream(neverNull(locator.logins.getUserController().userGroupInfo.mailAddress))
@@ -66,7 +65,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 	}
 
 	private async updateAppLockData() {
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			this.credentialEncryptionMode = await this.credentialsProvider.getCredentialEncryptionMode()
 		} else if (this.mobileSystemFacade) {
 			this.appLockMethod = await this.mobileSystemFacade.getAppLockMethod()
@@ -82,7 +81,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 			isReadOnly: true,
 		}
 		const changePasswordButtonAttrs: IconButtonAttrs = {
-			title: "changePassword_label",
+			label: "changePassword_label",
 			click: () => showChangeOwnPasswordDialog(),
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,
@@ -97,11 +96,11 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 		}
 		const recoveryCodeDropdownButtonAttrs: IconButtonAttrs = attachDropdown({
 			mainButtonAttrs: {
-				title: "edit_action",
+				label: "edit_action",
 				icon: Icons.PenFilled,
 				size: ButtonSize.Compact,
 			},
-			childAttrs: () => [
+			childAttrs: async () => [
 				locator.logins.getUserController().user.auth?.recoverCode
 					? {
 							label: "show_action",
@@ -216,7 +215,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 			injectionsRight: () =>
 				isAdmin
 					? m(IconButton, {
-							title: "edit_action",
+							label: "edit_action",
 							click: () => this.onChangeName(groupInfo),
 							icon: Icons.PenFilled,
 							size: ButtonSize.Compact,
@@ -294,12 +293,12 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 				isReadOnly: true,
 				injectionsRight: () =>
 					m(IconButton, {
-						title: "edit_action",
+						label: "edit_action",
 						icon: Icons.PenFilled,
 						click: () => onEdit(),
 					}),
 			})
-		} else if (isDesktop()) {
+		} else if (EnvProvider.get().isDesktop()) {
 			const usedMode = this.credentialEncryptionMode ?? CredentialEncryptionMode.DEVICE_LOCK
 
 			return m(LegacyTextField, {
@@ -309,7 +308,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 				isReadOnly: true,
 				injectionsRight: () =>
 					m(IconButton, {
-						title: "edit_action",
+						label: "edit_action",
 						icon: Icons.PenFilled,
 						click: () => showCredentialsEncryptionModeDialog(this.credentialsProvider).then(() => this.updateAppLockData()),
 					}),
@@ -350,7 +349,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 						actionButtonAttrs: thisSession
 							? null
 							: ({
-									title: "closeSession_action",
+									label: "closeSession_action",
 									click: () => {
 										this._closeSession(session)
 									},
@@ -396,13 +395,13 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 
 	private _closeSession(session: Session) {
 		locator.entityClient.erase(session).catch(
-			ofClass(restError.NotFoundError, () => {
+			ofClass(NotFoundError, () => {
 				console.log(`session ${JSON.stringify(session._id)} already deleted`)
 			}),
 		)
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(SessionTypeRef, update)) {
 				await this._updateSessions()
@@ -410,7 +409,7 @@ export class LoginSettingsViewer implements UpdatableSettingsViewer {
 				m.redraw()
 			}
 
-			await this._secondFactorsForm.entityEventReceived(update)
+			await this._secondFactorsForm.processEntityUpdate(update)
 		}
 	}
 

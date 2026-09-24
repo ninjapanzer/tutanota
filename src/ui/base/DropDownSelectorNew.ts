@@ -1,18 +1,19 @@
 import m, { Children, ClassComponent, Vnode } from "mithril"
-import { createDropdown } from "./Dropdown.js"
+import { createDropdown, DropdownMultilineButtonAttrs } from "./Dropdown.js"
 import type { AllIcons } from "./Icon"
-import { type lazy, noOp } from "../../platform-kit/utils"
+import { type lazy, noOp } from "@tutao/utils"
 import { lang, MaybeTranslation } from "../utils/LanguageViewModel"
 import { ClickHandler, getOperatingClasses } from "./GuiUtils"
-import { assertMainOrNode } from "../../platform-kit/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { IconButton } from "./IconButton"
 import { ButtonSize } from "./ButtonSize"
 import { TextField, TextFieldAttrs } from "./TextField"
 import { Icons } from "./icons/Icons"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type SelectorItem<T> = {
 	name: string
+	secondaryTextLine?: string
 	value: T
 	selectable?: boolean
 	icon?: AllIcons
@@ -21,7 +22,7 @@ export type SelectorItem<T> = {
 export type SelectorItemList<T> = ReadonlyArray<SelectorItem<T>>
 
 export interface DropDownSelectorNewAttrs<T> {
-	label: MaybeTranslation
+	label?: MaybeTranslation
 	items: SelectorItemList<T>
 	selectedValue: T | null
 	/** Override what is displayed for the selected value in the text field (but not in the dropdown) */
@@ -45,7 +46,6 @@ export class DropDownSelectorNew<T> implements ClassComponent<DropDownSelectorNe
 	view(vnode: Vnode<DropDownSelectorNewAttrs<T>>): Children {
 		const a = vnode.attrs
 		const text = this.valueToText(a, a.selectedValue) || ""
-		const labelText = lang.getTranslationText(a.label)
 
 		return m(TextField, {
 			label: a.label,
@@ -64,7 +64,7 @@ export class DropDownSelectorNew<T> implements ClassComponent<DropDownSelectorNe
 							{ style: { width: "30px", height: "30px" } },
 							m(IconButton, {
 								icon: Icons.ArrowDown,
-								title: "show_action",
+								label: "show_action",
 								click: a.disabled ? noOp : this.createDropdown(a),
 								size: ButtonSize.Compact,
 							}),
@@ -79,6 +79,20 @@ export class DropDownSelectorNew<T> implements ClassComponent<DropDownSelectorNe
 				return a.items
 					.filter((item) => item.selectable !== false)
 					.map((item) => {
+						if (item.secondaryTextLine && item.icon) {
+							return {
+								label: lang.makeTranslation(item.name, item.name),
+								onclick: () => {
+									a.selectionChangedHandler?.(item.value)
+									m.redraw()
+								},
+								selected: a.selectedValue === item.value,
+								icon: item.icon,
+								text: lang.makeTranslation(item.name, item.name),
+								secondaryText: lang.makeTranslation(item.secondaryTextLine, item.secondaryTextLine),
+							} satisfies DropdownMultilineButtonAttrs
+						}
+
 						return {
 							label: lang.makeTranslation(item.name, item.name),
 							click: () => {
@@ -102,7 +116,9 @@ export class DropDownSelectorNew<T> implements ClassComponent<DropDownSelectorNe
 		if (selectedItem) {
 			return selectedItem.name
 		} else {
-			console.log(`Dropdown ${lang.getTranslationText(a.label)} couldn't find element for value: ${String(JSON.stringify(value))}`)
+			console.log(
+				`Dropdown ${a.label ? lang.getTranslationText(a.label) : "a.label is null"} couldn't find element for value: ${String(JSON.stringify(value))}`,
+			)
 			return null
 		}
 	}

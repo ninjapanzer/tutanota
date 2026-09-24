@@ -3,16 +3,18 @@ import { CalendarAttendeeStatus, MailMethod, mailMethodToCalendarMethod } from "
 import { InfoLink, lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel.js"
 import { makeInvitationCalendarFile } from "../export/CalendarExporter.js"
 import { getAttendeeStatus, getTimeZone } from "../../../common/calendar/date/CalendarUtils.js"
-import { difference, noOp, ofClass } from "../../../../platform-kit/utils"
+import { difference, noOp } from "@tutao/utils"
 import type { SendMailModel } from "../../../common/mailFunctionality/SendMailModel.js"
 import { windowFacade } from "../../../common/misc/WindowFacade.js"
 import { RecipientsNotFoundError } from "../../../../platform-kit/network/error/RecipientsNotFoundError.js"
 import { findRecipientWithAddress } from "../../../common/api/common/utils/CommonCalendarUtils.js"
 
-import { calendarAttendeeStatusSymbol, eventInviteEmailTypeToCalendarAttendeeStatus, formatEventDuration } from "../gui/CalendarGuiUtils.js"
+import { calendarAttendeeStatusSymbol, eventInviteEmailTypeToCalendarAttendeeStatus } from "../gui/CalendarGuiUtils.js"
 import { RecipientField } from "../../../common/mailFunctionality/SharedMailUtils.js"
 import { getLocationUrl } from "../gui/eventpopup/EventPreviewView"
-import { ProgrammingError } from "../../../../platform-kit/app-env"
+import { ProgrammingError } from "@tutao/app-env"
+import { ofClassAsync } from "../../../../platform-kit/utils/PromiseUtils"
+import { formatEventDuration } from "../gui/DateTimeTextFormatterUtils"
 
 export class CalendarNotificationSender {
 	/** Used for knowing how many emails are in the process of being sent. */
@@ -84,7 +86,7 @@ export class CalendarNotificationSender {
 			event,
 			sender,
 		}).catch(
-			ofClass(RecipientsNotFoundError, (e) => {
+			ofClassAsync(RecipientsNotFoundError, async (e) => {
 				// we want to delete the event even if the recipient is not an existing tutanota address
 				// and just exclude them from sending out updates but leave the event untouched for other recipients
 				const invalidRecipients = e.message.split("\n")

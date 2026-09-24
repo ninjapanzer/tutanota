@@ -730,6 +730,8 @@ pub struct CustomerInfo {
 	pub confirmedHuman: bool,
 	#[serde(rename = "2732")]
 	pub adAttributionCampaignId: Option<String>,
+	#[serde(rename = "2781")]
+	pub renewalReminderSentForSubscriptionEnd: Option<DateTime>,
 	#[serde(rename = "158")]
 	pub customer: GeneratedId,
 	#[serde(rename = "159")]
@@ -754,6 +756,8 @@ pub struct CustomerInfo {
 	pub managedByPartner: Option<GeneratedId>,
 	#[serde(rename = "2683")]
 	pub partnerManagedCustomers: Option<GeneratedId>,
+	#[serde(rename = "2770")]
+	pub revocationRequest: Option<IdTupleGenerated>,
 }
 
 impl Entity for CustomerInfo {
@@ -1897,7 +1901,7 @@ pub struct Booking {
 	#[serde(rename = "721")]
 	pub items: Vec<BookingItem>,
 	#[serde(rename = "2738")]
-	pub subscriptionReference: Option<SubscriptionReference>,
+	pub subscriptionReference: SubscriptionReference,
 }
 
 impl Entity for Booking {
@@ -2115,7 +2119,7 @@ pub struct PaymentDataServicePutData {
 	#[serde(rename = "797")]
 	pub invoiceAddress: String,
 	#[serde(rename = "798")]
-	pub invoiceCountry: String,
+	pub invoiceCountry: Option<String>,
 	#[serde(rename = "799")]
 	pub invoiceVatIdNo: String,
 	#[serde(rename = "800")]
@@ -2275,6 +2279,8 @@ pub struct PriceServiceReturn {
 	pub currentPriceNextPeriod: Option<PriceData>,
 	#[serde(rename = "865")]
 	pub futurePriceNextPeriod: Option<PriceData>,
+	#[serde(rename = "2745")]
+	pub futurePriceThisPeriod: Option<PriceData>,
 }
 
 impl Entity for PriceServiceReturn {
@@ -5990,6 +5996,8 @@ impl Entity for AdminGroupKeyRotationGetOut {
 pub struct SurveyDataPostIn {
 	#[serde(rename = "2564")]
 	pub _format: i64,
+	#[serde(rename = "2782")]
+	pub surveyType: i64,
 	#[serde(rename = "2565")]
 	pub surveyData: SurveyData,
 }
@@ -6429,6 +6437,138 @@ impl Entity for SubscriptionReference {
 		TypeRef {
 			app: AppName::Sys,
 			type_id: TypeId::from(2733),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct RenewalPreferenceServicePostIn {
+	#[serde(rename = "2741")]
+	pub _format: i64,
+	#[serde(rename = "2742")]
+	pub isEnabled: bool,
+	#[serde(rename = "2743")]
+	pub customerId: GeneratedId,
+}
+
+impl Entity for RenewalPreferenceServicePostIn {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2740),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct InstanceKdfNonce {
+	#[serde(rename = "2747")]
+	pub _id: Option<CustomId>,
+	#[serde(rename = "2749")]
+	pub instanceList: Option<GeneratedId>,
+	#[serde(rename = "2750")]
+	pub instanceId: GeneratedId,
+	#[serde(rename = "2751")]
+	#[serde(with = "serde_bytes")]
+	pub kdfNonce: Vec<u8>,
+	#[serde(rename = "2748")]
+	pub typeInfo: TypeInfo,
+}
+
+impl Entity for InstanceKdfNonce {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2746),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct UpdateKdfNoncePostIn {
+	#[serde(rename = "2753")]
+	pub _format: i64,
+	#[serde(rename = "2754")]
+	pub instanceKdfNonce: InstanceKdfNonce,
+}
+
+impl Entity for UpdateKdfNoncePostIn {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2752),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct UpdateKdfNoncePostOut {
+	#[serde(rename = "2756")]
+	pub _format: i64,
+	#[serde(rename = "2757")]
+	#[serde(with = "serde_bytes")]
+	pub kdfNonce: Vec<u8>,
+}
+
+impl Entity for UpdateKdfNoncePostOut {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2755),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct SubscriptionRevocationRequest {
+	#[serde(rename = "2761")]
+	pub _id: Option<IdTupleGenerated>,
+	#[serde(rename = "2762")]
+	pub _permissions: GeneratedId,
+	#[serde(rename = "2763")]
+	pub _format: i64,
+	#[serde(rename = "2764")]
+	pub _ownerGroup: Option<GeneratedId>,
+	#[serde(rename = "2766")]
+	pub revocationRequestDate: DateTime,
+	#[serde(rename = "2767")]
+	pub isRefundProcessed: bool,
+	#[serde(rename = "2768")]
+	pub latestDowngradeFailedNotification: Option<DateTime>,
+	#[serde(rename = "2769")]
+	pub downgradeGracePeriodEnd: Option<DateTime>,
+	#[serde(rename = "2765")]
+	pub customer: GeneratedId,
+}
+
+impl Entity for SubscriptionRevocationRequest {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2759),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct SubscriptionRevocationServicePostIn {
+	#[serde(rename = "2772")]
+	pub _format: i64,
+	#[serde(rename = "2773")]
+	pub surveyData: Option<SurveyData>,
+}
+
+impl Entity for SubscriptionRevocationServicePostIn {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2771),
 		}
 	}
 }

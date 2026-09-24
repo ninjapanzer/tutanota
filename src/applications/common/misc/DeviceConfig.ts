@@ -1,18 +1,18 @@
 import { base64ToUint8Array, getDayShifted, getStartOfDay, typedEntries, uint8ArrayToBase64 } from "@tutao/utils"
 import type { LanguageCode } from "../../../ui/utils/LanguageViewModel"
 import type { ThemePreference } from "../../../ui/theme"
-import { assertMainOrNodeBoot, CredentialEncryptionMode, isApp, ProgrammingError } from "@tutao/app-env"
+import { CredentialEncryptionMode, EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { PersistedAssignmentData, UsageTestStorage } from "./UsageTestModel"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { NewsItemStorage } from "./news/NewsModel.js"
 import { CredentialsInfo } from "@tutao/native-bridge/generatedIpc/types"
 import { CalendarViewType } from "../api/common/utils/CommonCalendarUtils.js"
-import { SyncStatus } from "../calendar/gui/ImportExportUtils.js"
+import { SyncStatus } from "../calendar/import/ImportExportUtils.js"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
 import { ThemeConfigurator } from "../../../ui/ThemeController"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 export const defaultThemePreference: ThemePreference = "auto:light|dark"
 
 export enum ListAutoSelectBehavior {
@@ -40,7 +40,8 @@ interface ConfigObject {
 	scheduledAlarmModelVersionPerUser: Record<Id, number>
 	_themeId: ThemePreference
 	_language: LanguageCode | null
-	_defaultCalendarView: Record<Id, CalendarViewType | null>
+	lastSelectedCalendarView: Record<Id, CalendarViewType | undefined>
+	defaultCalendarViewSetting: Record<Id, CalendarViewType | undefined | null>
 	/** map from user id to a list of calendar grouproots*/
 	_hiddenCalendars: Record<Id, Id[]>
 	/** map from user id to a list of expanded mailSets (elementId)*/
@@ -92,13 +93,15 @@ interface ConfigObject {
 	 * Which time the three days or week view will scroll to when opened
 	 */
 	scrollTime: number
+	/** map from user id to a list of collapsed mailGroups (mailGroupId)*/
+	collapsedMailGroups: Record<Id, Id[]>
 }
 
 /**
  * Device config for internal user auto login. Only one config per device is stored.
  */
 export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeConfigurator {
-	public static readonly Version = 7
+	public static readonly Version = 9
 	public static readonly LocalStorageKey = "tutanotaConfig"
 
 	private config!: ConfigObject
@@ -137,7 +140,8 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 			_themeId: loadedConfig._themeId ?? defaultThemePreference,
 			scheduledAlarmModelVersionPerUser: loadedConfig.scheduledAlarmModelVersionPerUser ?? {},
 			_language: loadedConfig._language ?? null,
-			_defaultCalendarView: loadedConfig._defaultCalendarView ?? {},
+			lastSelectedCalendarView: loadedConfig.lastSelectedCalendarView ?? {},
+			defaultCalendarViewSetting: loadedConfig.defaultCalendarViewSetting ?? {},
 			_hiddenCalendars: loadedConfig._hiddenCalendars ?? {},
 			expandedMailFolders: loadedConfig.expandedMailFolders ?? {},
 			_testDeviceId: loadedConfig._testDeviceId ?? null,
@@ -148,7 +152,8 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 			mailListDisplayMode: loadedConfig.mailListDisplayMode ?? MailListDisplayMode.CONVERSATIONS,
 			syncContactsWithPhonePreference: loadedConfig.syncContactsWithPhonePreference ?? {},
 			isCalendarDaySelectorExpanded: loadedConfig.isCalendarDaySelectorExpanded ?? false,
-			mailAutoSelectBehavior: loadedConfig.mailAutoSelectBehavior ?? (isApp() ? ListAutoSelectBehavior.NONE : ListAutoSelectBehavior.OLDER),
+			mailAutoSelectBehavior:
+				loadedConfig.mailAutoSelectBehavior ?? (EnvProvider.get().isApp() ? ListAutoSelectBehavior.NONE : ListAutoSelectBehavior.OLDER),
 			isSetupComplete: loadedConfig.isSetupComplete ?? false,
 			isCredentialsMigratedToNative: loadedConfig.isCredentialsMigratedToNative ?? false,
 			lastExternalCalendarSync: loadedConfig.lastExternalCalendarSync ?? {},
@@ -159,6 +164,7 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 			scrollTime: loadedConfig.scrollTime ?? 8,
 			installationDate: loadedConfig.installationDate ?? getStartOfDay(new Date()).getTime().toString(),
 			isUndoSendEnabled: loadedConfig.isUndoSendEnabled ?? true,
+			collapsedMailGroups: loadedConfig.collapsedMailGroups ?? {},
 		}
 
 		this.lastSyncStream(new Map(Object.entries(this.config.lastExternalCalendarSync)))
@@ -331,16 +337,34 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 		}
 	}
 
-	getDefaultCalendarView(userId: Id): CalendarViewType | null {
-		return this.config._defaultCalendarView[userId]
+	getLastSelectedCalendarView(userId: Id): CalendarViewType | null {
+		return this.config.lastSelectedCalendarView[userId] ?? null
 	}
 
-	setDefaultCalendarView(userId: Id, defaultView: CalendarViewType) {
-		if (this.config._defaultCalendarView[userId] !== defaultView) {
-			this.config._defaultCalendarView[userId] = defaultView
+	setLastSelectedCalendarView(userId: Id, defaultView: CalendarViewType) {
+		if (this.config.lastSelectedCalendarView[userId] !== defaultView) {
+			this.config.lastSelectedCalendarView[userId] = defaultView
 
 			this.writeToStorage()
 		}
+	}
+
+	getDefaultCalenderViewSetting(userId: Id): CalendarViewType | null {
+		return this.config.defaultCalendarViewSetting[userId] ?? null
+	}
+
+	setDefaultCalendarViewSetting(userId: Id, setting: CalendarViewType | null) {
+		if (this.config.defaultCalendarViewSetting[userId] !== setting) {
+			this.config.defaultCalendarViewSetting[userId] = setting
+
+			this.writeToStorage()
+		}
+	}
+
+	getDefaultCalendarView(userId: Id): CalendarViewType {
+		const setting = this.getDefaultCalenderViewSetting(userId)
+		const lastSelected = this.getLastSelectedCalendarView(userId)
+		return setting ?? lastSelected ?? CalendarViewType.MONTH
 	}
 
 	getHiddenCalendars(user: Id): Id[] {
@@ -359,9 +383,21 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 		return this.config.expandedMailFolders[user] ?? []
 	}
 
+	getCollapsedMailGroups(user: Id): Id[] {
+		return this.config.collapsedMailGroups[user] ?? []
+	}
+
 	setExpandedFolders(user: Id, folders: Id[]) {
 		if (this.config.expandedMailFolders[user] !== folders) {
 			this.config.expandedMailFolders[user] = folders
+
+			this.writeToStorage()
+		}
+	}
+
+	setCollapsedMailGroups(user: Id, collapsedMailGroups: Id[]) {
+		if (this.config.collapsedMailGroups[user] !== collapsedMailGroups) {
+			this.config.collapsedMailGroups[user] = collapsedMailGroups
 
 			this.writeToStorage()
 		}
@@ -382,7 +418,7 @@ export class DeviceConfig implements UsageTestStorage, NewsItemStorage, ThemeCon
 		return this.config._credentialEncryptionMode
 	}
 
-	async getCredentialsEncryptionKey(): Promise<Uint8Array | null> {
+	async getCredentialsEncryptionKey(): Promise<Uint8Array<ArrayBuffer> | null> {
 		return this.config._encryptedCredentialsKey ? base64ToUint8Array(this.config._encryptedCredentialsKey) : null
 	}
 
@@ -567,6 +603,11 @@ export function migrateConfig(loadedConfig: any) {
 	if (loadedConfig._version < 7) {
 		loadedConfig.installationDate = getStartOfDay(new Date()).getTime().toString()
 	}
+
+	if (loadedConfig._version < 8) {
+		loadedConfig.lastSelectedCalendarView = loadedConfig._defaultCalendarView
+		delete loadedConfig._defaultCalendarView
+	}
 }
 
 /**
@@ -627,4 +668,4 @@ export interface DeviceConfigCredentials {
 	readonly encryptedPassphraseKey: Base64 | null
 }
 
-export const deviceConfig: DeviceConfig = new DeviceConfig(client.localStorage() ? localStorage : null)
+export const deviceConfig: DeviceConfig = new DeviceConfig(ClientDetector.get().localStorage() ? localStorage : null)

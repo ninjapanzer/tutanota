@@ -1,40 +1,28 @@
 import m, { Children } from "mithril"
-import { lang } from "../../../ui/utils/LanguageViewModel.js"
-import type { DropDownSelectorAttrs } from "../../../ui/base/DropDownSelector.js"
-import { DropDownSelector, SelectorItemList } from "../../../ui/base/DropDownSelector.js"
-import { deviceConfig } from "../misc/DeviceConfig.js"
-import { TimeFormat, WeekStart } from "@tutao/app-env"
-import { downcast, incrementDate, noOp, ofClass, promiseMap } from "@tutao/utils"
-import { ThemeId, themeOptions, ThemePreference } from "../../../ui/theme"
+import { TimeFormat } from "@tutao/app-env"
+import { downcast, noOp, ofClass, promiseMap } from "@tutao/utils"
 import type { UpdatableSettingsViewer } from "./Interfaces.js"
 import { locator } from "../api/main/CommonLocator"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
-import { DateTime } from "luxon"
 import * as restError from "@tutao/rest-client/error"
 import { LanguageDropdown } from "../gui/LanguageDropdown"
-import { UserSettingsGroupRootTypeRef } from "../../../entities/tutanota/TypeRefs"
+import { DropDownSelector, DropDownSelectorAttrs } from "../../../ui/base/DropDownSelector"
+import { ThemeId, themeOptions, ThemePreference } from "../../../ui/theme"
+import { lang } from "../../../ui/utils/LanguageViewModel"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { getHourCycle } from "../../../entities/tutanota/Utils"
+import { UserSettingsGroupRootTypeRef } from "@tutao/entities/tutanota"
+import { deviceConfig } from "../misc/DeviceConfig"
+import { idToElementId } from "@tutao/meta"
 
 export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 	private _customThemes: Array<ThemeId> | null = null
-	private timeOptions: Array<{ name: string; value: number }> = []
 
 	oncreate() {
 		locator.themeController.getCustomThemes().then((themes) => {
 			this._customThemes = themes
 			m.redraw()
 		})
-
-		const userSettingsGroupRoot = locator.logins.getUserController().userSettingsGroupRoot
-		const timeFormat = userSettingsGroupRoot.timeFormat
-
-		for (let hour = 0; hour < 24; hour++) {
-			this.timeOptions.push({
-				name: DateTime.fromFormat(hour.toString(), "h").toFormat(timeFormat === TimeFormat.TWENTY_FOUR_HOURS ? "HH:mm" : "hh:mm a"),
-				value: hour,
-			})
-		}
 	}
 
 	view(): Children {
@@ -57,46 +45,13 @@ export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 				locator.entityClient.update(userSettingsGroupRoot).catch(ofClass(restError.LockedError, noOp))
 			},
 		}
-		const weekdayFormat = new Intl.DateTimeFormat(lang.languageTag, {
-			weekday: "long",
-		})
-		const calcDate = new Date()
-		const sundayName = weekdayFormat.format(incrementDate(calcDate, -calcDate.getDay())) // Sunday as reference
 
-		const mondayName = weekdayFormat.format(incrementDate(calcDate, 1)) // Monday is one day later
-
-		const saturdayName = weekdayFormat.format(incrementDate(calcDate, 5)) // Saturday is five days later
-
-		const weekStartDropDownAttrs: DropDownSelectorAttrs<WeekStart> = {
-			label: "weekStart_label",
-			items: [
-				{
-					name: mondayName,
-					value: WeekStart.MONDAY,
-				},
-				{
-					name: saturdayName,
-					value: WeekStart.SATURDAY,
-				},
-				{
-					name: sundayName,
-					value: WeekStart.SUNDAY,
-				},
-			],
-			selectedValue: downcast(userSettingsGroupRoot.startOfTheWeek),
-			selectionChangedHandler: (value) => {
-				userSettingsGroupRoot.startOfTheWeek = value
-				locator.entityClient.update(userSettingsGroupRoot).catch(ofClass(restError.LockedError, noOp))
-			},
-		}
 		return m(".fill-absolute.scroll.plr-24.pb-48", [
 			m("#devicesettings.h4.mt-32", lang.get("settingsForDevice_label")),
 			m("#language", m(LanguageDropdown, { variant: "TextField", deviceConfig })),
 			this._renderThemeSelector(),
-			this.renderScrollTimeSelector(),
 			m("#usersettings.h4.mt-32", lang.get("userSettings_label")),
 			m("#hourformat", m(DropDownSelector, hourFormatDropDownAttrs)),
-			m("#weekstart", m(DropDownSelector, weekStartDropDownAttrs)),
 		])
 	}
 
@@ -115,7 +70,7 @@ export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 		const themeDropDownAttrs: DropDownSelectorAttrs<ThemePreference> = {
 			label: "switchColorTheme_action",
 			items: [
-				...themeOptions(client.isCalendarApp()).map(({ name, value }) => ({
+				...themeOptions(ClientDetector.get().isCalendarApp()).map(({ name, value }) => ({
 					name: lang.get(name),
 					value: value,
 				})),
@@ -128,28 +83,17 @@ export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 		return m("#colortheme", m(DropDownSelector, themeDropDownAttrs))
 	}
 
-	renderScrollTimeSelector(): Children {
-		const themeDropDownAttrs: DropDownSelectorAttrs<number> = {
-			label: "weekScrollTime_label",
-			helpLabel: () => lang.get("weekScrollTime_msg"),
-			items: this.timeOptions as SelectorItemList<number>,
-			selectedValue: deviceConfig.getScrollTime(),
-			selectionChangedHandler: (value) => deviceConfig.setScrollTime(value),
-			dropdownWidth: 300,
-		}
-		return m("#weekscrolltime", m(DropDownSelector, themeDropDownAttrs))
-	}
-
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(UserSettingsGroupRootTypeRef, update)) {
-				return locator.entityClient.load(UserSettingsGroupRootTypeRef, update.instanceId).then((settings) => {
+				return locator.entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(update.instanceId)).then((settings) => {
 					lang.updateFormats({
 						hourCycle: getHourCycle(settings),
 					})
 					m.redraw()
 				})
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

@@ -1,12 +1,13 @@
 import m from "mithril"
-import { assertMainOrNode, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { Dialog } from "../../../../ui/base/Dialog"
 import { ButtonType } from "../../../../ui/base/Button.js"
 import type { DialogHeaderBarAttrs } from "../../../../ui/base/DialogHeaderBar"
 import { CustomColorEditor } from "./CustomColorEditor"
 import { CustomColorsEditorViewModel } from "./CustomColorsEditorViewModel"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export function show(model: CustomColorsEditorViewModel) {
 	model.init()

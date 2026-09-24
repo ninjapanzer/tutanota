@@ -1,14 +1,14 @@
-import { NativePushFacade } from "@tutao/native-bridge/generatedIpc/types"
+import { AlarmNotification, NativePushFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { ExtendedNotificationMode } from "@tutao/native-bridge/generatedIpc/enums"
 import { DesktopAlarmScheduler } from "./DesktopAlarmScheduler.js"
 import { DesktopAlarmStorage } from "./DesktopAlarmStorage.js"
 import { SseStorage } from "./SseStorage.js"
 import { TutaSseFacade } from "./TutaSseFacade.js"
-import { ClientModelUntypedInstance, ServerModelUntypedInstance } from "../../../../platform-kit/meta"
 import { InstancePipeline } from "../../../../platform-kit/instance-pipeline"
 import { base64ToKey } from "../../../../platform-kit/crypto"
 import { log } from "../DesktopLog"
 import { AlarmNotificationTypeRef } from "@tutao/entities/sys"
+import { IncomingServerJson } from "../../../../platform-kit/instance-pipeline/TypeMapper"
 
 export class DesktopNativePushFacade implements NativePushFacade {
 	constructor(
@@ -51,14 +51,11 @@ export class DesktopNativePushFacade implements NativePushFacade {
 	}
 
 	async scheduleAlarms(alarmNotificationWireFormat: string, newDeviceSessionKey: Base64): Promise<void> {
-		const alarms: ClientModelUntypedInstance[] = JSON.parse(alarmNotificationWireFormat)
+		const typeModel = await this.alarmStorageInstancePipeline.typeModelResolver.resolveServerTypeReference(AlarmNotificationTypeRef)
+		const alarms = IncomingServerJson.expectMultipleInstance(alarmNotificationWireFormat, typeModel)
 		for (const alarm of alarms) {
 			const sk = base64ToKey(newDeviceSessionKey)
-			const alarmNotification = await this.alarmStorageInstancePipeline.decryptAndMap(
-				AlarmNotificationTypeRef,
-				alarm as unknown as ServerModelUntypedInstance,
-				sk,
-			)
+			const alarmNotification = await this.alarmStorageInstancePipeline.decryptAndMap<AlarmNotification>(alarm, sk)
 			await this.alarmScheduler.handleCreateAlarm(alarmNotification)
 		}
 	}
@@ -68,7 +65,7 @@ export class DesktopNativePushFacade implements NativePushFacade {
 		userId: string,
 		sseOrigin: string,
 		pushIdentifierId: string,
-		pushIdentifierSessionKey: Uint8Array,
+		pushIdentifierSessionKey: Uint8Array<ArrayBuffer>,
 	): Promise<void> {
 		await this.sseStorage.storePushIdentifier(identifier, userId, sseOrigin)
 		await this.alarmStorage.storePushIdentifierSessionKey(pushIdentifierId, pushIdentifierSessionKey)

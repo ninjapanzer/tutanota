@@ -1,95 +1,108 @@
-import { assertNotNull, downcast, Nullable } from "@tutao/utils"
-import { AttributeModel, TypeRef } from "../meta"
+import { assertNotNull, isNotNull, Nullable } from "@tutao/utils"
+import { AnyEntityId, Entity, ServerTypeModel, TypeRef } from "@tutao/meta"
 import { ModelMapper } from "./ModelMapper"
-import { EncryptedParsedInstance, Entity, ServerModelEncryptedParsedInstance, ServerModelParsedInstance, TypeModel } from "../meta/EntityTypes"
-import { BucketKey, BucketKeyTypeRef } from "../../entities/sys/TypeRefs"
+import { BucketKey } from "@tutao/entities/sys"
+import { CryptoMapper, EncryptedParsedInstance } from "./CryptoMapper"
+import { ParsedValue } from "./ParsedValue"
 
 export class EntityAdapter implements Entity {
 	isAdapter = true
 
 	private constructor(
-		readonly typeModel: TypeModel,
-		readonly encryptedParsedInstance: EncryptedParsedInstance,
-		public readonly bucketKey: BucketKey | null,
+		public readonly typeModel: ServerTypeModel,
+		private readonly encryptedParsedInstance: EncryptedParsedInstance,
+		readonly bucketKey: BucketKey | null,
 	) {}
 
-	static async from(typeModel: TypeModel, encryptedParsedInstance: EncryptedParsedInstance, modelMapper: ModelMapper) {
+	static async fromEncryptedParsedInstance(
+		encryptedParsedInstance: EncryptedParsedInstance,
+		modelMapper: ModelMapper,
+		cryptoMapper: CryptoMapper,
+	): Promise<EntityAdapter> {
 		let bucketKey: Nullable<BucketKey> = null
-		const bucketKeyParsedInstance = downcast<ServerModelParsedInstance>(
-			AttributeModel.getAttributeorNull<ServerModelEncryptedParsedInstance>(encryptedParsedInstance, "bucketKey", typeModel)?.[0],
-		)
-		if (bucketKeyParsedInstance) {
+		const encBucketKeyParsedInstance = encryptedParsedInstance.getAttributeByNameOrNull("bucketKey")?.getNullWhenNull()?.asNestedObjList().at(0) ?? null
+		if (isNotNull(encBucketKeyParsedInstance)) {
 			// since, bucket key is really not encrypted entity, we can just parse it to instance
-			bucketKey = await modelMapper.mapToInstance<BucketKey>(BucketKeyTypeRef, bucketKeyParsedInstance)
+			const decryptedBucketKey = await cryptoMapper.decryptParsedInstance(encBucketKeyParsedInstance, null, null, null)
+			bucketKey = await modelMapper.mapToInstance<BucketKey>(decryptedBucketKey)
 		}
-		return new EntityAdapter(typeModel, encryptedParsedInstance, bucketKey)
+
+		return new EntityAdapter(encryptedParsedInstance.ensureIncoming(), encryptedParsedInstance, bucketKey)
 	}
 
-	get _id(): Id | IdTuple {
-		return assertNotNull(AttributeModel.getAttributeorNull<Id | IdTuple>(this.encryptedParsedInstance, "_id", this.typeModel))
+	public getWrappedEncryptedInstance(): EncryptedParsedInstance {
+		return this.encryptedParsedInstance
+	}
+
+	get _id(): AnyEntityId {
+		return assertNotNull(this.encryptedParsedInstance.getAttributeByNameOrNull("_id")).asAnyEntityId()
 	}
 
 	get _type(): TypeRef<this> {
 		return new TypeRef(this.typeModel.app, this.typeModel.id)
 	}
 
-	get _ownerEncSessionKey(): null | Uint8Array {
-		return AttributeModel.getAttributeorNull<Uint8Array>(this.encryptedParsedInstance, "_ownerEncSessionKey", this.typeModel)
+	get _ownerEncSessionKey(): null | Uint8Array<ArrayBuffer> {
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_ownerEncSessionKey")?.getNullWhenNull()?.asByteArray() ?? null
 	}
 
-	set _ownerEncSessionKey(value: Uint8Array) {
-		this.encryptedParsedInstance[assertNotNull(AttributeModel.getAttributeId(this.typeModel, "_ownerEncSessionKey"))] = value
+	set _ownerEncSessionKey(value: Uint8Array<ArrayBuffer>) {
+		this.encryptedParsedInstance.addAttributeByName("_ownerEncSessionKey", ParsedValue.fromByteArray(value))
 	}
 
 	get _ownerKeyVersion(): null | NumberString {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "_ownerKeyVersion", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_ownerKeyVersion")?.getNullWhenNull()?.asString() ?? null
 	}
 
 	set _ownerKeyVersion(value: NumberString) {
-		this.encryptedParsedInstance[assertNotNull(AttributeModel.getAttributeId(this.typeModel, "_ownerKeyVersion"))] = value
+		this.encryptedParsedInstance.addAttributeByName("_ownerKeyVersion", ParsedValue.fromString(value))
 	}
 
-	get _kdfNonce(): null | Uint8Array {
-		return AttributeModel.getAttributeorNull<Uint8Array>(this.encryptedParsedInstance, "_kdfNonce", this.typeModel)
+	get _kdfNonce(): null | Uint8Array<ArrayBuffer> {
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_kdfNonce")?.getNullWhenNull()?.asByteArray() ?? null
 	}
 
-	set _kdfNonce(value: Uint8Array) {
-		this.encryptedParsedInstance[assertNotNull(AttributeModel.getAttributeId(this.typeModel, "_kdfNonce"))] = value
+	set _kdfNonce(value: Uint8Array<ArrayBuffer>) {
+		this.encryptedParsedInstance.addAttributeByName("_kdfNonce", ParsedValue.fromByteArray(value))
 	}
 
-	get ownerEncSessionKey(): null | Uint8Array {
-		return AttributeModel.getAttributeorNull<Uint8Array>(this.encryptedParsedInstance, "ownerEncSessionKey", this.typeModel)
+	get ownerEncSessionKey(): null | Uint8Array<ArrayBuffer> {
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("ownerEncSessionKey")?.getNullWhenNull()?.asByteArray() ?? null
 	}
 
 	get ownerKeyVersion(): null | NumberString {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "ownerKeyVersion", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("ownerKeyVersion")?.getNullWhenNull()?.asString() ?? null
 	}
 
 	get ownerEncSessionKeyVersion(): null | NumberString {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "ownerEncSessionKeyVersion", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("ownerEncSessionKeyVersion")?.getNullWhenNull()?.asString() ?? null
 	}
 
 	get _ownerGroup(): null | Id {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "_ownerGroup", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_ownerGroup")?.getNullWhenNull()?.asId() ?? null
 	}
 
 	set _ownerGroup(value: Id) {
-		this.encryptedParsedInstance[assertNotNull(AttributeModel.getAttributeId(this.typeModel, "_ownerGroup"))] = value
+		this.encryptedParsedInstance.addAttributeByName("_ownerGroup", ParsedValue.fromId(value))
 	}
 
 	get _permissions(): null | Id {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "_permissions", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_permissions")?.getNullWhenNull()?.asId() ?? null
 	}
 
-	get _listEncSessionKey(): null | Uint8Array {
-		return AttributeModel.getAttributeorNull<Uint8Array>(this.encryptedParsedInstance, "_listEncSessionKey", this.typeModel)
+	get _listEncSessionKey(): null | Uint8Array<ArrayBuffer> {
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_listEncSessionKey")?.getNullWhenNull()?.asByteArray() ?? null
 	}
 
-	get _ownerPublicEncSessionKey(): null | Uint8Array {
-		return AttributeModel.getAttributeorNull<Uint8Array>(this.encryptedParsedInstance, "_ownerPublicEncSessionKey", this.typeModel)
+	get _ownerPublicEncSessionKey(): null | Uint8Array<ArrayBuffer> {
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_ownerPublicEncSessionKey")?.getNullWhenNull()?.asByteArray() ?? null
 	}
 
 	get _publicCryptoProtocolVersion(): null | NumberString {
-		return AttributeModel.getAttributeorNull<NumberString>(this.encryptedParsedInstance, "_publicCryptoProtocolVersion", this.typeModel)
+		return this.encryptedParsedInstance.getAttributeByNameOrNull("_publicCryptoProtocolVersion")?.getNullWhenNull()?.asString() ?? null
+	}
+
+	get _original(): null | this {
+		return null
 	}
 }

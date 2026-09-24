@@ -2,22 +2,23 @@ import m from "mithril"
 import { Dialog } from "../../../ui/base/Dialog"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel"
 import { ButtonType } from "../../../ui/base/Button.js"
-import { createUserAreaGroupDeleteData, TemplateGroupService } from "@tutao/entities/tutanota"
+import { createUserAreaGroupDeleteData, TemplateGroupService_DELETE } from "@tutao/entities/tutanota"
 import {
 	AccountingInfo,
 	Booking,
-	createSurveyData,
+	BookingTypeRef,
+	createRenewalPreferenceServicePostIn,
 	createSwitchAccountTypePostIn,
 	Customer,
 	GroupInfo,
 	GroupInfoTypeRef,
 	GroupTypeRef,
-	SurveyData,
-	SwitchAccountTypeService,
+	RenewalPreferenceService_POST,
+	SwitchAccountTypeService_POST,
 	UserTypeRef,
 } from "@tutao/entities/sys"
 import { AccountType, AvailablePlanType, GroupType, LegacyPlans, NewBusinessPlans, PaymentMethodType, PlanType } from "../../../entities/sys/Utils"
-import { BookingFailureReason, Const, InvoiceData, isIOSApp, Keys, UnsubscribeFailureReason } from "@tutao/app-env"
+import { BookingFailureReason, Const, EnvProvider, UnsubscribeFailureReason } from "@tutao/app-env"
 import { SubscriptionActionButtons } from "./SubscriptionSelector"
 import stream from "mithril/stream"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
@@ -25,14 +26,11 @@ import { DialogHeaderBarAttrs } from "../../../ui/base/DialogHeaderBar"
 import type { CurrentPlanInfo } from "./SwitchSubscriptionDialogModel"
 import { SwitchSubscriptionDialogModel } from "./SwitchSubscriptionDialogModel"
 import { locator } from "../api/main/CommonLocator"
-import * as restError from "@tutao/rest-client/error"
 import { PaymentInterval, PriceAndConfigProvider } from "./utils/PriceUtils"
-import { assertNotNull, base64ExtToBase64, base64ToUint8Array, defer, delay, downcast, lazy } from "@tutao/utils"
+import { assertNotNull, base64ExtToBase64, base64ToUint8Array, defer, delay, downcast, last, lazy } from "@tutao/utils"
 import { showSwitchToBusinessInvoiceDataDialog } from "./SwitchToBusinessInvoiceDataDialog.js"
 import { formatNameAndAddress } from "../api/common/utils/CommonFormatter.js"
 import { PrimaryButtonAttrs } from "../../../ui/base/buttons/VariantButtons.js"
-import { showLeavingUserSurveyWizard } from "./LeavingUserSurveyWizard.js"
-import { SURVEY_VERSION_NUMBER } from "./LeavingUserSurveyConstants.js"
 import { MobilePaymentSubscriptionOwnership } from "@tutao/native-bridge/generatedIpc/enums"
 import { showManageThroughAppStoreDialog } from "./PaymentViewer.js"
 import {
@@ -50,12 +48,15 @@ import { completeUpgradeStage } from "../ratings/UserSatisfactionUtils"
 import { PlanSelector } from "./PlanSelector.js"
 import { getPrivateBusinessSwitchButton } from "./SubscriptionPage.js"
 import { PlanSelectorHeadline } from "./components/PlanSelectorHeadline"
-import { anyHasGlobalFirstYearCampaign, getDiscountDetails } from "./utils/PlanSelectorUtils"
+import { getDiscountDetails } from "./utils/PlanSelectorUtils"
 import { px } from "../../../ui/size"
-import { Icons } from "../../../ui/base/icons/Icons"
 import { getUserGroupMemberships } from "../../../platform-kit/network/GroupUtils"
 import { getByAbbreviation } from "../gui/CountryList"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
+import { InvalidDataError, PreconditionFailedError } from "@tutao/rest-client/error"
+import { elementIdToId, GENERATED_MAX_ID } from "@tutao/meta"
+import { InvoiceData } from "./utils/PaymentUtils"
 
 /**
  * Allows cancelling the subscription (only private use) and switching the subscription to a different paid subscription.
@@ -74,7 +75,7 @@ export async function showSwitchDialog({
 	acceptedPlans: readonly AvailablePlanType[]
 	reason: TranslationKey | null
 }): Promise<void> {
-	if (hasRunningAppStoreSubscription(accountingInfo) && !isIOSApp()) {
+	if (hasRunningAppStoreSubscription(accountingInfo) && !EnvProvider.get().isIOSApp()) {
 		await showManageThroughAppStoreDialog()
 		return
 	}
@@ -92,7 +93,7 @@ export async function showSwitchDialog({
 
 	const currentPlanInfo = model.currentPlanInfo
 	const businessUse = stream(currentPlanInfo.businessUse)
-	const paymentInterval = stream(PaymentInterval.Yearly) // always default to yearly
+	const paymentInterval = stream(parseInt(accountingInfo.paymentInterval)) // always default to yearly
 	const options = { businessUse, paymentInterval }
 	const multipleUsersAllowed = model.multipleUsersStillSupportedLegacy()
 	const isApplePrice = shouldShowApplePrices(accountingInfo)
@@ -122,13 +123,6 @@ export async function showSwitchDialog({
 
 		return m(
 			".pt-16",
-			// Headline for a global campaign
-			!businessUse() &&
-				anyHasGlobalFirstYearCampaign(discountDetails) &&
-				m(PlanSelectorHeadline, {
-					translation: lang.getTranslation("pricing.cyber_monday_msg"),
-					icon: Icons.HeartFilled,
-				}),
 			// Headline for general messages
 			reason && m(PlanSelectorHeadline, { translation: lang.getTranslation(reason) }),
 			m(
@@ -148,10 +142,11 @@ export async function showSwitchDialog({
 					currentPlan: currentPlanInfo.planType,
 					currentPaymentInterval: getCurrentPaymentInterval(accountingInfo),
 					// We hide the payment interval switch in the setting and let the plan selector handles the interval changing for iOS
-					allowSwitchingPaymentInterval: isApplePrice || currentPlanInfo.paymentInterval !== PaymentInterval.Yearly,
+					allowSwitchingPaymentInterval: isApplePrice || !!currentPlanInfo.paymentInterval,
 					showMultiUser: multipleUsersAllowed,
 					targetPlan: currentPlanInfo.planType, // dummy property; only relevant for signup, but required to exist
 					discountDetails,
+					personalPlansAvailable: true,
 				}),
 			),
 		)
@@ -174,7 +169,7 @@ export async function showSwitchDialog({
 		const hasGlobalFirstYearDiscount = priceAndConfigProvider.getRawPricingData().hasGlobalFirstYearDiscount
 		const isYearly = paymentInterval() === PaymentInterval.Yearly
 
-		if (isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
+		if (EnvProvider.get().isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
 			const prices = priceAndConfigProvider.getMobilePrices().get(PlanTypeToName[targetPlan].toLowerCase())
 			return hasGlobalFirstYearDiscount && isYearly && !!prices?.isEligibleForIntroOffer && !!prices?.displayOfferYearlyPerYear
 		} else {
@@ -206,9 +201,11 @@ export async function showSwitchDialog({
 }
 
 async function onSwitchToFree(customer: Customer, dialog: Dialog, currentPlanInfo: CurrentPlanInfo) {
-	if (isIOSApp()) {
+	if (EnvProvider.get().isIOSApp()) {
 		// We want the user to disable renewal in AppStore before they try to downgrade on our side
-		const ownership = await locator.mobilePaymentsFacade.queryAppStoreSubscriptionOwnership(base64ToUint8Array(base64ExtToBase64(customer._id)))
+		const ownership = await locator.mobilePaymentsFacade.queryAppStoreSubscriptionOwnership(
+			base64ToUint8Array(base64ExtToBase64(elementIdToId(customer._id))),
+		)
 		if (ownership === MobilePaymentSubscriptionOwnership.Owner && (await locator.mobilePaymentsFacade.isAppStoreRenewalEnabled())) {
 			await locator.mobilePaymentsFacade.showSubscriptionConfigView()
 
@@ -222,19 +219,7 @@ async function onSwitchToFree(customer: Customer, dialog: Dialog, currentPlanInf
 		}
 	}
 
-	const reason = await showLeavingUserSurveyWizard(true, true)
-	const data =
-		reason.submitted && reason.category && reason.reason
-			? createSurveyData({
-					category: reason.category,
-					reason: reason.reason,
-					details: reason.details,
-					version: SURVEY_VERSION_NUMBER,
-					clientVersion: env.versionNumber,
-					clientPlatform: client.getClientPlatform().valueOf().toString(),
-				})
-			: null
-	const newPlanType = await cancelSubscription(dialog, currentPlanInfo, customer, data)
+	const newPlanType = await downgradeSubscription(dialog)
 
 	if (newPlanType === PlanType.Free) {
 		if (mailLocator.mailModel) {
@@ -261,7 +246,7 @@ async function doSwitchToPaidPlan(
 	dialog: Dialog,
 	currentPlanInfo: CurrentPlanInfo,
 ) {
-	if (isIOSApp() && getPaymentMethodType(accountingInfo) === PaymentMethodType.AppStore) {
+	if (EnvProvider.get().isIOSApp() && getPaymentMethodType(accountingInfo) === PaymentMethodType.AppStore) {
 		const customerIdBytes = base64ToUint8Array(base64ExtToBase64(assertNotNull(locator.logins.getUserController().user.customer)))
 		dialog.close()
 		try {
@@ -340,7 +325,7 @@ async function runTemplateCleanupFlow(customer: Customer) {
 				if (deletedTemplateGroups.has(group)) {
 					continue
 				}
-				await locator.serviceExecutor.delete(TemplateGroupService, createUserAreaGroupDeleteData({ group }))
+				await locator.serviceExecutor.execute(TemplateGroupService_DELETE, createUserAreaGroupDeleteData({ group }), null)
 				deletedTemplateGroups.add(group)
 			}
 		}
@@ -360,7 +345,7 @@ async function runTemplateCleanupFlow(customer: Customer) {
  * @returns boolean true if we should re-try the switch, false if the customer cancelled the sub-flow or we can't handle
  * the issue automatically
  */
-export async function handleSwitchAccountPreconditionFailed(customer: Customer, e: restError.PreconditionFailedError): Promise<boolean> {
+export async function handleSwitchAccountPreconditionFailed(customer: Customer, e: PreconditionFailedError): Promise<boolean> {
 	const reason = e.data
 
 	if (reason == null) {
@@ -423,7 +408,7 @@ export async function handleSwitchAccountPreconditionFailed(customer: Customer, 
 				break
 
 			case UnsubscribeFailureReason.ACTIVE_APPSTORE_SUBSCRIPTION:
-				if (isIOSApp()) {
+				if (EnvProvider.get().isIOSApp()) {
 					await locator.mobilePaymentsFacade.showSubscriptionConfigView()
 					return false
 				} else {
@@ -459,30 +444,29 @@ export async function handleSwitchAccountPreconditionFailed(customer: Customer, 
 /**
  * @param customer
  * @param currentPlanType
- * @param surveyData
  * @returns the new plan type after the attempt.
  */
-export async function tryDowngradePremiumToFree(customer: Customer, currentPlanType: PlanType, surveyData: SurveyData | null): Promise<PlanType> {
+export async function tryDowngradePremiumToFree(customer: Customer, currentPlanType: PlanType): Promise<PlanType> {
 	const switchAccountTypeData = createSwitchAccountTypePostIn({
 		accountType: AccountType.FREE,
 		date: Const.CURRENT_DATE,
-		customer: customer._id,
+		customer: elementIdToId(customer._id),
 		specialPriceUserSingle: null,
 		referralCode: null,
 		plan: PlanType.Free,
-		surveyData: surveyData,
-		app: client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
+		surveyData: null,
+		app: ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
 	})
 	try {
-		await locator.serviceExecutor.post(SwitchAccountTypeService, switchAccountTypeData)
+		await locator.serviceExecutor.execute(SwitchAccountTypeService_POST, switchAccountTypeData, null)
 		return PlanType.Free
 	} catch (e) {
-		if (e instanceof restError.PreconditionFailedError) {
+		if (e instanceof PreconditionFailedError) {
 			const shouldRetry = await handleSwitchAccountPreconditionFailed(customer, e)
 			if (shouldRetry) {
-				return tryDowngradePremiumToFree(customer, currentPlanType, surveyData)
+				return tryDowngradePremiumToFree(customer, currentPlanType)
 			}
-		} else if (e instanceof restError.TooManyRequestsError) {
+		} else if (e instanceof InvalidDataError) {
 			await Dialog.message("accountSwitchTooManyActiveUsers_msg")
 		} else {
 			throw e
@@ -491,12 +475,16 @@ export async function tryDowngradePremiumToFree(customer: Customer, currentPlanT
 	}
 }
 
-async function cancelSubscription(
-	dialog: Dialog,
-	currentPlanInfo: CurrentPlanInfo,
-	customer: Customer,
-	surveyData: SurveyData | null = null,
-): Promise<PlanType> {
+export async function showConfirmDowngradingToFreeDialog(): Promise<PlanType> {
+	const planType = await locator.logins.getUserController().getPlanType()
+	const customerInfo = await locator.logins.getUserController().loadCustomerInfo()
+	const customer = locator.logins.getUserController().getCustomer()
+	const bookings = await locator.entityClient.loadRange(BookingTypeRef, assertNotNull(customerInfo.bookings).items, GENERATED_MAX_ID, 1, true)
+	const lastBooking = last(bookings)
+	if (lastBooking == null) {
+		console.warn("No booking")
+		return planType
+	}
 	const confirmCancelSubscription = Dialog.confirm("unsubscribeConfirm_msg", "ok_action", () => {
 		return m(
 			".pt-16",
@@ -509,14 +497,27 @@ async function cancelSubscription(
 	})
 
 	if (!(await confirmCancelSubscription)) {
-		return currentPlanInfo.planType
+		return planType
 	}
 
-	try {
-		return await showProgressDialog("pleaseWait_msg", tryDowngradePremiumToFree(customer, currentPlanInfo.planType, surveyData))
-	} finally {
-		dialog.close()
+	return await showProgressDialog("pleaseWait_msg", tryDowngradePremiumToFree(assertNotNull(customer), planType))
+}
+
+async function downgradeSubscription(dialog: Dialog): Promise<PlanType> {
+	const plan = await showConfirmDowngradingToFreeDialog()
+	dialog.close()
+	return plan
+}
+
+//Calls renewal preference service and sets renewal to false. Does not downgrade the plan
+async function cancelSubscription(customer: Customer): Promise<PlanType> {
+	const inputData = {
+		isEnabled: false,
+		customerId: elementIdToId(customer._id),
 	}
+	const data = createRenewalPreferenceServicePostIn(inputData)
+	await showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(RenewalPreferenceService_POST, data, null))
+	return PlanType.Free
 }
 
 async function switchSubscription(targetSubscription: PlanType, dialog: Dialog, currentPlanInfo: CurrentPlanInfo): Promise<void> {
@@ -545,18 +546,18 @@ async function switchSubscription(targetSubscription: PlanType, dialog: Dialog, 
 			plan: targetSubscription,
 			date: Const.CURRENT_DATE,
 			referralCode: null,
-			customer: customer._id,
+			customer: elementIdToId(customer._id),
 			specialPriceUserSingle: null,
 			surveyData: null,
-			app: client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
+			app: ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
 		})
 
 		try {
-			await showProgressDialog("pleaseWait_msg", locator.serviceExecutor.post(SwitchAccountTypeService, postIn))
+			await showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(SwitchAccountTypeService_POST, postIn, null))
 			completeUpgradeStage(currentPlanInfo.planType, targetSubscription) // this is just a usage test
 			return
 		} catch (e) {
-			if (e instanceof restError.PreconditionFailedError) {
+			if (e instanceof PreconditionFailedError) {
 				const shouldRetry = await handleSwitchAccountPreconditionFailed(customer, e)
 				if (shouldRetry) {
 					return switchSubscription(targetSubscription, dialog, currentPlanInfo)

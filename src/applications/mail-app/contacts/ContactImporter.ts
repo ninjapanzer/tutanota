@@ -18,7 +18,7 @@ import { NativeFileApp } from "../../../app-kit/native-bridge/common/FileApp.js"
 import { NativeContactsSyncManager } from "./model/NativeContactsSyncManager"
 import { _compareContactsForMerge } from "./ContactMergeUtils"
 import { ContactSelectionDialogAttrs, ContactSelectionDialogSize, showContactSelectionDialog } from "./view/ContactSelectionDialog"
-import { ContactComparisonResult, isIOSApp } from "../../../platform-kit/app-env"
+import { ContactComparisonResult, EnvProvider } from "../../../platform-kit/app-env"
 import {
 	Contact,
 	ContactTypeRef,
@@ -182,7 +182,7 @@ export class ContactImporter {
 		// this if syncing is successful, assuming syncing is enabled.
 		//
 		// Do nothing further if not on iOS, or if syncing is disabled or failed.
-		if (imported && isIOSApp()) {
+		if (imported && EnvProvider.get().isIOSApp()) {
 			const contactsWeJustImported = selectedStructuredContacts.map((contact) => assertNotNull(contact.rawId))
 			const remove = await Dialog.confirm("importContactRemoveImportedContactsConfirm_msg")
 			if (remove) {
@@ -213,9 +213,7 @@ export class ContactImporter {
 	}
 
 	private contactFromStructuredContact(ownerGroupId: Id, contact: StructuredContact, index: number): Contact {
-		return createContact({
-			_id: ["dummyContactListId", "dummyContactElementId" + index],
-			_ownerGroup: ownerGroupId,
+		const newContact = createContact({
 			nickname: contact.nickname,
 			firstName: contact.firstName,
 			lastName: contact.lastName,
@@ -262,6 +260,9 @@ export class ContactImporter {
 			title: contact.title ?? "",
 			role: contact.role,
 		})
+		newContact._id = ["dummyContactListId", "dummyContactElementId" + index]
+		newContact._ownerGroup = ownerGroupId
+		return newContact
 	}
 
 	private validateBirthdayOfContact(contact: StructuredContact) {

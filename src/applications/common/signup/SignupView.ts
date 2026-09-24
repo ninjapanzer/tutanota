@@ -1,10 +1,10 @@
-import m, { Vnode } from "mithril"
-import { assertMainOrNode, Country, InvoiceData, isDesktop, isIOSApp } from "@tutao/app-env"
+import m, { Children, Vnode } from "mithril"
+import { EnvProvider } from "@tutao/app-env"
 import { InfoLink, lang, MaybeTranslation, Translation, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView.js"
 import { TopLevelAttrs, TopLevelView } from "../../../ui/base/TopLevelView.js"
 import { createWizard, WizardAttrs } from "../../../ui/base/wizard/Wizard"
-import { NewAccountData, ReferralData, SubscriptionParameters } from "../subscription/UpgradeSubscriptionWizard"
+import { NewAccountData, ReferralData } from "../subscription/UpgradeSubscriptionWizard"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
 import { asPaymentInterval, PaymentInterval, PriceAndConfigProvider, SubscriptionPrice } from "../subscription/utils/PriceUtils"
@@ -40,16 +40,22 @@ import { ReferralType, SignupFlowStage, SignupFlowUsageTestController } from "..
 import { completeUpgradeStage } from "../ratings/UserSatisfactionUtils"
 import { windowFacade } from "../misc/WindowFacade"
 import SignupWizardLayout from "./SignupWizardLayout"
-import { noOp } from "@tutao/utils"
+import { filterInt, noOp } from "@tutao/utils"
 import { Icons } from "../../../ui/base/icons/Icons"
-import { mailLocator } from "../../mail-app/mailLocator"
 import { AccountingInfo, Customer } from "@tutao/entities/sys"
 import { AvailablePlanType, PlanType, SubscriptionType } from "../../../entities/sys/Utils"
+import { getPreselectedPlanType } from "../subscription/SubscriptionPage"
+import { UsageTestModel } from "../misc/UsageTestModel"
+import { UsageTestController } from "@tutao/usagetests"
+import { InvoiceData } from "../subscription/utils/PaymentUtils"
+import { Country } from "../gui/CountryList"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface SignupViewAttrs extends TopLevelAttrs {
 	viewModel: SignupViewModel
+	usageTestModel: UsageTestModel
+	usageTestController: UsageTestController
 }
 
 export class SignupViewModel {
@@ -71,13 +77,13 @@ export class SignupViewModel {
 	public upgradeType: UpgradeType
 	public planPrices?: PriceAndConfigProvider
 	public currentPlan: PlanType | null
-	public subscriptionParameters: SubscriptionParameters | null
 	public featureListProvider?: FeatureListProvider
 	public referralData: null | ReferralData
 	public multipleUsersAllowed: boolean
 	public acceptedPlans: AvailablePlanType[] = []
 	public msg?: Translation | null
 	public firstMonthForFreeOfferActive?: boolean
+	public bonusMonthForYearlyPlans: number = 0
 	public isCalledBySatisfactionDialog: boolean
 	public registrationCode?: string
 	public powChallengeSolutionPromise?: Promise<PowSolution>
@@ -89,27 +95,31 @@ export class SignupViewModel {
 	public ccViewModel: SimplifiedCreditCardViewModel = new SimplifiedCreditCardViewModel(lang)
 	public globalCampaignName: string | null
 	public personalPlansAvailable: boolean
+	public readonly isFreeOnly: boolean
+
 	constructor() {
 		const urlParams = m.parseQueryString(location.search.substring(1) + "&" + location.hash.substring(1))
 
-		const subscriptionParams = getSubscriptionParameters(urlParams)
 		const registrationDataId = getRegistrationDataIdFromParams(urlParams)
 		const referralData = getReferralCodeFromParams(urlParams)
-		this.acceptedPlans = getAvailablePlansFromSubscriptionParameters(subscriptionParams).filter(canSubscribeToPlan)
+
 		// We assume that if a user comes from our website for signup, the language selected on the website should take precedence over the browser language.
 		// As we initialize the language with the browser's one in the app.ts already, we try to overwrite it by the website language here.
 		const websiteLang = getWebsiteLangFromParams(urlParams)
 		if (websiteLang) lang.setLanguage(websiteLang)
+
+		const subscriptionParams = getSubscriptionParameters(urlParams)
+		this.acceptedPlans = getAvailablePlansFromSubscriptionParameters(subscriptionParams).filter(canSubscribeToPlan)
 		const subscriptionType = stringToSubscriptionType(subscriptionParams?.type ?? "private")
+		this.isFreeOnly = subscriptionType === SubscriptionType.FreeOnly
+
 		const paymentInterval = asPaymentInterval(PaymentInterval.Yearly)
-		const subscriptionParameters = null
 		this.options = {
 			businessUse: stream(subscriptionType === SubscriptionType.Business),
 			paymentInterval: stream(paymentInterval),
 		}
 
 		this.registrationDataId = registrationDataId
-		this.subscriptionParameters = subscriptionParameters
 		this.referralData = referralData
 		this.invoiceData = {
 			invoiceAddress: "",
@@ -122,7 +132,7 @@ export class SignupViewModel {
 		}
 		this.price = null
 		this.nextYearPrice = null
-		this.targetPlanType = PlanType.Legend
+		this.targetPlanType = getPreselectedPlanType(subscriptionParams)
 		this.accountingInfo = null
 		this.customer = null
 		this.newAccountData = null
@@ -177,7 +187,9 @@ export class SignupViewModel {
 		const domainConfig = locator.domainConfigProvider().getCurrentDomainConfig()
 		const featureListProvider = await FeatureListProvider.getInitializedInstance(domainConfig)
 		let message: MaybeTranslation | null = null
-		if (isIOSApp()) {
+		this.options.businessUse(prices.business)
+		if (EnvProvider.get().isIOSApp()) {
+			this.options.businessUse(false)
 			const appstoreSubscriptionOwnership = await queryAppStoreSubscriptionOwnership(null)
 			// if we are on iOS app we only show other plans if AppStore payments are enabled and there's no subscription for this Apple ID.
 			if (appstoreSubscriptionOwnership !== MobilePaymentSubscriptionOwnership.NoSubscription) {
@@ -193,6 +205,8 @@ export class SignupViewModel {
 		this.featureListProvider = featureListProvider
 		this.msg = message
 		this.firstMonthForFreeOfferActive = prices.firstMonthForFreeForYearlyPlan
+		const bonusMonths = filterInt(prices.bonusMonthsForYearlyPlan)
+		this.bonusMonthForYearlyPlans = Number.isNaN(bonusMonths) ? 0 : bonusMonths
 		this._isInitialized = true
 	}
 }
@@ -202,6 +216,7 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 
 	private wizardViewModel: SignupViewModel
 	private unregisterListener: (...args: Array<any>) => any = noOp
+	private SignupWizard = createWizard<SignupViewModel>()
 
 	constructor({ attrs }: Vnode<SignupViewAttrs>) {
 		super()
@@ -214,9 +229,9 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 		event.preventDefault()
 	}
 
-	async oncreate() {
-		const activeTests = await mailLocator.usageTestModel.loadActiveUsageTests()
-		mailLocator.usageTestController.setTests(activeTests)
+	async oncreate({ attrs }: Vnode<SignupViewAttrs>) {
+		const activeTests = await attrs.usageTestModel.loadActiveUsageTests()
+		attrs.usageTestController.setTests(activeTests)
 		await this.wizardViewModel.init()
 		let referralConversion: ReferralType = "not_referred"
 		if (this.wizardViewModel.referralData && this.wizardViewModel.referralData.isCalledBySatisfactionDialog)
@@ -224,7 +239,7 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 		else if (this.wizardViewModel.referralData && !this.wizardViewModel.referralData.isCalledBySatisfactionDialog) referralConversion = "organic_referral"
 		SignupFlowUsageTestController.initSignupFlowUsageTest(referralConversion)
 
-		if (!isDesktop()) {
+		if (!EnvProvider.get().isDesktop()) {
 			this.unregisterListener = windowFacade.addWindowCloseListener(async () => {})
 		}
 
@@ -241,8 +256,6 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 	}
 
 	onNewUrl(args: Record<string, any>, requestedPath: string) {}
-
-	private SignupWizard = createWizard<SignupViewModel>()
 
 	view({ attrs }: Vnode<SignupViewAttrs>) {
 		return m(
@@ -264,87 +277,138 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 								color: theme.on_surface_variant,
 							} satisfies InfoMessaggeBoxAttrs),
 						)
-					: m(this.SignupWizard, {
-							layout: SignupWizardLayout,
-							steps: [
-								{
-									title: "Select Plan",
-									content: PlanSelectorPage,
-									onNext: () =>
-										SignupFlowUsageTestController.completeStage(
-											SignupFlowStage.SELECT_PLAN,
-											this.wizardViewModel.targetPlanType,
-											this.wizardViewModel.options.paymentInterval(),
-										),
-									onPrev: () => m.route.set("/"),
-									isBackButtonEnabled: () => true,
-									showProgress: () => false,
-								},
-								{
-									title: "Create Account",
-									content: SignupFormPage,
-									onNext: () => {
-										SignupFlowUsageTestController.completeStage(
-											SignupFlowStage.CREATE_ACCOUNT,
-											this.wizardViewModel.targetPlanType,
-											this.wizardViewModel.options.paymentInterval(),
-										)
-										if (isIOSApp()) {
-											SignupFlowUsageTestController.completeStage(
-												SignupFlowStage.SELECT_PAYMENT_METHOD,
-												this.wizardViewModel.targetPlanType,
-												this.wizardViewModel.options.paymentInterval(),
-												this.wizardViewModel.paymentData.paymentMethod,
-											)
-										}
-									},
-								},
-								{
-									title: "Payment",
-									content: InvoiceAndPaymentDataPageNew,
-									onNext: () => {
-										SignupFlowUsageTestController.completeStage(
-											SignupFlowStage.SELECT_PAYMENT_METHOD,
-											this.wizardViewModel.targetPlanType,
-											this.wizardViewModel.options.paymentInterval(),
-											this.wizardViewModel.paymentData.paymentMethod,
-										)
-									},
-									isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free && !isIOSApp(),
-								},
-								{
-									title: "Order Confirmation",
-									content: UpgradeConfirmSubscriptionPageNew,
-									onNext: () => {
-										let referralConversion: ReferralType = "not_referred"
-										if (this.wizardViewModel.referralData && this.wizardViewModel.referralData.isCalledBySatisfactionDialog)
-											referralConversion = "satisfactiondialog_referral"
-										else if (this.wizardViewModel.referralData && !this.wizardViewModel.referralData.isCalledBySatisfactionDialog)
-											referralConversion = "organic_referral"
-										SignupFlowUsageTestController.completeStage(
-											SignupFlowStage.CONFIRM_PAYMENT,
-											this.wizardViewModel.targetPlanType,
-											this.wizardViewModel.options.paymentInterval(),
-											this.wizardViewModel.paymentData.paymentMethod,
-											referralConversion,
-										)
-
-										if (this.wizardViewModel.isCalledBySatisfactionDialog) {
-											completeUpgradeStage(this.wizardViewModel.currentPlan!, this.wizardViewModel.targetPlanType)
-										}
-									},
-									isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free,
-								},
-								{
-									title: "Recovery Kit",
-									content: RecoveryKitPage,
-									onNext: () => this.unregisterListener(),
-									isBackButtonEnabled: () => false,
-								},
-							],
-							viewModel: this.wizardViewModel,
-						} satisfies WizardAttrs<SignupViewModel>),
+					: this.renderSignupPages(attrs),
 			],
 		)
+	}
+
+	renderSignupPages(attrs: SignupViewAttrs): Children {
+		return attrs.viewModel.isFreeOnly ? this.renderFreeOnlySignupPages(attrs) : this.renderDefaultSignupPages(attrs)
+	}
+
+	renderFreeOnlySignupPages(attrs: SignupViewAttrs): Children {
+		return m(this.SignupWizard, {
+			layout: SignupWizardLayout,
+			steps: [
+				{
+					title: "Create Account",
+					content: SignupFormPage,
+					isBackButtonEnabled: () => true,
+					onNext: () => {
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.CREATE_ACCOUNT,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+						)
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.SELECT_PAYMENT_METHOD,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+							this.wizardViewModel.paymentData.paymentMethod,
+						)
+					},
+					onPrev: (ctx) => {
+						m.route.set("/")
+					},
+				},
+				{
+					title: "Recovery Kit",
+					content: RecoveryKitPage,
+					onNext: () => this.unregisterListener(),
+					onPrev: () => {},
+					isBackButtonEnabled: () => false,
+				},
+			],
+			viewModel: this.wizardViewModel,
+		} satisfies WizardAttrs<SignupViewModel>)
+	}
+
+	renderDefaultSignupPages(attrs: SignupViewAttrs): Children {
+		return m(this.SignupWizard, {
+			layout: SignupWizardLayout,
+			steps: [
+				{
+					title: "Select Plan",
+					content: PlanSelectorPage,
+					onNext: () =>
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.SELECT_PLAN,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+						),
+					onPrev: (ctx) => {
+						if (ctx.viewModel.options.businessUse() && ctx.viewModel.personalPlansAvailable) {
+							ctx.viewModel.options.businessUse(false)
+						} else {
+							m.route.set("/")
+						}
+					},
+					isBackButtonEnabled: () => true,
+					showProgress: () => false,
+				},
+				{
+					title: "Create Account",
+					content: SignupFormPage,
+					onNext: () => {
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.CREATE_ACCOUNT,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+						)
+						if (EnvProvider.get().isIOSApp()) {
+							SignupFlowUsageTestController.completeStage(
+								SignupFlowStage.SELECT_PAYMENT_METHOD,
+								this.wizardViewModel.targetPlanType,
+								this.wizardViewModel.options.paymentInterval(),
+								this.wizardViewModel.paymentData.paymentMethod,
+							)
+						}
+					},
+				},
+				{
+					title: "Payment",
+					content: InvoiceAndPaymentDataPageNew,
+					onNext: () => {
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.SELECT_PAYMENT_METHOD,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+							this.wizardViewModel.paymentData.paymentMethod,
+						)
+					},
+					isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free && !EnvProvider.get().isIOSApp(),
+				},
+				{
+					title: "Order Confirmation",
+					content: UpgradeConfirmSubscriptionPageNew,
+					onNext: () => {
+						let referralConversion: ReferralType = "not_referred"
+						if (this.wizardViewModel.referralData && this.wizardViewModel.referralData.isCalledBySatisfactionDialog)
+							referralConversion = "satisfactiondialog_referral"
+						else if (this.wizardViewModel.referralData && !this.wizardViewModel.referralData.isCalledBySatisfactionDialog)
+							referralConversion = "organic_referral"
+						SignupFlowUsageTestController.completeStage(
+							SignupFlowStage.CONFIRM_PAYMENT,
+							this.wizardViewModel.targetPlanType,
+							this.wizardViewModel.options.paymentInterval(),
+							this.wizardViewModel.paymentData.paymentMethod,
+							referralConversion,
+						)
+
+						if (this.wizardViewModel.isCalledBySatisfactionDialog) {
+							completeUpgradeStage(this.wizardViewModel.currentPlan!, this.wizardViewModel.targetPlanType)
+						}
+					},
+					isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free,
+				},
+				{
+					title: "Recovery Kit",
+					content: RecoveryKitPage,
+					onNext: () => this.unregisterListener(),
+					isBackButtonEnabled: () => false,
+				},
+			],
+			viewModel: this.wizardViewModel,
+		} satisfies WizardAttrs<SignupViewModel>)
 	}
 }

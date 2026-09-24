@@ -1,7 +1,7 @@
-import { assertMainOrNode, FeatureType, getApiBaseUrl, isDesktop, SessionType } from "@tutao/app-env"
+import { EnvProvider, FeatureType, SessionType } from "@tutao/app-env"
 import { assertNotNull, downcast, first, mapAndFilterNull, newPromise, ofClass } from "@tutao/utils"
-import { elementIdPart, isSameId, listIdPart } from "@tutao/meta"
-import * as restError from "@tutao/rest-client/error"
+import { elementIdPart, elementIdToId, idToElementId, isSameId, isSameSingleId, listIdPart, NULL_ENTITY } from "@tutao/meta"
+import { NotFoundError } from "@tutao/rest-client/error"
 import { locator } from "./CommonLocator"
 import { getWhitelabelCustomizations } from "../../../../ui/utils/WhitelabelUtils"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient"
@@ -9,11 +9,10 @@ import { IServiceExecutor } from "../../../../platform-kit/network/ServiceReques
 import { isCustomizationEnabledForCustomer } from "../common/utils/CustomerUtils.js"
 import { isGlobalAdmin, isInternalUser } from "../common/utils/UserUtils.js"
 import { MediaType } from "../../../../platform-kit/rest-client/types"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
 import {
 	AccountingInfo,
 	AccountingInfoTypeRef,
-	CloseSessionService,
+	CloseSessionService_POST,
 	Customer,
 	CustomerInfo,
 	CustomerInfoTypeRef,
@@ -25,7 +24,7 @@ import {
 	GroupInfoTypeRef,
 	GroupMembership,
 	PlanConfiguration,
-	PlanService,
+	PlanService_GET,
 	SessionTypeRef,
 	sysTypeModels,
 	User,
@@ -42,9 +41,10 @@ import {
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { OperationType } from "../../../../platform-kit/meta/EntityTypes"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { OperationType } from "../../../../platform-kit/meta/EntityConstants"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class UserController {
 	private planConfig: PlanConfiguration | null
@@ -68,7 +68,7 @@ export class UserController {
 	}
 
 	get userId(): Id {
-		return this.user._id
+		return elementIdToId(this.user._id)
 	}
 
 	get props(): TutanotaProperties {
@@ -116,7 +116,10 @@ export class UserController {
 	}
 
 	reloadCustomer(cacheMode: CacheMode = CacheMode.ReadAndWrite): Promise<Customer> {
-		return this.entityClient.load(CustomerTypeRef, assertNotNull(this.user.customer), { cacheMode })
+		return this.entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(this.user.customer)), {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+			cacheMode,
+		})
 	}
 
 	/**
@@ -134,7 +137,7 @@ export class UserController {
 
 	async loadCustomerProperties(): Promise<CustomerProperties> {
 		const customer = await this.reloadCustomer()
-		return await this.entityClient.load(CustomerPropertiesTypeRef, assertNotNull(customer.properties))
+		return await this.entityClient.load(CustomerPropertiesTypeRef, idToElementId(assertNotNull(customer.properties)))
 	}
 
 	async getPlanType(): Promise<PlanType> {
@@ -144,7 +147,7 @@ export class UserController {
 
 	async getPlanConfig(): Promise<PlanConfiguration> {
 		if (this.planConfig === null) {
-			const planServiceGetOut = await this.serviceExecutor.get(PlanService, null)
+			const planServiceGetOut = await this.serviceExecutor.execute(PlanService_GET, NULL_ENTITY, null)
 			this.planConfig = planServiceGetOut.config
 		}
 		return downcast(this.planConfig)
@@ -178,11 +181,15 @@ export class UserController {
 
 	async loadAccountingInfo(): Promise<AccountingInfo> {
 		const customerInfo = await this.loadCustomerInfo()
-		return await this.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
+		return await this.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 	}
 
 	getMailGroupMemberships(): GroupMembership[] {
 		return this.user.memberships.filter((membership) => membership.groupType === GroupType.Mail)
+	}
+
+	getFileGroupMemberships(): GroupMembership[] {
+		return this.user.memberships.filter((membership) => membership.groupType === GroupType.File)
 	}
 
 	getContactGroupMemberships(): GroupMembership[] {
@@ -210,7 +217,7 @@ export class UserController {
 	 * There are two updates for the user instance sent if the logged in user is an admin:, one for the user group and one for the admin group.
 	 * We only want to process it once, so we skip the admin group update
 	 *
-	 * Attention: Modules that act on user updates, e.g. for changed group memberships, need to use this function in their entityEventsReceived listener.
+	 * Attention: Modules that act on user updates, e.g. for changed group memberships, need to use this function in their onEntityUpdatesReceived listener.
 	 * Only then it is guaranteed that the user in the user controller has been updated. The update event for the admin group might come first, so if a module
 	 * reacts on that one the user controller is not updated yet.
 	 */
@@ -218,12 +225,12 @@ export class UserController {
 		return (
 			update.operation === OperationType.UPDATE &&
 			isUpdateForTypeRef(UserTypeRef, update) &&
-			isSameId(this.user._id, update.instanceId) &&
-			isSameId(this.user.userGroup.group, eventOwnerGroupId)
+			isSameId(this.user._id, idToElementId(update.instanceId)) &&
+			isSameSingleId(this.user.userGroup.group, eventOwnerGroupId)
 		) // only include updates for the user group here
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		for (const update of updates) {
 			const { instanceId, operation } = update
 			if (this.isUpdateForLoggedInUserInstance(update, eventOwnerGroupId)) {
@@ -231,17 +238,17 @@ export class UserController {
 			} else if (
 				operation === OperationType.UPDATE &&
 				isUpdateForTypeRef(GroupInfoTypeRef, update) &&
-				isSameId(this.userGroupInfo._id, [update.instanceListId, instanceId])
+				isSameId(this.userGroupInfo._id, [assertNotNull(update.instanceListId), instanceId])
 			) {
 				this._userGroupInfo = await this.entityClient.load(GroupInfoTypeRef, this._userGroupInfo._id)
 			} else if (isUpdateForTypeRef(TutanotaPropertiesTypeRef, update) && operation === OperationType.UPDATE) {
 				this._props = await this.entityClient.loadRoot(TutanotaPropertiesTypeRef, this.user.userGroup.group)
 			} else if (isUpdateForTypeRef(UserSettingsGroupRootTypeRef, update)) {
-				this._userSettingsGroupRoot = await this.entityClient.load(UserSettingsGroupRootTypeRef, this.user.userGroup.group)
+				this._userSettingsGroupRoot = await this.entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(this.user.userGroup.group))
 			} else if (isUpdateForTypeRef(CustomerInfoTypeRef, update)) {
 				if (operation === OperationType.CREATE) {
 					// After premium upgrade customer info is deleted and created with new id. We want to make sure that it's cached for offline login.
-					await this.entityClient.load(CustomerInfoTypeRef, [update.instanceListId, update.instanceId])
+					await this.entityClient.load(CustomerInfoTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
 				}
 				// cached plan config might be outdated now
 				this.planConfig = null
@@ -275,8 +282,8 @@ export class UserController {
 
 			if (sendBeacon) {
 				try {
-					const apiUrl = new URL(getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
-					apiUrl.pathname += `rest/sys/${CloseSessionService.name.toLowerCase()}`
+					const apiUrl = new URL(EnvProvider.get().getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
+					apiUrl.pathname += CloseSessionService_POST.serviceRestPath
 					apiUrl.searchParams.append("v", sysTypeModels[SessionTypeRef.typeId].version)
 					apiUrl.searchParams.append("cv", env.versionNumber)
 					// atleast in the iOS WebView, we _have_ to use a http(s) URL to sendBeacon to not error out.
@@ -300,7 +307,7 @@ export class UserController {
 				}
 			} else {
 				// Fall back to sync XHR if Beacon API is not available (which it should be everywhere by now but maybe it is suppressed somehow)
-				const apiUrl = new URL(getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
+				const apiUrl = new URL(EnvProvider.get().getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
 				apiUrl.pathname += `/rest/sys/session/${listIdPart(this.sessionId)}/${elementIdPart(this.sessionId)}`
 				const xhr = new XMLHttpRequest()
 				xhr.open("DELETE", apiUrl, false) // sync requests increase reliability when invoked in onunload
@@ -335,7 +342,7 @@ export class UserController {
 
 	async isWhitelabelAccount(): Promise<boolean> {
 		// isTutanotaDomain always returns true on desktop
-		if (!isDesktop()) {
+		if (!EnvProvider.get().isDesktop()) {
 			return !!getWhitelabelCustomizations(window)
 		}
 
@@ -368,7 +375,7 @@ export class UserController {
 		)
 
 		if (domainInfoAndConfig) {
-			const whitelabelConfig = await locator.entityClient.load(WhitelabelConfigTypeRef, domainInfoAndConfig.whitelabelConfig)
+			const whitelabelConfig = await locator.entityClient.load(WhitelabelConfigTypeRef, idToElementId(domainInfoAndConfig.whitelabelConfig))
 			return {
 				domainInfo: domainInfoAndConfig.domainInfo,
 				whitelabelConfig,
@@ -396,27 +403,25 @@ export async function initUserController({
 	loginUsername,
 }: UserControllerInitData): Promise<UserController> {
 	const entityClient = locator.entityClient
+	const groupRoot = createUserSettingsGroupRoot({
+		startOfTheWeek: "0",
+		timeFormat: "0",
+		groupSettings: [],
+		usageDataOptedIn: null,
+		birthdayCalendarColor: null,
+	})
+	groupRoot._ownerGroup = user.userGroup.group
 	const [props, userSettingsGroupRoot, customer] = await Promise.all([
 		entityClient.loadRoot(TutanotaPropertiesTypeRef, user.userGroup.group),
-		entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group).catch(
-			ofClass(restError.NotFoundError, () =>
-				entityClient
-					.setup(
-						null,
-						createUserSettingsGroupRoot({
-							_ownerGroup: user.userGroup.group,
-							startOfTheWeek: "0",
-							timeFormat: "0",
-							groupSettings: [],
-							usageDataOptedIn: null,
-							birthdayCalendarColor: null,
-						}),
-					)
-					.then(() => entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group)),
+		entityClient
+			.load(UserSettingsGroupRootTypeRef, idToElementId(user.userGroup.group))
+			.catch(
+				ofClass(NotFoundError, () =>
+					entityClient.setup(null, groupRoot).then(() => entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(user.userGroup.group))),
+				),
 			),
-		),
 		// External users is not allowed to load Customer
-		isInternalUser(user) ? entityClient.load(CustomerTypeRef, assertNotNull(user.customer)) : null,
+		isInternalUser(user) ? entityClient.load(CustomerTypeRef, idToElementId(assertNotNull(user.customer))) : null,
 	])
 	return new UserController(
 		user,

@@ -1,18 +1,9 @@
-import { assertNotNull, downcast, Nullable } from "@tutao/utils"
-import {
-	AttributeId,
-	AttributeName,
-	ClientModelUntypedInstance,
-	EncryptedParsedInstance,
-	ModelAssociation,
-	ModelValue,
-	ServerModelParsedInstance,
-	ServerModelUntypedInstance,
-	TypeId,
-	TypeModel,
-} from "./EntityTypes"
-import { ProgrammingError } from "@tutao/app-env"
+import { assertNotNull } from "@tutao/utils"
+import { ModelValue, TypeModel } from "./EntityTypes"
 import { AppName } from "./TypeRef.js"
+import { ProgrammingError } from "@tutao/app-env"
+import { TypeChecks } from "../app-env/TsTypeChecks"
+import { AttributeId, AttributeName, TypeId } from "./EntityConstants"
 
 export class AttributeModel {
 	private static readonly typeIdToAttributeNameMap: Record<AppName, Map<TypeId, Map<AttributeName, AttributeId>>> = {
@@ -27,34 +18,7 @@ export class AttributeModel {
 		drive: new Map(),
 	}
 
-	static removeNetworkDebuggingInfoIfNeeded<T extends ClientModelUntypedInstance | ServerModelUntypedInstance>(untypedInstance: T): T {
-		if (env.networkDebugging) {
-			return deepMapKeys(untypedInstance, (key: string) => key.split(":")[0])
-		}
-		return untypedInstance
-	}
-
-	static getAttribute<T>(instance: EncryptedParsedInstance | ServerModelParsedInstance, attrName: string, typeModel: TypeModel): T {
-		const attrId = AttributeModel.getAttributeId(typeModel, attrName)
-		if (attrId) {
-			const value = instance[attrId]
-			return assertNotNull(downcast<T>(value), attrName)
-		} else {
-			throw new ProgrammingError("null not allowed")
-		}
-	}
-
-	static getAttributeorNull<T>(instance: EncryptedParsedInstance | ServerModelParsedInstance, attrName: string, typeModel: TypeModel): Nullable<T> {
-		const attrId = AttributeModel.getAttributeId(typeModel, attrName)
-		if (attrId) {
-			const value = instance[attrId]
-			return downcast<T>(value)
-		} else {
-			return null
-		}
-	}
-
-	private static getResolvedAttributeId(typeModel: TypeModel, attrName: string): number | null {
+	private static getResolvedAttributeId(typeModel: TypeModel, attrName: AttributeName): AttributeId | null {
 		const typeIdMap = AttributeModel.typeIdToAttributeNameMap[typeModel.app].get(typeModel.id)
 		if (typeIdMap == null) {
 			throw new ProgrammingError(`Unknown type: ${typeModel.app}/${typeModel.name}`)
@@ -63,13 +27,13 @@ export class AttributeModel {
 		return typeIdMap.get(attrName) ?? null
 	}
 
-	private static computeAttributeIdsForTypeIfNotExists(typeModel: TypeModel) {
+	private static computeAttributeIdsForTypeIfNotExists(typeModel: TypeModel): void {
 		if (!AttributeModel.typeIdToAttributeNameMap[typeModel.app].has(typeModel.id)) {
 			AttributeModel.computeAttributeIdsForType(typeModel)
 		}
 	}
 
-	private static computeAttributeIdsForType(typeModel: TypeModel) {
+	private static computeAttributeIdsForType(typeModel: TypeModel): void {
 		let attributeNameToAttributeId: Map<string, number> = new Map()
 		for (const [valueId, value] of Object.entries(typeModel.values)) {
 			attributeNameToAttributeId.set(value.name, parseInt(valueId))
@@ -81,40 +45,54 @@ export class AttributeModel {
 		AttributeModel.typeIdToAttributeNameMap[typeModel.app].set(typeModel.id, attributeNameToAttributeId)
 	}
 
-	public static isKnownAttribute(typeModel: TypeModel, attributeName: string): boolean {
+	public static isKnownAttribute(typeModel: TypeModel, attributeName: AttributeName): boolean {
 		AttributeModel.computeAttributeIdsForTypeIfNotExists(typeModel)
 		return AttributeModel.typeIdToAttributeNameMap[typeModel.app].get(typeModel.id)?.has(attributeName) ?? false
 	}
 
-	public static getAttributeId(typeModel: TypeModel, attributeName: string): number | null {
+	public static getAttributeId(typeModel: TypeModel, attributeName: AttributeName): AttributeId | null {
 		if (AttributeModel.isKnownAttribute(typeModel, attributeName)) {
-			AttributeModel.computeAttributeIdsForTypeIfNotExists(typeModel)
 			return assertNotNull(AttributeModel.getResolvedAttributeId(typeModel, attributeName))
 		}
 
 		return null
 	}
 
-	public static getModelValue(typeModel: TypeModel, attributeName: string): ModelValue {
-		const filedId = assertNotNull(AttributeModel.getAttributeId(typeModel, attributeName))
-		return typeModel.values[filedId]
+	public static getAttributeName(typeModel: TypeModel, attributeId: AttributeId): AttributeName {
+		return assertNotNull(
+			typeModel.values[attributeId]?.name ?? typeModel.associations[attributeId]?.name,
+			`AttributeId does not exists in typeModel: ${typeModel.app}/${typeModel.name}`,
+		)
 	}
 
-	public static getModelAssociation(typeModel: TypeModel, attributeName: string): ModelAssociation {
+	public static getModelValue(typeModel: TypeModel, attributeName: AttributeName): ModelValue {
 		const filedId = assertNotNull(AttributeModel.getAttributeId(typeModel, attributeName))
-		return typeModel.associations[filedId]
+		return assertNotNull(typeModel.values[filedId], `value with attribute: ${attributeName} does not exists in ${typeModel.app}/${typeModel.id}`)
 	}
 }
 
-export function deepMapKeys(obj: any, fn: any): any {
-	return Array.isArray(obj)
-		? obj.map((val) => deepMapKeys(val, fn))
-		: typeof obj === "object"
-			? Object.keys(obj).reduce((acc: any, current: string) => {
-					const key = fn(current)
-					const val = obj[current]
-					acc[key] = val !== null && typeof val === "object" ? deepMapKeys(val, fn) : val
-					return acc
-				}, {})
-			: obj
+export function deepMapKeys(obj: Record<string, any>, keyMapper: (rawKey: string) => number): Record<string, any> {
+	const mappedObject = {} as Record<string, any>
+
+	for (const [unmappedKey, value] of Object.entries(obj)) {
+		const mappedKey = keyMapper(unmappedKey)
+
+		if (value == null) {
+			mappedObject[mappedKey] = null
+		} else if (Array.isArray(value)) {
+			mappedObject[mappedKey] = value.map((item) => {
+				if (TypeChecks.isString(item)) {
+					return item
+				} else {
+					return deepMapKeys(item, keyMapper)
+				}
+			})
+		} else if (TypeChecks.isObject(value)) {
+			mappedObject[mappedKey] = deepMapKeys(value, keyMapper)
+		} else {
+			mappedObject[mappedKey] = value
+		}
+	}
+
+	return mappedObject
 }

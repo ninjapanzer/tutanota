@@ -15,11 +15,11 @@ import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
 import { AlarmInterval } from "../../calendar/date/CalendarUtils.js"
 import { getMailAddressDisplayText } from "../../mailFunctionality/SharedMailUtils.js"
 import { serializeAlarmInterval } from "../../api/common/utils/CommonCalendarUtils.js"
-import { ColorPickerView } from "../../../../ui/base/colorPicker/ColorPickerView"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { LegacyColorPickerView } from "../../../../ui/base/colorPicker/LegacyColorPickerView"
+import { LockedError } from "../../../../platform-kit/rest-client/error"
 import { ReceivedGroupInvitation } from "@tutao/entities/sys"
 import { getInvitationGroupType, GroupType, isTemplateGroup } from "../../../../entities/sys/Utils"
-import { isSameId } from "../../../../platform-kit/meta"
+import { isSameId, isSameSingleId } from "../../../../platform-kit/meta"
 import { createDefaultAlarmInfo, createGroupSettings } from "@tutao/entities/tutanota"
 import { UpgradePromptType } from "../../../../platform-kit/app-env"
 
@@ -38,7 +38,7 @@ export function showGroupInvitationDialog(invitation: ReceivedGroupInvitation) {
 	const isMember = locator.logins
 		.getUserController()
 		.getCalendarMemberships()
-		.some((ms) => isSameId(ms.group, invitation.sharedGroup))
+		.some((ms) => isSameSingleId(ms.group, invitation.sharedGroup))
 	let dialog: Dialog
 
 	const onAcceptClicked = () => {
@@ -65,7 +65,7 @@ export function showGroupInvitationDialog(invitation: ReceivedGroupInvitation) {
 						userSettingsGroupRoot.groupSettings.push(groupSettings)
 					}
 
-					locator.entityClient.update(userSettingsGroupRoot).catch(ofClass(restError.LockedError, noOp))
+					locator.entityClient.update(userSettingsGroupRoot).catch(ofClass(LockedError, noOp))
 				})
 			}
 		})
@@ -149,7 +149,7 @@ function renderCalendarGroupInvitationFields(
 	let alarms = alarmsStream()
 	return [
 		m(".small.mt-16.mb-4", lang.get("color_label")),
-		m(ColorPickerView, {
+		m(LegacyColorPickerView, {
 			value: selectedColourValue(),
 			onselect: selectedColourValue,
 		}),

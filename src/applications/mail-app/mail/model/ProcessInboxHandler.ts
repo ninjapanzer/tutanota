@@ -1,26 +1,23 @@
-import { Mail, MailSet, ProcessInboxDatum } from "@tutao/entities/tutanota"
+import { Mail, MailSet, ProcessInboxDatumParams } from "@tutao/entities/tutanota"
 import { MailSetKind } from "../../../../entities/tutanota/Utils"
 import { InstanceSessionKey } from "@tutao/entities/sys"
 import { SpamClassificationHandler } from "./SpamClassificationHandler"
 import { InboxRuleHandler } from "./InboxRuleHandler"
-import { isSameId, StrippedEntity } from "../../../../platform-kit/meta"
-import { assertMainOrNode } from "../../../../platform-kit/app-env"
+import { isSameId } from "../../../../platform-kit/meta"
+import { EnvProvider } from "../../../../platform-kit/app-env"
 import { assertNotNull, isEmpty, Nullable, throttle } from "../../../../platform-kit/utils"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade"
 import { MailboxDetail } from "../../../common/mailFunctionality/MailboxModel"
 import { FolderSystem } from "../../../common/api/common/mail/FolderSystem"
 import { LoginController } from "../../../common/api/main/LoginController"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade"
+import { LockedError } from "../../../../platform-kit/rest-client/error"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
-export type UnencryptedProcessInboxDatum = Omit<
-	StrippedEntity<ProcessInboxDatum>,
-	"encVectorLegacy" | "encVectorWithServerClassifiers" | "ownerEncVectorSessionKey"
-> & {
-	vectorLegacy: Uint8Array
-	vectorWithServerClassifiers: Uint8Array
+export type UnencryptedProcessInboxDatum = Omit<ProcessInboxDatumParams, "encVectorLegacy" | "encVectorWithServerClassifiers" | "ownerEncVectorSessionKey"> & {
+	vectorLegacy: Uint8Array<ArrayBuffer>
+	vectorWithServerClassifiers: Uint8Array<ArrayBuffer>
 }
 
 const DEFAULT_THROTTLE_PROCESS_INBOX_SERVICE_REQUESTS_MS = 500
@@ -47,7 +44,7 @@ export class ProcessInboxHandler {
 						try {
 							await mailFacade.processNewMails(mailGroup, processedMails)
 						} catch (e) {
-							if (e instanceof restError.LockedError) {
+							if (e instanceof LockedError) {
 								// retry in case of LockedError
 								this.processedMailsByMailGroup.set(mailGroup, processedMails)
 								this.sendProcessInboxServiceRequest(mailFacade)

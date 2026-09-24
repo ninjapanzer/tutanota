@@ -1,12 +1,12 @@
-import { client } from "../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector.js"
 import m from "mithril"
 import Mithril, { Children, ClassComponent, Component, RouteDefs, RouteResolver, Vnode, VnodeDOM } from "mithril"
 import { lang, languageCodeToTag, languages } from "../../ui/utils/LanguageViewModel.js"
 import { root } from "../../ui/base/RootView.js"
 import { disableErrorHandlingDuringLogout, handleUncaughtError } from "../common/misc/ErrorHandler.js"
-import { assertNotNull } from "../../platform-kit/utils"
+import { assertNotNull, stringToBase64 } from "../../platform-kit/utils"
 import { windowFacade } from "../common/misc/WindowFacade.js"
-import { styles } from "../../ui/styles.js"
+import { Styles } from "../../ui/styles.js"
 import { deviceConfig } from "../common/misc/DeviceConfig.js"
 import { Logger, replaceNativeLogger } from "../common/api/common/Logger.js"
 import { applicationPaths } from "./calendar-applicationPaths.js"
@@ -23,27 +23,28 @@ import { AppHeaderAttrs } from "../../ui/Header.js"
 import { CalendarViewModel } from "./calendar/view/CalendarViewModel.js"
 import { LoginController } from "../common/api/main/LoginController.js"
 import { MobileSettingsViewAttrs, SettingsViewSection } from "../common/settings/Interfaces.js"
-import { CalendarSearchView, CalendarSearchViewAttrs } from "./calendar/search/view/CalendarSearchView.js"
-import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel.js"
-import { ContactModel } from "../common/contactsFunctionality/ContactModel.js"
 import type { MobileSettingsView } from "../common/settings/MobileSettingsView.js"
-import { AppType, assertMainOrNodeBoot, bootFinished, isAdminClient, isApp, isBrowser, isDesktop, ProgrammingError } from "../../platform-kit/app-env"
+import { AppType, DomainConfig, EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { CALENDAR_PREFIX } from "../../ui/utils/RouteChange"
-import { initUiSingletons } from "../common/app-common"
+import { initUiSingletons, MakeViewResolverOptions } from "../common/app-common"
 import { NamedClientModel } from "@tutao/instance-pipeline"
 import { AppNameEnum } from "@tutao/meta"
 import { baseModelInfo, baseTypeModels } from "@tutao/entities/base"
 import { sysModelInfo, sysTypeModels } from "@tutao/entities/sys"
-import { tutanotaModelInfo, tutanotaTypeModels } from "@tutao/entities/tutanota"
+import { Contact, tutanotaModelInfo, tutanotaTypeModels } from "@tutao/entities/tutanota"
 import { driveModelInfo, driveTypeModels } from "@tutao/entities/drive"
 import { storageModelInfo, storageTypeModels } from "@tutao/entities/storage"
 import { monitorModelInfo, monitorTypeModels } from "@tutao/entities/monitor"
 import { usageModelInfo, usageTypeModels } from "@tutao/entities/usage"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
 import { initClientModels } from "../common/api/common/ClientModelInfoInitializer"
+import { RevocationView, RevocationViewAttrs } from "../common/revocation/RevocationView"
+import { RevocationViewModel } from "../common/revocation/RevocationViewModel"
+import { CalendarSearchView, CalendarSearchViewAttrs } from "./calendar/search/view/CalendarSearchView"
+import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel"
 
-assertMainOrNodeBoot()
-bootFinished()
+EnvProvider.assertMainOrNodeBoot()
+EnvProvider.bootFinished()
 
 const urlQueryParams = m.parseQueryString(location.search)
 
@@ -52,7 +53,7 @@ replaceNativeLogger(window, new Logger())
 
 let currentView: Component<unknown> | null = null
 window.tutao = {
-	client,
+	client: ClientDetector.get(),
 	m,
 	lang,
 	root,
@@ -60,9 +61,9 @@ window.tutao = {
 	locator: null,
 }
 
-client.init(navigator.userAgent, navigator.platform, AppType.Calendar)
+ClientDetector.get().init(navigator.userAgent, navigator.platform, AppType.Calendar)
 
-if (!client.isSupported()) {
+if (!ClientDetector.get().isSupported()) {
 	throw new Error("Unsupported")
 }
 
@@ -102,7 +103,7 @@ import("../../ui/translations/en.js")
 
 		// this needs to stay after client.init
 		windowFacade.init(calendarLocator.logins, calendarLocator.connectivityModel)
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			import("../common/native/UpdatePrompt.js").then(({ registerForUpdates }) => registerForUpdates(calendarLocator.desktopSettingsFacade))
 		}
 
@@ -120,9 +121,18 @@ import("../../ui/translations/en.js")
 
 		calendarLocator.logins.addPostLoginAction(() => calendarLocator.postLoginActions())
 		calendarLocator.logins.addPostLoginAction(async () => {
+			const { setupCalendarModels } = await import("./calendar/login/SetupCalendarModels.js")
+			return await setupCalendarModels(
+				calendarLocator.calendarModel,
+				calendarLocator.entityClient,
+				calendarLocator.calendarEventUpdateCoordinator,
+				calendarLocator.syncTracker,
+			)
+		})
+		calendarLocator.logins.addPostLoginAction(async () => {
 			return {
 				async onPartialLoginSuccess() {
-					if (isApp()) {
+					if (EnvProvider.get().isApp()) {
 						calendarLocator.fileApp.clearFileData().catch((e) => console.log("Failed to clean file data", e))
 					}
 				},
@@ -130,16 +140,14 @@ import("../../ui/translations/en.js")
 			}
 		})
 
-		if (!isBrowser() && !isAdminClient()) {
+		if (!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()) {
 			calendarLocator.logins.addPostLoginAction(async () => {
-				const { CachePostLoginAction } = await import("../common/offline/CachePostLoginAction.js")
-				return new CachePostLoginAction(
+				const { CalendarPostLoginAction } = await import("../common/offline/CalendarPostLoginAction.js")
+				return new CalendarPostLoginAction(
 					await calendarLocator.calendarModel(),
 					calendarLocator.entityClient,
 					calendarLocator.progressTracker,
-					calendarLocator.cacheStorage,
 					calendarLocator.logins,
-					null,
 					calendarLocator.syncTracker,
 				)
 			})
@@ -149,7 +157,9 @@ import("../../ui/translations/en.js")
 			})
 		}
 
-		styles.init(calendarLocator.themeController)
+		Styles.get().init(calendarLocator.themeController)
+
+		const { makeSignupViewResolver } = await import("../common/signup/SignupViewResolver.js")
 		const paths = applicationPaths({
 			login: makeViewResolver<LoginViewAttrs, LoginView, { makeViewModel: () => LoginViewModel }>(
 				{
@@ -202,6 +212,37 @@ import("../../ui/translations/en.js")
 				},
 				calendarLocator.logins,
 			),
+			revocation: makeViewResolver<
+				RevocationViewAttrs,
+				RevocationView,
+				{
+					makeViewModel: () => RevocationViewModel
+					header: AppHeaderAttrs
+				}
+			>(
+				{
+					prepareRoute: async () => {
+						const { RevocationViewModel } = await import("../common/revocation/RevocationViewModel.js")
+						const { RevocationView } = await import("../common/revocation/RevocationView.js")
+						return {
+							component: RevocationView,
+							cache: {
+								makeViewModel: () =>
+									new RevocationViewModel(
+										calendarLocator.logins,
+										calendarLocator.secondFactorHandler,
+										calendarLocator.serviceExecutor,
+										calendarLocator.entityClient,
+									),
+								header: await calendarLocator.appHeaderAttrs(),
+							},
+						}
+					},
+					prepareAttrs: ({ makeViewModel, header }) => ({ makeViewModel, header }),
+					requireLogin: false,
+				},
+				calendarLocator.logins,
+			),
 			settings: makeViewResolver<
 				MobileSettingsViewAttrs,
 				MobileSettingsView,
@@ -210,8 +251,8 @@ import("../../ui/translations/en.js")
 				{
 					prepareRoute: async () => {
 						const { MobileSettingsView } = await import("../common/settings/MobileSettingsView.js")
-						const { makeCalendarSettings } = await import("./calendar/settings/CalendarSettingsView.js")
-						const settingSections = makeCalendarSettings(
+						const { makeCalendarAppSettings } = await import("./calendar/settings/CalendarAppSettings.js")
+						const settingSections = makeCalendarAppSettings(
 							calendarLocator.credentialsProvider,
 							calendarLocator.systemFacade,
 							calendarLocator.entityClient,
@@ -237,32 +278,38 @@ import("../../ui/translations/en.js")
 				},
 				calendarLocator.logins,
 			),
-			search: makeViewResolver<
+			calendarSearch: makeViewResolver<
 				CalendarSearchViewAttrs,
 				CalendarSearchView,
-				{
-					header: AppHeaderAttrs
-					searchViewModelFactory: () => CalendarSearchViewModel
-					contactModel: ContactModel
-				}
+				{ header: AppHeaderAttrs; drawerAttrsFactory: () => DrawerMenuAttrs; makeViewModel: () => CalendarSearchViewModel }
 			>(
 				{
 					prepareRoute: async () => {
 						const { CalendarSearchView } = await import("./calendar/search/view/CalendarSearchView.js")
+						const drawerAttrsFactory = await calendarLocator.drawerAttrsFactory()
+						const makeViewModel = await calendarLocator.calendarSearchViewModelFactory()
 						return {
 							component: CalendarSearchView,
 							cache: {
 								header: await calendarLocator.appHeaderAttrs(),
-								searchViewModelFactory: await calendarLocator.searchViewModelFactory(),
-								contactModel: calendarLocator.contactModel,
+								drawerAttrsFactory,
+								makeViewModel,
 							},
 						}
 					},
-					prepareAttrs: (cache) => ({
-						header: cache.header,
-						makeViewModel: cache.searchViewModelFactory,
-						contactModel: cache.contactModel,
-					}),
+					prepareAttrs: (cache) => {
+						return {
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+							makeViewModel: cache.makeViewModel,
+							editContact: async (contact: Contact) => {
+								const { Dialog } = await import("../../ui/base/Dialog.js")
+								if (!(await Dialog.confirm("openMailApp_msg", "yes_label"))) return
+								const query = `contactId=${stringToBase64(contact._id.join("/"))}`
+								calendarLocator.systemFacade.openMailApp(stringToBase64(query))
+							},
+						}
+					},
 				},
 				calendarLocator.logins,
 			),
@@ -273,13 +320,11 @@ import("../../ui/translations/en.js")
 					drawerAttrsFactory: () => DrawerMenuAttrs
 					header: AppHeaderAttrs
 					calendarViewModel: CalendarViewModel
-					lazySearchBar: () => Children
 				}
 			>(
 				{
 					prepareRoute: async (cache) => {
 						const { CalendarView } = await import("./calendar/view/CalendarView.js")
-						const { lazyCalendarSearchBar } = await import("./LazyCalendarSearchBar.js")
 						const drawerAttrsFactory = await calendarLocator.drawerAttrsFactory()
 						return {
 							component: CalendarView,
@@ -287,19 +332,13 @@ import("../../ui/translations/en.js")
 								drawerAttrsFactory,
 								header: await calendarLocator.appHeaderAttrs(),
 								calendarViewModel: await calendarLocator.calendarViewModel(),
-								lazySearchBar: () => {
-									return m(lazyCalendarSearchBar, {
-										placeholder: lang.get("searchCalendar_placeholder"),
-									})
-								},
 							},
 						}
 					},
-					prepareAttrs: ({ header, calendarViewModel, drawerAttrsFactory, lazySearchBar }) => ({
+					prepareAttrs: ({ header, calendarViewModel, drawerAttrsFactory }) => ({
 						drawerAttrs: drawerAttrsFactory(),
 						header,
 						calendarViewModel,
-						lazySearchBar,
 					}),
 				},
 				calendarLocator.logins,
@@ -310,30 +349,19 @@ import("../../ui/translations/en.js")
 			 * to the login page without having to deal with a ton of conditional logic in the LoginViewModel and to avoid some of the default
 			 * behaviour of resolvers created with createViewResolver(), e.g. caching.
 			 */
-			signup: {
-				async onmatch() {
-					const { showSignupDialog } = await import("../common/misc/LoginUtils.js")
-					// We have to manually parse it because mithril does not put hash into args of onmatch
-					const urlParams = m.parseQueryString(location.search.substring(1) + "&" + location.hash.substring(1))
-					showSignupDialog(urlParams)
-					// when the user presses the browser back button, we would get a /login route without arguments
-					// in the popstate event, logging us out and reloading the page before we have a chance to (asynchronously) ask for confirmation
-					// onmatch of the login view is called after the popstate handler, but before any asynchronous operations went ahead.
-					// duplicating the history entry allows us to keep the arguments for a single back button press and run our own code to handle it
-					m.route.set("/login", {
-						keepSession: true,
-					})
-					m.route.set("/login", {
-						keepSession: true,
-					})
-					return null
-				},
-			},
+			signup: makeSignupViewResolver(
+				makeViewResolver,
+				calendarLocator.credentialFormatMigrator,
+				calendarLocator.logins,
+				calendarLocator.usageTestModel,
+				calendarLocator.usageTestController,
+			),
 			giftcard: {
 				async onmatch() {
 					const { showGiftCardDialog } = await import("../common/misc/LoginUtils.js")
 					showGiftCardDialog(location.hash)
 					m.route.set("/login", {
+						noAutoLogin: true,
 						keepSession: true,
 					})
 					return null
@@ -398,6 +426,9 @@ import("../../ui/translations/en.js")
 			),
 		})
 
+		// We set the prefix to empty string intentionally here. See (https://mithril.js.org/route.html?utm_source=chatgpt.com#routing-strategies)
+		m.route.prefix = ""
+
 		// keep in sync with RewriteAppResourceUrlHandler.java
 		const resolvers: RouteDefs = {
 			"/": {
@@ -424,7 +455,7 @@ import("../../ui/translations/en.js")
 
 		// We need to initialize native once we start the mithril routing, specifically for the case of mailto handling in android
 		// If native starts telling the web side to navigate too early, mithril won't be ready and the requests will be lost
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			await calendarLocator.native.init()
 		}
 		// if (isDesktop()) {
@@ -494,15 +525,7 @@ function setupExceptionHandling() {
  * @param logins logincontroller to ask about login state
  */
 function makeViewResolver<FullAttrs extends TopLevelAttrs = never, ComponentType extends TopLevelView<FullAttrs> = never, RouteCache = undefined>(
-	{
-		prepareRoute,
-		prepareAttrs,
-		requireLogin,
-	}: {
-		prepareRoute: (cache: RouteCache | null) => Promise<{ component: Class<ComponentType>; cache: RouteCache }>
-		prepareAttrs: (cache: RouteCache) => Omit<FullAttrs, keyof TopLevelAttrs>
-		requireLogin?: boolean
-	},
+	{ prepareRoute, prepareAttrs, requireLogin }: MakeViewResolverOptions<FullAttrs, ComponentType, RouteCache>,
 	logins: LoginController,
 ): RouteResolver {
 	requireLogin = requireLogin ?? true
@@ -616,10 +639,10 @@ function makeOldViewResolver(
 function assignEnvPlatformId(urlQueryParams: Mithril.Params) {
 	const platformId = urlQueryParams["platformId"]
 
-	if (isApp() || isDesktop()) {
+	if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 		if (
-			(isApp() && (platformId === "android" || platformId === "ios")) ||
-			(isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
+			(EnvProvider.get().isApp() && (platformId === "android" || platformId === "ios")) ||
+			(EnvProvider.get().isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
 		) {
 			env.platformId = platformId
 		} else {

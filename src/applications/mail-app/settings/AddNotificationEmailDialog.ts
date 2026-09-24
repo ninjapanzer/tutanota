@@ -36,7 +36,7 @@ export class AddNotificationEmailDialog {
 						m(".small.mt-8", lang.get("emailPushNotification_msg")),
 					],
 				},
-				validator: () => this.validateAddNotificationEmailAddressInput(mailAddress),
+				validator: async () => this.validateAddNotificationEmailAddressInput(mailAddress),
 				allowOkWithReturn: true,
 				okAction: (dialog: Dialog) => {
 					this.createNotificationEmail(mailAddress, this.logins.getUserController().user)
@@ -48,9 +48,6 @@ export class AddNotificationEmailDialog {
 
 	private createNotificationEmail(mailAddress: string, user: User) {
 		const pushIdentifier = createPushIdentifier({
-			_area: "0", // legacy
-			_owner: user.userGroup.group, // legacy
-			_ownerGroup: user.userGroup.group,
 			displayName: lang.get("adminEmailSettings_action"),
 			identifier: assertNotNull(getCleanedMailAddress(mailAddress)),
 			language: lang.code,
@@ -60,8 +57,11 @@ export class AddNotificationEmailDialog {
 			disabled: false,
 			app: AppType.Mail, // Calendar app doesn't receive mail notifications
 		})
+		pushIdentifier._area = "0" // legacy
+		pushIdentifier._owner = user.userGroup.group // legacy
+		pushIdentifier._ownerGroup = user.userGroup.group
 
-		showProgressDialog("pleaseWait_msg", this.entityClient.setup(assertNotNull(user.pushIdentifierList).list, pushIdentifier))
+		showProgressDialog("pleaseWait_msg", this.entityClient.setup(assertNotNull(user.pushIdentifierList).list, pushIdentifier, null))
 	}
 
 	private validateAddNotificationEmailAddressInput(emailAddress: string): TranslationKey | null {

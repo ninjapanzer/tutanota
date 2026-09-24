@@ -1,16 +1,17 @@
 import {
-	AssociationType,
-	Cardinality,
+	AssociationTypeEnum,
+	CardinalityEnum,
 	compareNewestFirst,
 	elementIdPart,
 	EntityIdEncoding,
 	firstBiggerThanSecondBase64Ext,
 	getServerIdEncodingForType,
 	isSameTypeRef,
+	PersistentEntity,
 	timestampToGeneratedId,
 	TypeModel,
 	TypeRef,
-	ValueType,
+	ValueTypeEnum,
 } from "../../../../platform-kit/meta"
 import { DbTransaction } from "../../../common/api/worker/search/DbFacade.js"
 import {
@@ -25,12 +26,10 @@ import {
 	neverNull,
 	ofClass,
 	promiseMap,
-	promiseMapCompat,
-	PromiseMapFn,
 	tokenize,
 	uint8ArrayToBase64,
 } from "../../../../platform-kit/utils"
-import type {
+import {
 	DecryptedSearchIndexEntry,
 	ElementDataDbRow,
 	EncryptedSearchIndexEntry,
@@ -38,6 +37,7 @@ import type {
 	KeyToEncryptedIndexEntries,
 	KeyToIndexEntries,
 	MoreResultsIndexEntry,
+	SearchCategoryType,
 	SearchIndexEntry,
 	SearchIndexMetaDataDbRow,
 	SearchIndexMetadataEntry,
@@ -58,7 +58,7 @@ import {
 } from "../../../common/api/common/utils/IndexUtils.js"
 import { MailIndexer } from "./MailIndexer.js"
 import { SuggestionFacade } from "./SuggestionFacade.js"
-import * as restError from "../../../../platform-kit/rest-client/error"
+import { NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { iterateBinaryBlocks } from "../../../common/api/worker/search/SearchIndexEncoding.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { UserFacade } from "../../../../platform-kit/base/facades/UserFacade.js"
@@ -67,9 +67,11 @@ import { EncryptedDbWrapper } from "../../../common/api/worker/search/EncryptedD
 import { SearchFacade } from "./SearchFacade"
 import { SearchToken, splitQuery } from "../../../../ui/utils/QueryTokenUtils"
 import { decryptMetaData, decryptSearchIndexEntry, encryptIndexKeyBase64 } from "../../../common/api/worker/search/IndexEncryptionUtils"
-import { Contact, ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
+import { Contact, ContactTypeRef, Mail, MailTypeRef } from "@tutao/entities/tutanota"
 import { ClientTypeModelResolver } from "../../../../platform-kit/instance-pipeline"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
+import { promiseMapCompat, PromiseMapFn } from "./IndexerPromiseUtils"
+import { ProgrammingError } from "@tutao/app-env"
 
 type RowsToReadForIndexKey = {
 	indexKey: string
@@ -99,7 +101,11 @@ export class IndexedDbSearchFacade implements SearchFacade {
 	 * @param minSuggestionCount If minSuggestionCount > 0 regards the last query token as suggestion token and includes suggestion results for that token, but not less than minSuggestionCount
 	 * @returns The result ids are sorted by id from newest to oldest
 	 */
-	async search(query: string, restriction: SearchRestriction, minSuggestionCount: number, maxResults?: number): Promise<SearchResult> {
+	async search(
+		query: string,
+		restriction: SearchRestriction,
+		{ minSuggestionCount, maxResults }: { minSuggestionCount?: number; maxResults?: number } = {},
+	): Promise<SearchResult> {
 		let searchTokens = tokenize(query)
 		let result: SearchResult = {
 			query,
@@ -112,16 +118,17 @@ export class IndexedDbSearchFacade implements SearchFacade {
 			moreResults: [],
 			moreResultsEntries: [],
 		}
+		const typeRef = this.searchRestrictionToTypeRef(restriction)
 
 		if (searchTokens.length > 0) {
 			let isFirstWordSearch = searchTokens.length === 1
 			let before = getPerformanceTimestamp()
 
-			const typeModel = await this.typeModelResolver.resolveClientTypeReference(restriction.type)
+			const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
 			const idEncoding = getServerIdEncodingForType(typeModel)
 			let searchPromise
 
-			if (minSuggestionCount > 0 && isFirstWordSearch && isSameTypeRef(ContactTypeRef, restriction.type)) {
+			if (isNotNull(minSuggestionCount) && minSuggestionCount > 0 && isFirstWordSearch && isSameTypeRef(ContactTypeRef, typeRef)) {
 				let addSuggestionBefore = getPerformanceTimestamp()
 				searchPromise = this.addSuggestions(searchTokens[0], this.contactSuggestionFacade, minSuggestionCount, result).then(() => {
 					if (result.results.length < minSuggestionCount) {
@@ -136,12 +143,12 @@ export class IndexedDbSearchFacade implements SearchFacade {
 						})
 					}
 				})
-			} else if (minSuggestionCount > 0 && !isFirstWordSearch && isSameTypeRef(ContactTypeRef, restriction.type)) {
+			} else if (isNotNull(minSuggestionCount) && minSuggestionCount > 0 && !isFirstWordSearch && isSameTypeRef(ContactTypeRef, typeRef)) {
 				let suggestionToken = neverNull(result.lastReadSearchIndexRow.pop())[0]
 				searchPromise = this.startOrContinueSearch(result).then(() => {
 					// we now filter for the suggestion token manually because searching for suggestions for the last word and reducing the initial search result with them can lead to
 					// dozens of searches without any effect when the seach token is found in too many contacts, e.g. in the email address with the ending "de"
-					result.results.sort((a, b) => compareNewestFirst(a, b, idEncoding))
+					result.results.sort((a, b) => compareNewestFirst(elementIdPart(a), elementIdPart(b), idEncoding))
 					return this.loadAndReduce(restriction, result, suggestionToken, minSuggestionCount)
 				})
 			} else {
@@ -149,11 +156,21 @@ export class IndexedDbSearchFacade implements SearchFacade {
 			}
 
 			return searchPromise.then(() => {
-				result.results.sort((a, b) => compareNewestFirst(a, b, idEncoding))
+				result.results.sort((a, b) => compareNewestFirst(elementIdPart(a), elementIdPart(b), idEncoding))
 				return result
 			})
 		} else {
 			return Promise.resolve(result)
+		}
+	}
+
+	private searchRestrictionToTypeRef(restriction: SearchRestriction): TypeRef<Mail> | TypeRef<Contact> {
+		if (restriction.type === SearchCategoryType.contact) {
+			return ContactTypeRef
+		} else if (restriction.type === SearchCategoryType.mail) {
+			return MailTypeRef
+		} else {
+			throw new ProgrammingError("invalid category")
 		}
 	}
 
@@ -168,16 +185,17 @@ export class IndexedDbSearchFacade implements SearchFacade {
 
 		result.restriction.end = Math.min(restrictionEnd, extensionEnd)
 		result.currentIndexTimestamp = getMailIndexTimestampForSearch(this.mailIndexer.currentIndexTimestamp)
-
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(result.restriction.type)
-		result.results.sort((a, b) => compareNewestFirst(a, b, getServerIdEncodingForType(typeModel)))
+		const typeRef = this.searchRestrictionToTypeRef(result.restriction)
+		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		result.results.sort((a, b) => compareNewestFirst(elementIdPart(a), elementIdPart(b), getServerIdEncodingForType(typeModel)))
 
 		return result
 	}
 
 	private async loadAndReduce(restriction: SearchRestriction, result: SearchResult, suggestionToken: string, minSuggestionCount: number): Promise<void> {
 		if (result.results.length > 0) {
-			const model = await this.typeModelResolver.resolveClientTypeReference(restriction.type)
+			const typeRef = this.searchRestrictionToTypeRef(result.restriction)
+			const model = await this.typeModelResolver.resolveClientTypeReference(typeRef)
 			// if we want the exact search order we try to find the complete sequence of words in an attribute of the instance.
 			// for other cases we only check that an attribute contains a word that starts with suggestion word
 			const suggestionQuery = result.matchWordOrder ? normalizeQuery(result.query) : suggestionToken
@@ -190,9 +208,9 @@ export class IndexedDbSearchFacade implements SearchFacade {
 					let entity
 
 					try {
-						entity = await this.entityClient.load(restriction.type, id)
+						entity = await this.entityClient.load(typeRef as TypeRef<PersistentEntity>, id)
 					} catch (e) {
-						if (e instanceof restError.NotFoundError || e instanceof restError.NotAuthorizedError) {
+						if (e instanceof NotFoundError || e instanceof NotAuthorizedError) {
 							continue
 						} else {
 							throw e
@@ -230,7 +248,7 @@ export class IndexedDbSearchFacade implements SearchFacade {
 
 		return asyncFind(attributeIds, async (attributeId) => {
 			const modelValue = model.values[attributeId]
-			if (modelValue && modelValue.type === ValueType.String && entity[modelValue.name]) {
+			if (modelValue && modelValue.type === ValueTypeEnum.String && entity[modelValue.name]) {
 				const attributeValue = entity[modelValue.name]
 				if (matchWordOrder) {
 					return Promise.resolve(normalizeQuery(attributeValue).indexOf(suggestionToken) !== -1)
@@ -240,8 +258,8 @@ export class IndexedDbSearchFacade implements SearchFacade {
 				}
 			} else {
 				const modelAssociation = model.associations[attributeId]
-				if (modelAssociation && modelAssociation.type === AssociationType.Aggregation && entity[modelAssociation.name]) {
-					let aggregates = modelAssociation.cardinality === Cardinality.Any ? entity[modelAssociation.name] : [entity[modelAssociation.name]]
+				if (modelAssociation && modelAssociation.type === AssociationTypeEnum.Aggregation && entity[modelAssociation.name]) {
+					let aggregates = modelAssociation.cardinality === CardinalityEnum.Any ? entity[modelAssociation.name] : [entity[modelAssociation.name]]
 					const refModel = await this.typeModelResolver.resolveClientTypeReference(new TypeRef(model.app, modelAssociation.refTypeId))
 					return asyncFind(aggregates, (aggregate) => {
 						return this.containsSuggestionToken(downcast<Record<string, any>>(aggregate), refModel, null, suggestionToken, matchWordOrder)
@@ -255,8 +273,8 @@ export class IndexedDbSearchFacade implements SearchFacade {
 
 	private async startOrContinueSearch(searchResult: SearchResult, maxResults?: number): Promise<void> {
 		markStart("findIndexEntries")
-
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(searchResult.restriction.type)
+		const typeRef = this.searchRestrictionToTypeRef(searchResult.restriction)
+		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
 		let moreResultsEntries: Promise<Array<MoreResultsIndexEntry>>
 
 		if (maxResults && searchResult.moreResults.length >= maxResults) {
@@ -339,14 +357,14 @@ export class IndexedDbSearchFacade implements SearchFacade {
 	}
 
 	private async findIndexEntries(searchResult: SearchResult, maxResults: number | null | undefined): Promise<KeyToEncryptedIndexEntries[]> {
-		const typeInfo = typeRefToTypeInfo(searchResult.restriction.type)
+		const typeInfo = typeRefToTypeInfo(this.searchRestrictionToTypeRef(searchResult.restriction))
 		const firstSearchTokenInfo = searchResult.lastReadSearchIndexRow[0]
-		const { key, iv } = await this.db.encryptionData()
+		const { key, initializationVector } = await this.db.encryptionData()
 		// First read all metadata to narrow time range we search in.
 		return this.db.dbFacade.createTransaction(true, [SearchIndexOS, SearchIndexMetaDataOS]).then((transaction) => {
 			return this.promiseMapCompat(searchResult.lastReadSearchIndexRow, (tokenInfo, index) => {
 				const [searchToken] = tokenInfo
-				let indexKey = encryptIndexKeyBase64(key, searchToken, iv)
+				let indexKey = encryptIndexKeyBase64(key, searchToken, initializationVector)
 				return transaction.get(SearchIndexMetaDataOS, indexKey, SearchIndexWordsIndex).then((metaData: SearchIndexMetaDataDbRow | null) => {
 					if (!metaData) {
 						tokenInfo[1] = 0 // "we've read all" (because we don't have anything
@@ -420,10 +438,10 @@ export class IndexedDbSearchFacade implements SearchFacade {
 	}
 
 	private findEntriesForMetadata(transaction: DbTransaction, entry: SearchIndexMetadataEntry): Promise<EncryptedSearchIndexEntry[]> {
-		return transaction.get(SearchIndexOS, entry.key).then((indexEntriesRow) => {
+		return transaction.get(SearchIndexOS, entry.key).then((indexEntriesRow: Uint8Array<ArrayBuffer>) => {
 			if (!indexEntriesRow) return []
 			const result = new Array(entry.size)
-			iterateBinaryBlocks(indexEntriesRow as Uint8Array, (block, s, e, iteration) => {
+			iterateBinaryBlocks(indexEntriesRow, (block, s, e, iteration) => {
 				result[iteration] = block
 			})
 			return result
@@ -524,11 +542,11 @@ export class IndexedDbSearchFacade implements SearchFacade {
 	}
 
 	private async decryptSearchResult(results: KeyToEncryptedIndexEntries[]): Promise<KeyToIndexEntries[]> {
-		const { key, iv } = await this.db.encryptionData()
+		const { key, initializationVector } = await this.db.encryptionData()
 		return results.map((searchResult) => {
 			return {
 				indexKey: searchResult.indexKey,
-				indexEntries: searchResult.indexEntries.map((entry) => decryptSearchIndexEntry(key, entry.encEntry, iv)),
+				indexEntries: searchResult.indexEntries.map((entry) => decryptSearchIndexEntry(key, entry.encEntry, initializationVector)),
 			}
 		})
 	}
@@ -690,7 +708,7 @@ export class IndexedDbSearchFacade implements SearchFacade {
 					const mails = await Promise.all(
 						intermediateResults.map((intermediateResultId) =>
 							this.entityClient.load(MailTypeRef, intermediateResultId).catch(
-								ofClass(restError.NotFoundError, () => {
+								ofClass(NotFoundError, () => {
 									console.log(`Could not find updated mail ${JSON.stringify(intermediateResultId)}`)
 									return null
 								}),

@@ -1,15 +1,16 @@
-import o from "@tutao/otest"
+import o, { assertThrows } from "@tutao/otest"
 import {
 	aes256RandomKey,
 	AesKeyLength,
 	base64ToKey,
 	bitArrayToUint8Array,
-	getAndVerifyAesKeyLength,
 	keyToBase64,
 	keyToUint8Array,
 	uint8ArrayToBitArray,
 	uint8ArrayToKey,
 } from "../../../src/platform-kit/crypto"
+import { CryptoError } from "../../../src/platform-kit/crypto/error"
+import { uint8ArrayTo128Key, uint8ArrayTo256Key } from "@tutao/crypto/symmetric-cipher-utils"
 
 o.spec("SymmetricCipherUtilsTest", function () {
 	o.spec("Key conversion", function () {
@@ -20,11 +21,40 @@ o.spec("SymmetricCipherUtilsTest", function () {
 		})
 		o("keyToBase64 round trip", function () {
 			const key = aes256RandomKey()
-			o(Array.from(base64ToKey(keyToBase64(key)))).deepEquals(key)
+			o(Array.from(base64ToKey(keyToBase64(key)).bits)).deepEquals(key.bits)
 		})
 		o("keyToUint8Array round trip", function () {
 			const key = aes256RandomKey()
-			o(Array.from(uint8ArrayToKey(keyToUint8Array(key)))).deepEquals(key)
+			o(Array.from(uint8ArrayToKey(keyToUint8Array(key)).bits)).deepEquals(key.bits)
+		})
+
+		o.spec("uint8ArrayToKey", function () {
+			o.test("accept only 256", async function () {
+				const bits = new Uint8Array(16).fill(0)
+				await assertThrows(CryptoError, async () => {
+					return uint8ArrayTo256Key(bits)
+				})
+			})
+			o.test("accept only 128", async function () {
+				const bits = new Uint8Array(32).fill(0)
+				await assertThrows(CryptoError, async () => {
+					return uint8ArrayTo128Key(bits)
+				})
+			})
+			o.test("accept 256", function () {
+				const bits = new Uint8Array(32).fill(0)
+				uint8ArrayTo256Key(bits)
+			})
+			o.test("accept 128", function () {
+				const bits = new Uint8Array(16).fill(0)
+				uint8ArrayTo128Key(bits)
+			})
+			o.test("invalid key length", async function () {
+				const bits = new Uint8Array(24).fill(0)
+				await assertThrows(CryptoError, async () => {
+					return uint8ArrayToKey(bits)
+				})
+			})
 		})
 	})
 	o.spec("bitArrayToUint8Array", function () {
@@ -36,11 +66,11 @@ o.spec("SymmetricCipherUtilsTest", function () {
 		o("check key", function () {
 			const expectedKeyLength = AesKeyLength.Aes256
 			const key = aes256RandomKey()
-			const actualKeyLength = getAndVerifyAesKeyLength(key)
+			const actualKeyLength = key.keyLength
 			o(actualKeyLength).equals(expectedKeyLength)
 			const key2 = aes256RandomKey()
 			o(key2).notDeepEquals(key)
-			o(getAndVerifyAesKeyLength(key2)).equals(expectedKeyLength)
+			o(key2.keyLength).equals(expectedKeyLength)
 		})
 	})
 })

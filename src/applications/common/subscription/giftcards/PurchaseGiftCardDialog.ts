@@ -9,11 +9,11 @@ import { renderAcceptGiftCardTermsCheckbox, showGiftCardToShare } from "./GiftCa
 import type { DialogHeaderBarAttrs } from "../../../../ui/base/DialogHeaderBar"
 import { showUserError } from "../../misc/ErrorHandlerImpl"
 import { UserError } from "../../api/main/UserError"
-import { isIOSApp, Keys } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { lang, Translation } from "../../../../ui/utils/LanguageViewModel"
-import * as restError from "@tutao/rest-client/error"
+import { BadGatewayError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { GiftCardMessageEditorField } from "./GiftCardMessageEditorField"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { count, filterInt, noOp, ofClass } from "@tutao/utils"
 import { formatPrice, PaymentInterval, PriceAndConfigProvider } from "../utils/PriceUtils"
 import { UpgradePriceType } from "../FeatureListProvider"
@@ -23,8 +23,10 @@ import { Icon, IconSize } from "../../../../ui/base/Icon"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
 import { MessageBanner } from "../../../../ui/base/MessageBanner"
-import { GiftCard, GiftCardOption, GiftCardService, GiftCardTypeRef } from "@tutao/entities/sys"
+import { GiftCard, GiftCardOption, GiftCardService_GET, GiftCardTypeRef } from "@tutao/entities/sys"
 import { PaymentMethodType, PlanType } from "../../../../entities/sys/Utils"
+import { NULL_ENTITY } from "@tutao/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 class PurchaseGiftCardModel {
 	message = lang.get("defaultGiftCardMessage_msg")
@@ -80,7 +82,7 @@ class PurchaseGiftCardModel {
 	}
 
 	private handlePurchaseError(e: Error): never {
-		if (e instanceof restError.PreconditionFailedError) {
+		if (e instanceof PreconditionFailedError) {
 			const message = e.data
 
 			switch (message) {
@@ -101,7 +103,7 @@ class PurchaseGiftCardModel {
 				default:
 					throw new UserError(getPreconditionFailedPaymentMsg(e.data))
 			}
-		} else if (e instanceof restError.TooManyRequestsError) {
+		} else if (e instanceof BadGatewayError) {
 			throw new UserError("paymentProviderNotAvailableError_msg")
 		} else {
 			throw e
@@ -209,7 +211,7 @@ class GiftCardPurchaseView implements Component<GiftCardPurchaseViewAttrs> {
  */
 
 export async function showPurchaseGiftCardDialog() {
-	if (isIOSApp()) {
+	if (EnvProvider.get().isIOSApp()) {
 		return Dialog.message("notAvailableInApp_msg")
 	}
 
@@ -253,7 +255,7 @@ export async function showPurchaseGiftCardDialog() {
 		exec: () => dialog.close(),
 		help: "close_alt",
 	})
-	if (client.isMobileDevice()) {
+	if (ClientDetector.get().isMobileDevice()) {
 		// Prevent focusing text field automatically on mobile. It opens keyboard and you don't see all details.
 		dialog.setFocusOnLoadFunction(noOp)
 	}
@@ -270,7 +272,7 @@ async function loadGiftCardModel(): Promise<PurchaseGiftCardModel> {
 	}
 
 	const [giftCardInfo, customerInfo] = await Promise.all([
-		locator.serviceExecutor.get(GiftCardService, null),
+		locator.serviceExecutor.execute(GiftCardService_GET, NULL_ENTITY, null),
 		locator.logins.getUserController().loadCustomerInfo(),
 	])
 

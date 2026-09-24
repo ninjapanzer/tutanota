@@ -6,11 +6,11 @@ export type ApplicationPaths = Record<string, RouteResolver>
 type ViewResolvers = {
 	login: RouteResolver
 	termination: RouteResolver
+	revocation: RouteResolver
 	mail: RouteResolver
 	externalLogin: RouteResolver
 	contact: RouteResolver
 	contactList: RouteResolver
-	search: RouteResolver
 	settings: RouteResolver
 	calendar: RouteResolver
 	drive: RouteResolver
@@ -20,16 +20,20 @@ type ViewResolvers = {
 	recover: RouteResolver
 	webauthn: RouteResolver
 	webauthnmobile: RouteResolver
+	mailSearch: RouteResolver
+	contactSearch: RouteResolver
+	calendarSearch: RouteResolver
+	driveSearch: RouteResolver
 }
 
 export function applicationPaths({
 	login,
 	termination,
+	revocation,
 	mail,
 	externalLogin,
 	contact,
 	contactList,
-	search,
 	settings,
 	calendar,
 	drive,
@@ -39,10 +43,15 @@ export function applicationPaths({
 	recover,
 	webauthn,
 	webauthnmobile,
+	mailSearch,
+	contactSearch,
+	calendarSearch,
+	driveSearch,
 }: ViewResolvers): ApplicationPaths {
 	return {
 		"/login": login,
 		"/termination": termination,
+		"/revocation": revocation,
 		"/signup": signup,
 		"/recover": recover,
 		"/mailto": mail,
@@ -56,8 +65,14 @@ export function applicationPaths({
 		"/contactlist": contactList,
 		"/contactlist/:listId": contactList,
 		"/contactlist/:listId/:Id": contactList,
-		"/search/:category": search,
-		"/search/:category/:id": search,
+		"/search/mail": mailSearch,
+		"/search/mail/:id": mailSearch,
+		"/search/contact": contactSearch,
+		"/search/contact/:id": contactSearch,
+		"/search/calendar": calendarSearch,
+		"/search/calendar/:id": calendarSearch,
+		"/search/drive/": driveSearch,
+		"/search/drive/:id": driveSearch,
 		"/settings": settings,
 		"/settings/:folder": settings,
 		"/settings/:folder/:id": settings,

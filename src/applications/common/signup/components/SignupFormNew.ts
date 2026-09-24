@@ -20,11 +20,13 @@ import { CURRENT_TERMS_VERSION, renderTermsAndConditionsButton, TermsSection } f
 import { TextField } from "../../../../ui/base/TextField"
 import { SelectMailAddressFormAttrs, SelectMailAddressFormNew } from "./SelectMailAddressFormNew"
 import { PasswordFormNew, PasswordModel } from "./PasswordFormNew.js"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { SignupViewModel } from "../SignupView"
 import { getWhitelabelRegistrationDomains } from "../../../../ui/utils/WhitelabelUtils"
 
 import { PlanType } from "../../../../entities/sys/Utils"
+
+import { isFreeSignupOnly } from "../../misc/LoginUtils"
 
 export type SignupFormAttrs = {
 	// will return an error message that needs to be displayed in case of recoverable errors.
@@ -166,6 +168,12 @@ export class SignupFormNew implements Component<SignupFormAttrs> {
 					Dialog.confirm(lang.makeTranslation("confirm_msg", `${lang.get("paidEmailDomainSignup_msg")}\n${lang.get("changePaidPlan_msg")}`)).then(
 						(confirmed) => {
 							if (confirmed) {
+								/* Temporarely restricting to free only to get accepted by Google Play Store */
+								if (isFreeSignupOnly()) {
+									Dialog.message("notAvailableInApp_msg")
+									return
+								}
+
 								this.selectedDomain = domain
 								vnode.attrs.onChangePlan()
 							}
@@ -235,7 +243,7 @@ export class SignupFormNew implements Component<SignupFormAttrs> {
 
 		return m(
 			"#signup-account-dialog.flex-start",
-			m(`.flex.flex-column.max-width-l.pb-16.full-width${styles.isMobileLayout() ? ".gap-8" : ".gap-16"}`, [
+			m(`.flex.flex-column.max-width-l.pb-16.full-width${Styles.get().isMobileLayout() ? ".gap-8" : ".gap-16"}`, [
 				this.readonly
 					? m(TextField, {
 							class: "",
@@ -263,14 +271,14 @@ export class SignupFormNew implements Component<SignupFormAttrs> {
 							]),
 						],
 				m(
-					`.flex.flex-end${styles.isMobileLayout() ? ".mt-24.mb-24" : ".mt-32.mb-32"}`,
+					`.flex.flex-end${Styles.get().isMobileLayout() ? ".mt-24.mb-24" : ".mt-32.mb-32"}`,
 					m(PrimaryButton, {
 						label: this.readonly ? "continue_action" : "create_new_account_label",
 						onclick: submit,
 						disabled:
 							!this.readonly &&
 							(!this._confirmTerms() || (a.signupViewModel.targetPlanType === PlanType.Free && !this._confirmPersonalAccountLimit)),
-						width: styles.isMobileLayout() ? "full" : "flex",
+						width: Styles.get().isMobileLayout() ? "full" : "flex",
 					}),
 				),
 			]),

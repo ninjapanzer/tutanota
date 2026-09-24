@@ -1107,11 +1107,7 @@ mod stests {
 		);
 
 		let result = entity_client
-			.load_multiple(
-				&TestListGeneratedElementIdEntity::type_ref(),
-				&list_id,
-				&[],
-			)
+			.load_multiple(&TestListGeneratedElementIdEntity::type_ref(), &list_id, &[])
 			.await
 			.expect("success");
 		assert_eq!(result, Vec::<ParsedEntity>::new());

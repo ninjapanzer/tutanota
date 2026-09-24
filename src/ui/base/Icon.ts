@@ -2,11 +2,11 @@ import m, { Children, Component, Vnode, VnodeDOM } from "mithril"
 import { theme } from "../theme"
 import type { lazy } from "../../platform-kit/utils"
 import { memoized } from "../../platform-kit/utils"
-import { assertMainOrNode } from "../../platform-kit/app-env"
+import { EnvProvider } from "../../platform-kit/app-env"
 import { Icons } from "./icons/Icons"
 import { px, size } from "../size.js"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * @deprecated use {@link Icons} directly instead
@@ -17,6 +17,7 @@ export enum IconSize {
 	PX20,
 	PX24,
 	PX32,
+	PX40,
 	PX64,
 }
 
@@ -132,6 +133,9 @@ export class Icon implements Component<IconAttrs> {
 				break
 			case IconSize.PX32:
 				cls += "icon-32 "
+				break
+			case IconSize.PX40:
+				cls += "icon-40 "
 				break
 			case IconSize.PX64:
 				cls += "icon-64 "

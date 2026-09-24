@@ -10,7 +10,7 @@ import { ReplacementKey } from "../FeatureListProvider.js"
 import { Icon, IconSize } from "../../../../ui/base/Icon.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { TranslationKeyType } from "../../../../ui/utils/TranslationKey.js"
-import { styles } from "../../../../ui/styles.js"
+import { Styles } from "../../../../ui/styles.js"
 import { getFeaturePlaceholderReplacement, PlanTypeToName } from "../utils/SubscriptionUtils.js"
 import { PlanBadge } from "./PlanBadge.js"
 import { PlanConfig } from "./BusinessPlanContainer"
@@ -36,6 +36,7 @@ type PersonalPlanBoxAttrs = {
 	showMultiUser: boolean
 	position: Exclude<PlanBoxPosition, "bottom">
 	discountDetail?: DiscountDetail
+	freePlanVisible?: boolean
 }
 
 export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
@@ -69,6 +70,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 			showMultiUser,
 			position,
 			discountDetail,
+			freePlanVisible,
 		},
 	}: Vnode<PersonalPlanBoxAttrs>) {
 		this.scale = isSelected && !this.preventRescaling ? PLAN_SELECTOR_SELECTED_BOX_SCALE : "initial"
@@ -81,7 +83,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 		}
 		const strikethroughPrice = hasCampaign || isYearly ? referencePrice : undefined
 
-		const renderFeature = this.generateRenderFeature(planConfig.type, priceAndConfigProvider, localTheme)
+		const renderFeature = this.generateRenderFeature(planConfig.type, priceAndConfigProvider, localTheme, hasCampaign)
 		const getPriceHintStr = (): string => {
 			if (showMultiUser) {
 				return lang.get("pricing.perUserMonth_label")
@@ -95,9 +97,9 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 
 		const transformOrigin = () => {
 			if (position === "right") {
-				return styles.isMobileLayout() ? "center right" : "center left"
+				return Styles.get().isMobileLayout() ? "center right" : "center left"
 			} else {
-				return styles.isMobileLayout() ? "center left" : "center right"
+				return Styles.get().isMobileLayout() ? "center left" : "center right"
 			}
 		}
 
@@ -133,10 +135,10 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 						"border-style": "solid",
 						"border-color": getBorderColor(isSelected, hasCampaign, localTheme),
 						"border-width": getBorderWidth(isSelected, position),
-						"border-radius": getBorderRadius(hasCampaign, position),
+						"border-radius": getBorderRadius(hasCampaign, position, freePlanVisible),
 						"box-shadow": isSelected ? boxShadowHigh : "none",
 						overflow: "hidden",
-						padding: `${px(20)} ${px(styles.isMobileLayout() ? 16 : 20)}`,
+						padding: `${px(20)} ${px(Styles.get().isMobileLayout() ? 16 : 20)}`,
 					},
 				},
 
@@ -145,7 +147,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 					{
 						style: {
 							gap: "8px",
-							...(styles.isMobileLayout()
+							...(Styles.get().isMobileLayout()
 								? {
 										"align-items": position === "left" ? "flex-end" : "flex-start",
 										"flex-direction": "column",
@@ -164,16 +166,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 						},
 						disabled: isDisabled,
 					}),
-					m(
-						".text-center.flex.col.center-horizontally.m-0.font-mdio",
-						{
-							style: {
-								"font-size": px(styles.isMobileLayout() ? 18 : 20),
-								color: isSelected ? localTheme.primary : localTheme.on_surface,
-							},
-						},
-						PlanTypeToName[planConfig.type],
-					),
+					this.renderPlanName(isSelected, hasCampaign, localTheme, planConfig),
 				),
 
 				m("hr", {
@@ -185,19 +178,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 						backgroundColor: isSelected ? localTheme.primary : localTheme.outline_variant,
 					},
 				}),
-				m(
-					".flex.mt-8",
-					{
-						style: {
-							"justify-content": position === "right" ? "start" : "end",
-							"flex-direction": position === "right" ? "row-reverse" : "row",
-							height: px(component_size.button_height_compact),
-						},
-					},
-					isCurrentPlan || isDisabled
-						? m(PlanBadge, { langKey: isCurrentPlan ? "pricing.currentPlan_label" : "unavailable_label" })
-						: m(".smaller", lang.get(planConfig.tagLine)),
-				),
+				this.renderTagLine(position, hasCampaign, localTheme, isCurrentPlan, isDisabled, planConfig),
 				m(".flex-space-between.gap-12.mt-16.mb-16", { style: { "flex-direction": position === "right" ? "row-reverse" : "row" } }, [
 					m(
 						"",
@@ -207,7 +188,7 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 								fill: localTheme.on_surface_variant,
 							},
 						},
-						styles.bodyWidth <= 420
+						Styles.get().bodyWidth <= 420
 							? null
 							: m(Icon, {
 									icon: planConfig.icon,
@@ -260,7 +241,9 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 							".small.flex",
 							{ style: { "justify-content": "center", "column-gap": px(1) } },
 							m("span", getPriceHintStr()),
-							discountDetail?.discountType === "GlobalFirstYear" && isYearly && m("sup", { style: { "font-size": px(8) } }, "1"),
+							(discountDetail?.discountType === "GlobalFirstYear" || discountDetail?.discountType === "BonusMonthsAndGlobalFirstYear") &&
+								isYearly &&
+								m("sup", { style: { "font-size": px(8) } }, "1"),
 						),
 					),
 				]),
@@ -273,7 +256,50 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 		)
 	}
 
-	private generateRenderFeature(planType: PlanType, provider: PriceAndConfigProvider, localTheme: Theme) {
+	private renderTagLine(
+		position: "left" | "right",
+		hasCampaign: boolean,
+		localTheme: Theme,
+		isCurrentPlan: boolean,
+		isDisabled: boolean,
+		planConfig: PlanConfig,
+	) {
+		return m(
+			".flex.mt-8",
+			{
+				style: {
+					"justify-content": position === "right" ? "start" : "end",
+					"flex-direction": position === "right" ? "row-reverse" : "row",
+					height: px(component_size.button_height_compact),
+					color: hasCampaign ? localTheme.primary : undefined,
+				},
+			},
+			isCurrentPlan || isDisabled
+				? m(PlanBadge, { langKey: isCurrentPlan ? "pricing.currentPlan_label" : "unavailable_label" })
+				: m(".smaller", lang.get(planConfig.tagLine)),
+		)
+	}
+
+	private renderPlanName(isSelected: boolean, hasCampaign: boolean, localTheme: Theme, planConfig: PlanConfig) {
+		let color
+		if (hasCampaign) {
+			color = localTheme.primary
+		} else {
+			color = isSelected ? localTheme.primary : localTheme.on_surface
+		}
+		return m(
+			".text-center.flex.col.center-horizontally.m-0.font-mdio",
+			{
+				style: {
+					"font-size": px(Styles.get().isMobileLayout() ? 18 : 20),
+					color,
+				},
+			},
+			PlanTypeToName[planConfig.type],
+		)
+	}
+
+	private generateRenderFeature(planType: PlanType, provider: PriceAndConfigProvider, localTheme: Theme, hasCampaign: boolean) {
 		return (langKey: TranslationKeyType, icon: Icons, replacement?: ReplacementKey) => {
 			return m(
 				".flex",
@@ -288,7 +314,11 @@ export class PersonalPaidPlanBox implements Component<PersonalPlanBoxAttrs> {
 						fill: localTheme.secondary,
 					},
 				}),
-				m(".smaller", lang.get(langKey, getFeaturePlaceholderReplacement(replacement, planType, provider))),
+				m(
+					".smaller",
+					{ style: { color: hasCampaign ? localTheme.secondary : undefined } },
+					lang.get(langKey, getFeaturePlaceholderReplacement(replacement, planType, provider)),
+				),
 			)
 		}
 	}

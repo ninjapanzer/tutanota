@@ -1,16 +1,16 @@
 import { SearchFacade } from "./SearchFacade"
-import { SearchRestriction, SearchResult } from "../../../common/api/worker/search/SearchTypes"
+import { SearchCategoryType, SearchRestriction, SearchResult } from "../../../common/api/worker/search/SearchTypes"
 import { sql } from "../../../../app-kit/local-store/Sql"
 import { SqlCipherFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { MailIndexer } from "./MailIndexer"
 import { getMailIndexTimestampForSearch } from "../../../common/api/common/utils/IndexUtils"
 import { assertNotNull, first, isEmpty, last, splitArrayAt } from "../../../../platform-kit/utils"
-import { isSameId, isSameTypeRef } from "../../../../platform-kit/meta"
+import { getTypeString, isSameId } from "../../../../platform-kit/meta"
 import { FULL_INDEXED_TIMESTAMP, NOTHING_INDEXED_TIMESTAMP, ProgrammingError } from "@tutao/app-env"
 import { ContactIndexer } from "./ContactIndexer"
-import { ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import { untagSqlValue } from "../../../../app-kit/local-store/SqlValue"
 import { SearchToken, splitQuery } from "../../../../ui/utils/QueryTokenUtils"
+import { ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 
 /**
  * Handles preparing and running SQLite+FTS5 search queries
@@ -22,15 +22,19 @@ export class OfflineStorageSearchFacade implements SearchFacade {
 		private readonly contactIndexer: ContactIndexer,
 	) {}
 
-	async search(query: string, restriction: SearchRestriction, _minSuggestionCount: number, maxResults?: number): Promise<SearchResult> {
+	async search(
+		query: string,
+		restriction: SearchRestriction,
+		{ maxResults }: { minSuggestionCount?: number; maxResults?: number } = {},
+	): Promise<SearchResult> {
 		const tokens = await this.tokenize(query)
 
-		if (isSameTypeRef(restriction.type, MailTypeRef)) {
+		if (restriction.type === SearchCategoryType.mail) {
 			return this.searchMails(query, tokens, restriction, maxResults)
-		} else if (isSameTypeRef(restriction.type, ContactTypeRef)) {
+		} else if (restriction.type === SearchCategoryType.contact) {
 			return this.searchContacts(query, tokens, restriction)
 		} else {
-			throw new ProgrammingError(`cannot search ${restriction.type.typeId}`)
+			throw new ProgrammingError(`cannot search ${restriction.type}`)
 		}
 	}
 
@@ -48,7 +52,7 @@ export class OfflineStorageSearchFacade implements SearchFacade {
 			end: extensionEnd,
 		}
 
-		return this.search(result.query, extensionRestriction, 0).then((extensionResult) => {
+		return this.search(result.query, extensionRestriction).then((extensionResult) => {
 			let moreResultsEntries: IdTuple[]
 
 			if (isEmpty(extensionResult.results)) {
@@ -127,18 +131,19 @@ export class OfflineStorageSearchFacade implements SearchFacade {
 			// Note: We use instr() for checking for sets, but there's a small gotcha: instr() is 1-indexed, returning 0
 			// if not found, 1 for the first char, etc.; see https://www.sqlitetutorial.net/sqlite-functions/sqlite-instr/
 			const preparedSqlQuery = sql`
-                SELECT list_entities.listId,
-                       list_entities.elementId
-                FROM mail_index
-                         INNER JOIN list_entities ON
-                    mail_index.rowid = list_entities.rowid
-                         INNER JOIN content_mail_index ON
-                    list_entities.rowid = content_mail_index.rowid
-                WHERE mail_index = ${queryString}
-                  AND instr(content_mail_index.sets, ${idToSearch}) > 0
-                  AND content_mail_index.receivedDate <= ${restriction.start ?? Number.MAX_SAFE_INTEGER}
-                  AND content_mail_index.receivedDate >= ${restriction.end ?? 0}
-                ORDER BY content_mail_index.receivedDate DESC`
+				SELECT list_entities.listId,
+					   list_entities.elementId
+				FROM mail_index
+						 INNER JOIN list_entities ON
+					mail_index.rowid = list_entities.rowid
+						 INNER JOIN content_mail_index ON
+					list_entities.rowid = content_mail_index.rowid
+				WHERE mail_index = ${queryString}
+				  AND list_entities.type = ${getTypeString(MailTypeRef)}
+				  AND instr(content_mail_index.sets, ${idToSearch}) > 0
+				  AND content_mail_index.receivedDate <= ${restriction.start ?? Number.MAX_SAFE_INTEGER}
+				  AND content_mail_index.receivedDate >= ${restriction.end ?? 0}
+				ORDER BY content_mail_index.receivedDate DESC`
 			const resultRows = await this.sqlCipherFacade.all(preparedSqlQuery.query, preparedSqlQuery.params)
 			const resultIds = resultRows.map(({ listId, elementId }) => {
 				return [untagSqlValue(listId) as string, untagSqlValue(elementId) as string] satisfies IdTuple
@@ -186,13 +191,14 @@ export class OfflineStorageSearchFacade implements SearchFacade {
 			const columnList = contactFieldToColumn(restriction.field)
 			const queryString = columnList != null ? `{${columnList}} : ${normalizedQuery}` : normalizedQuery
 			const preparedSqlQuery = sql`
-                SELECT list_entities.listId,
-                       list_entities.elementId
-                FROM contact_index
-                         INNER JOIN list_entities ON
-                    contact_index.rowid = list_entities.rowid
-                WHERE contact_index = ${queryString}
-                ORDER BY contact_index.firstName, contact_index.lastName`
+				SELECT list_entities.listId,
+					   list_entities.elementId
+				FROM contact_index
+						 INNER JOIN list_entities ON
+					contact_index.rowid = list_entities.rowid
+				WHERE contact_index = ${queryString}
+				  AND list_entities.type = ${getTypeString(ContactTypeRef)}
+				ORDER BY contact_index.firstName, contact_index.lastName`
 
 			const resultRows = await this.sqlCipherFacade.all(preparedSqlQuery.query, preparedSqlQuery.params)
 			const resultIds = resultRows.map(({ listId, elementId }) => {

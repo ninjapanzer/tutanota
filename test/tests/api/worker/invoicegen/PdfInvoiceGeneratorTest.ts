@@ -7,6 +7,7 @@ import { invoiceItemListMock } from "./invoiceTestUtils.js"
 import { PaymentMethod, VatType } from "../../../../../src/applications/common/api/worker/invoicegen/InvoiceUtils.js"
 
 import { InvoiceDataGetOutTypeRef } from "@tutao/entities/sys"
+import { EnvProvider } from "../../../../../src/platform-kit/app-env"
 
 o.spec("PdfInvoiceGenerator", function () {
 	let pdfWriter: PdfWriter
@@ -74,13 +75,13 @@ o.spec("PdfInvoiceGenerator", function () {
 })
 
 async function fetchStub(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-	if (globalThis.isBrowser) {
+	if (globalThis.isBrowserTest) {
 		return fetch("./resources/pdf/" + input.toString())
 	} else {
 		const [fs, path] = await Promise.all([import("node:fs"), import("node:path")])
 		const resourceFile = path.normalize(process.cwd() + "/../resources" + input.toString())
 		const response: Response = object()
-		when(response.arrayBuffer()).thenResolve(fs.readFileSync(resourceFile))
+		when(response.arrayBuffer()).thenResolve(fs.readFileSync(resourceFile).buffer)
 		return response
 	}
 }

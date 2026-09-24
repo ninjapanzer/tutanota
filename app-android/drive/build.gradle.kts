@@ -19,9 +19,9 @@ android {
 	defaultConfig {
 		applicationId = "de.tutao.drive"
 		minSdk = 26
-		targetSdk = 35
-		versionCode = 1
-		versionName = "348.260506.0"
+		targetSdk = 36
+		versionCode = 53
+		versionName = "359.260904.0"
 
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 	}

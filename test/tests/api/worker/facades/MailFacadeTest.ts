@@ -3,7 +3,7 @@ import { MailFacade, phishingMarkerValue, validateMimeTypesForAttachments } from
 
 import { CryptoProtocolVersion, MailAuthenticationStatus, ProgrammingError } from "../../../../../src/platform-kit/app-env"
 import { matchers, object, when } from "testdouble"
-import { CryptoFacade } from "../../../../../src/platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/CryptoFacade.js"
 import { IServiceExecutor } from "../../../../../src/platform-kit/network/ServiceRequest.js"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient.js"
 import { BlobFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/BlobFacade.js"
@@ -12,9 +12,9 @@ import { NativeFileApp } from "../../../../../src/app-kit/native-bridge/common/F
 import { LoginFacade } from "../../../../../src/platform-kit/base/facades/LoginFacade.js"
 import { downcast, KeyVersion, lazyNumberRange } from "../../../../../src/platform-kit/utils"
 import { createTestEntity } from "../../../TestUtils.js"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
-import PublicEncryptionKeyProvider from "../../../../../src/platform-kit/base/crypto/PublicEncryptionKeyProvider.js"
-import { AesKey, CryptoWrapper, VersionedEncryptedKey } from "../../../../../src/platform-kit/crypto"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
+import PublicEncryptionKeyProvider from "../../../../../src/platform-kit/base/base-crypto/PublicEncryptionKeyProvider.js"
+import { Aes128Key, AesKey, VersionedEncryptedKey } from "../../../../../src/platform-kit/crypto"
 import { RecipientsNotFoundError } from "../../../../../src/platform-kit/network/error/RecipientsNotFoundError"
 import { KeyVerificationMismatchError } from "../../../../../src/platform-kit/network/error/KeyVerificationMismatchError"
 import { SpamClassifier } from "../../../../../src/applications/mail-app/workerUtils/spamClassification/SpamClassifier"
@@ -35,7 +35,7 @@ import {
 	SendDraftData,
 	SendDraftDataTypeRef,
 	SymEncInternalRecipientKeyDataTypeRef,
-	UnreadMailStateService,
+	UnreadMailStateService_POST,
 } from "@tutao/entities/tutanota"
 import {
 	BucketKeyTypeRef,
@@ -50,6 +50,7 @@ import { elementIdPart, getElementId } from "../../../../../src/platform-kit/met
 import { MAX_NBR_OF_MAILS_SYNC_OPERATION, Recipient, ReportedMailFieldType } from "../../../../../src/entities/tutanota/Utils"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
 import { DataFile } from "../../../../../src/entities/tutanota/MailBundle"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 
 o.spec("MailFacade test", function () {
 	let facade: MailFacade
@@ -465,12 +466,13 @@ o.spec("MailFacade test", function () {
 			const testIds: IdTuple[] = [["a", "b"]]
 			await facade.markMails(testIds, true)
 			verify(
-				serviceExecutor.post(
-					UnreadMailStateService,
+				serviceExecutor.execute(
+					UnreadMailStateService_POST,
 					matchers.contains({
 						mails: testIds,
 						unread: true,
 					}),
+					null,
 				),
 			)
 		})
@@ -482,12 +484,13 @@ o.spec("MailFacade test", function () {
 			]
 			await facade.markMails(testIds, true)
 			verify(
-				serviceExecutor.post(
-					UnreadMailStateService,
+				serviceExecutor.execute(
+					UnreadMailStateService_POST,
 					matchers.contains({
 						mails: testIds,
 						unread: true,
 					}),
+					null,
 				),
 			)
 		})
@@ -501,17 +504,18 @@ o.spec("MailFacade test", function () {
 			await facade.markMails(testIds, true)
 			for (let i = 0; i < expectedBatches; i++) {
 				verify(
-					serviceExecutor.post(
-						UnreadMailStateService,
+					serviceExecutor.execute(
+						UnreadMailStateService_POST,
 						matchers.contains({
 							mails: testIds.slice(i * MAX_NBR_OF_MAILS_SYNC_OPERATION, (i + 1) * MAX_NBR_OF_MAILS_SYNC_OPERATION),
 							unread: true,
 						}),
+						null,
 					),
 				)
 			}
 
-			verify(serviceExecutor.post(UnreadMailStateService, matchers.anything()), { times: expectedBatches })
+			verify(serviceExecutor.execute(UnreadMailStateService_POST, matchers.anything(), null), { times: expectedBatches })
 		})
 	})
 
@@ -539,7 +543,7 @@ o.spec("MailFacade test", function () {
 				mail.attachments.push(["someListId", attachmentId])
 			}
 			when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
-				resolvedSessionKeyForInstance: [],
+				resolvedSessionKeyForInstance: new Aes128Key([0, 1, 2, 3]),
 				instanceSessionKeys,
 			})
 			return mail

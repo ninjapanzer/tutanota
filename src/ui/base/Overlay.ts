@@ -1,12 +1,12 @@
 import m, { Children, Component, VnodeDOM } from "mithril"
 import { LayerType } from "./RootView"
 import { lazy, makeSingleUse, newPromise } from "../../platform-kit/utils"
-import { assertMainOrNodeBoot } from "../../platform-kit/app-env"
+import { EnvProvider } from "../../platform-kit/app-env"
 import { component_size, px } from "../size.js"
-import { styles } from "../styles.js"
+import { Styles } from "../styles.js"
 import { getSafeAreaInsetBottom } from "../HtmlUtils.js"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 export type PositionRect = {
 	top?: string | null
 	left?: string | null
@@ -70,7 +70,7 @@ export function displayOverlay(
 }
 
 export function overlayBottomMargin(): number | null {
-	return styles.isUsingBottomNavigation() ? component_size.bottom_nav_bar + getSafeAreaInsetBottom() : null
+	return Styles.get().isUsingBottomNavigation() ? component_size.bottom_nav_bar + getSafeAreaInsetBottom() : null
 }
 
 export const overlay: Component<OverlayParentAttrs> = {

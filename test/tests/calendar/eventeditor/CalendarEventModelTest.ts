@@ -6,12 +6,13 @@ import {
 	eventHasChanged,
 	EventSaveResult,
 	makeCalendarEventModel,
+	removeTechnicalFields,
 } from "../../../../src/applications/calendar-app/calendar/gui/eventeditor-model/CalendarEventModel.js"
 import { CalendarNotificationSender } from "../../../../src/applications/calendar-app/calendar/view/CalendarNotificationSender.js"
 import { CalendarModel } from "../../../../src/applications/calendar-app/calendar/model/CalendarModel.js"
 
 import { EntityClient } from "../../../../src/platform-kit/network/EntityClient.js"
-import { calendars, getDateInZone, makeUserController, otherAddress, ownerAddress, ownerAlias, ownerId, ownerMailAddress } from "../CalendarTestUtils.js"
+import { calendars, getDateInZone, makeUserController, otherAddress, ownerAddress, ownerAlias, ownerMailAddress, userId } from "../CalendarTestUtils.js"
 import { identity, noOp } from "../../../../src/platform-kit/utils"
 import { RecipientsModel, ResolvableRecipient } from "../../../../src/applications/common/api/main/RecipientsModel.js"
 import { LoginController } from "../../../../src/applications/common/api/main/LoginController.js"
@@ -21,6 +22,7 @@ import { SendMailModel } from "../../../../src/applications/common/mailFunctiona
 import { MailboxDetail } from "../../../../src/applications/common/mailFunctionality/MailboxModel.js"
 import { CalendarInviteHandler } from "../../../../src/applications/calendar-app/calendar/view/CalendarInvites"
 import {
+	CalendarEvent,
 	CalendarEventAttendeeTypeRef,
 	CalendarEventTypeRef,
 	createCalendarEventAttendee,
@@ -45,6 +47,7 @@ import {
 } from "@tutao/entities/sys"
 import { CalendarAttendeeStatus } from "../../../../src/entities/tutanota/Utils"
 import { AccountType } from "../../../../src/entities/sys/Utils"
+import { CalendarEventProgenitor } from "../../../../src/applications/common/api/worker/facades/lazy/CalendarFacade"
 
 o.spec("CalendarEventModel", function () {
 	let distributor: CalendarNotificationSender
@@ -60,7 +63,7 @@ o.spec("CalendarEventModel", function () {
 	o.spec("integration tests", function () {
 		o("doing no edit operation on an existing event updates it as expected, no updates.", async function () {
 			// this test case is insane and only serves as a warning example to not do such things.
-			const event = createTestEntity(CalendarEventTypeRef, {
+			const event: CalendarEventProgenitor = createTestEntity(CalendarEventTypeRef, {
 				sequence: "0",
 				_id: ["eventListId", "eventElementId"],
 				_ownerGroup: "ownCalendar",
@@ -93,12 +96,12 @@ o.spec("CalendarEventModel", function () {
 						status: CalendarAttendeeStatus.ACCEPTED,
 					}),
 				],
-			})
+			}) as CalendarEventProgenitor
 			const recipientsModel: RecipientsModel = object()
 			const logins: LoginController = object()
 			const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 
-			const userController = makeUserController([ownerAlias.address], AccountType.PAID, ownerMailAddress, true, false, undefined, userSettingsGroupRoot)
+			const userController = makeUserController([ownerAlias.address], AccountType.PAID, ownerMailAddress, true, false, null!, userSettingsGroupRoot)
 			when(logins.getUserController()).thenReturn(userController)
 
 			when(calendarModel.loadAlarms(event.alarmInfos, userController.user)).thenResolve([
@@ -131,7 +134,7 @@ o.spec("CalendarEventModel", function () {
 				mailbox: createTestEntity(MailBoxTypeRef),
 				mailGroupInfo: createTestEntity(GroupInfoTypeRef),
 				mailGroup: createTestEntity(GroupTypeRef, {
-					user: ownerId,
+					user: userId,
 				}),
 				mailboxGroupRoot: createTestEntity(MailboxGroupRootTypeRef),
 			}
@@ -315,6 +318,29 @@ o.spec("CalendarEventModel", function () {
 
 		o("equal if the dates are the same", function () {
 			o(areExcludedDatesEqual([dw("2023-03-06T13:56")], [dw("2023-03-06T13:56")])).equals(true)
+		})
+	})
+
+	o.spec("removeTechnicalFields", function () {
+		function makeEntity(): CalendarEvent {
+			return createTestEntity(CalendarEventTypeRef, {
+				_id: ["testList", "testElement"],
+				// so that we can compare it
+				_type: CalendarEventTypeRef,
+				_ownerGroup: null,
+				_ownerEncSessionKey: null,
+				_kdfNonce: null,
+			})
+		}
+
+		o("it doesn't do anything when there's nothing to remove", function () {
+			const originalEntity = makeEntity() as any
+			delete originalEntity["isAdapter"]
+			delete originalEntity["_errors"]
+			delete originalEntity["_original"]
+			const entityCopy = clone(originalEntity)
+			removeTechnicalFields(entityCopy)
+			o(entityCopy).deepEquals(originalEntity)
 		})
 	})
 })

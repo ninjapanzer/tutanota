@@ -3,25 +3,18 @@ import o from "@tutao/otest"
 import { DesktopNativeCryptoFacade } from "../../../src/applications/common/desktop/DesktopNativeCryptoFacade.js"
 import { stringToUtf8Uint8Array } from "../../../src/platform-kit/utils"
 import type { CryptoFunctions } from "../../../src/applications/common/desktop/CryptoFns.js"
-import {
-	aes256RandomKey,
-	AesKeyLength,
-	Argon2IDExports,
-	getKeyLengthInBytes,
-	random,
-	uint8ArrayToBitArray,
-	uint8ArrayToKey,
-} from "../../../src/platform-kit/crypto"
+import { aes256RandomKey, AesKeyLength, Argon2IDExports, getKeyLengthInBytes, random, uint8ArrayTo256Key } from "../../../src/platform-kit/crypto"
 import { matchers, object, verify, when } from "testdouble"
 import { TempFs } from "../../../src/applications/common/desktop/files/TempFs.js"
+import { mockFsReadStream } from "./desktopTestUtils"
+import { uint8ArrayTo128Key } from "@tutao/crypto/symmetric-cipher-utils"
 
 o.spec("DesktopCryptoFacadeTest", () => {
 	const data = Buffer.from([42])
-	const aes128Key = uint8ArrayToBitArray(random.generateRandomData(getKeyLengthInBytes(AesKeyLength.Aes128)))
+	const aes128Key = uint8ArrayTo128Key(random.generateRandomData(getKeyLengthInBytes(AesKeyLength.Aes128)))
 	const aes256Key = aes256RandomKey()
 	const aes256DecryptedKey = aes256RandomKey()
 	const aes256EncryptedKey = new Uint8Array([2, 5, 6, 1])
-	const encryptedUint8 = stringToUtf8Uint8Array("encrypted")
 	const decryptedUint8 = stringToUtf8Uint8Array("decrypted")
 	const someKey = new Uint8Array([1, 2])
 	const instanceMapper = {
@@ -31,10 +24,6 @@ o.spec("DesktopCryptoFacadeTest", () => {
 		base64ToUint8Array: (b64) => (b64.startsWith("b64") ? "uint8_stuff" : "nonsense_uint8array"),
 		uint8ArrayToBase64: (uint8) => (uint8.startsWith("uint8") ? "b64_stuff" : "nonsense_b64"),
 	}
-
-	const bufferComp = (a, b) => a.length === b.length && a.includes(b)
-
-	const uint8ArrayComp = (a, b) => a.length === b.length && Object.assign(a, b) === a
 
 	const standardMocks = () => {
 		return {
@@ -57,21 +46,23 @@ o.spec("DesktopCryptoFacadeTest", () => {
 		when(cryptoFnsMock.decryptKey(aes128Key, aes256EncryptedKey)).thenReturn(aes256DecryptedKey)
 		when(cryptoFnsMock.bytesToKey(someKey)).thenReturn(aes128Key)
 		when(cryptoFnsMock.randomBytes(matchers.anything())).thenReturn(Buffer.alloc(10, 4))
-		when(cryptoFnsMock.aes256RandomKey()).thenReturn(uint8ArrayToKey(Buffer.alloc(32, 1)))
+		when(cryptoFnsMock.aes256RandomKey()).thenReturn(uint8ArrayTo256Key(Buffer.alloc(32, 1)))
 
 		const fsPromises: typeof import("fs").promises = object()
-		when(fsPromises.readFile(matchers.anything())).thenResolve(data)
 		when(fsPromises.mkdir(matchers.anything())).thenResolve()
 		when(fsPromises.writeFile(matchers.anything(), decryptedUint8)).thenResolve()
 		when(fsPromises.readdir(matchers.anything())).thenResolve([])
 		const fsMock: typeof import("fs") = object()
 		fsMock.promises = fsPromises
-
 		const sm = standardMocks()
+
 		const tfs = object<TempFs>()
+		when(tfs.fileStream(matchers.anything())).thenReturn(mockFsReadStream(data))
+		when(tfs.readAsData(matchers.anything())).thenResolve(data)
 		when(tfs.getTutanotaTempPath()).thenReturn("/some/other/path/to")
 		when(tfs.ensureEncryptedDir()).thenResolve("/some/other/path/to/encrypted")
 		when(tfs.ensureUnencrytpedDir()).thenResolve("/some/other/path/to/decrypted")
+		when(tfs.createInMemoryFile(matchers.anything())).thenReturn("tuta-tmp:inmemoryfile")
 
 		const argon2: Promise<Argon2IDExports> = Promise.resolve(object())
 		const desktopCrypto = new DesktopNativeCryptoFacade(fsMock, cryptoFnsMock, tfs, argon2)
@@ -79,24 +70,24 @@ o.spec("DesktopCryptoFacadeTest", () => {
 			fsMock,
 			cryptoFnsMock,
 			desktopCrypto,
+			tfs,
 		})
 	}
 	o("aesEncryptFile", async function () {
-		const { desktopCrypto, fsMock } = setupSubject()
-		const { uri } = await desktopCrypto.aesEncryptFile(someKey, "/some/path/to/encrypted/file.pdf")
-		o(uri).equals("/some/other/path/to/encrypted/file.pdf")
-		verify(fsMock.promises.writeFile(matchers.anything(), matchers.anything()), { times: 1 })
+		const { desktopCrypto } = setupSubject()
+		const { uri } = await desktopCrypto.aesEncryptFile(someKey, "file:///some/path/to/encrypted/file.pdf")
+		o(uri).equals("tuta-tmp:inmemoryfile")
 	})
 	o("aesDecryptFile", async function () {
 		const { desktopCrypto, fsMock } = setupSubject()
-		const file = await desktopCrypto.aesDecryptFile(someKey, "/some/path/to/file.pdf")
-		o(file).equals("/some/other/path/to/decrypted/file.pdf")
+		const file = await desktopCrypto.aesDecryptFile(someKey, "file:///some/path/to/file.pdf")
+		o(file).equals("file:///some/other/path/to/decrypted/file.pdf")
 		verify(fsMock.promises.writeFile(matchers.anything(), matchers.anything(), matchers.anything()), { times: 1 })
 	})
 	o("unauthenticatedAes256DecryptKey", function () {
 		const { desktopCrypto } = setupSubject()
 		const key = desktopCrypto.decryptKeyUnauthenticatedWithDeviceKeyChain(aes256Key, aes256EncryptedKey)
-		o(Array.from(key)).deepEquals(Array.from(aes256DecryptedKey))
+		o(Array.from(key.bits)).deepEquals(Array.from(aes256DecryptedKey.bits))
 	})
 	o("aes256EncryptKey", function () {
 		const { desktopCrypto, cryptoFnsMock } = setupSubject()

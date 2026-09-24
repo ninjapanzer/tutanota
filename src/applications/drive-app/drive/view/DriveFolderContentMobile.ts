@@ -8,17 +8,17 @@ import { Icons, IconsSvg } from "../../../../ui/base/icons/Icons"
 import { theme } from "../../../../ui/theme"
 import { IconButton } from "../../../../ui/base/IconButton"
 import { attachDropdown } from "../../../../ui/base/Dropdown"
-import { formatDateTime } from "../../../../ui/utils/Formatter"
+import { formatDateTime, formatStorageSize } from "../../../../ui/utils/Formatter"
 import { FileActions } from "./DriveFolderContentEntry"
-import { getContextActions } from "./DriveGuiUtils"
-import { DriveFolderSelectionEvents } from "./DriveFolderContent"
+import { getFileContextActions } from "./DriveGuiUtils"
 import { getDisplayType, getFileIcon, getItemIconFill } from "../model/DriveMimeUtils"
-import { assertNotNull } from "../../../../platform-kit/utils"
+import { assertNotNull, filterInt } from "@tutao/utils"
+import { ListItemSelectionCallbacks } from "../../../../ui/base/ListUtils"
 
 export interface DriveFolderContentMobileAttrs {
 	listState: ListState<FolderItem>
 	fileActions: FileActions
-	selectionEvents: DriveFolderSelectionEvents
+	selectionEvents: ListItemSelectionCallbacks<FolderItem>
 }
 
 export class DriveFolderContentMobile implements Component<DriveFolderContentMobileAttrs> {
@@ -71,7 +71,7 @@ const ROW_HEIGHT_PX = 56
 class DriveFolderItemRow implements ViewHolder<FolderItem> {
 	private iconDom!: HTMLElement
 	private filenameDom!: HTMLElement
-	private dateDom!: HTMLElement
+	private metadataDom!: HTMLElement
 	private item: FolderItem | null = null
 	private selectionSetter!: SelectableRowSelectedSetter
 
@@ -109,7 +109,7 @@ class DriveFolderItemRow implements ViewHolder<FolderItem> {
 						m("", {
 							style: { fontSize: "10px", color: theme.on_surface_variant },
 							oncreate: (vnode) => {
-								this.dateDom = vnode.dom as HTMLElement
+								this.metadataDom = vnode.dom as HTMLElement
 							},
 						}),
 					]),
@@ -118,12 +118,11 @@ class DriveFolderItemRow implements ViewHolder<FolderItem> {
 						attachDropdown({
 							mainButtonAttrs: {
 								icon: Icons.More,
-								title: "more_label",
+								label: "more_label",
 							},
-							childAttrs: () => {
-								const { onCopy, onCut, onDelete, onDownload, onRename, onRestore, onStartMove, onTrash } = this.fileActions()
+							childAttrs: async () => {
 								if (this.item) {
-									return getContextActions(this.item, onRename, onCopy, onCut, onRestore, onTrash, onStartMove, onDelete, onDownload)
+									return getFileContextActions(this.item, this.fileActions())
 								} else {
 									return []
 								}
@@ -140,7 +139,12 @@ class DriveFolderItemRow implements ViewHolder<FolderItem> {
 
 		this.filenameDom.innerText = item.type === "file" ? item.file.name : item.folder.name
 		const updatedDate = item.type === "file" ? item.file.updatedDate : item.folder.updatedDate
-		this.dateDom.innerText = formatDateTime(updatedDate)
+		this.metadataDom.innerText = formatDateTime(updatedDate)
+
+		if (item.type === "file") {
+			const readableSize = formatStorageSize(filterInt(item.file.size))
+			this.metadataDom.innerText += ` · ${readableSize}`
+		}
 
 		const displayType = item.type === "file" ? getDisplayType(item.file.mimeType) : null
 		const icon = item.type === "file" ? getFileIcon(assertNotNull(displayType)) : Icons.FolderFilled

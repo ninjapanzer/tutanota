@@ -1,15 +1,15 @@
 import m, { Children } from "mithril"
-import { assertMainOrNode, FeatureType } from "@tutao/app-env"
+import { EnvProvider, FeatureType } from "@tutao/app-env"
 import { clear, downcast, LazyLoaded, neverNull, noOp, promiseMap } from "@tutao/utils"
 import { InfoLink, lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { progressIcon } from "../../../../ui/base/Icon.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
-import { GENERATED_MAX_ID, OperationType } from "@tutao/meta"
+import { GENERATED_MAX_ID, idToElementId, NULL_ENTITY, OperationType } from "@tutao/meta"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	Booking,
 	BookingTypeRef,
-	BrandingDomainService,
+	BrandingDomainService_GET,
 	CertificateInfo,
 	createStringWrapper,
 	Customer,
@@ -47,7 +47,7 @@ import type { WhitelabelThemeGenerator } from "../../../../ui/WhitelabelThemeGen
 import type { ThemeController } from "../../../../ui/ThemeController"
 import { ThemeCustomizations } from "../../../../ui/WhitelabelCustomizations"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class WhitelabelSettingsViewer implements UpdatableSettingsViewer {
 	private _whitelabelConfig: WhitelabelConfig | null = null
@@ -75,7 +75,7 @@ export class WhitelabelSettingsViewer implements UpdatableSettingsViewer {
 		this._customerInfo = new LazyLoaded(() => locator.logins.getUserController().loadCustomerInfo())
 		this._planConfig = new LazyLoaded(() => locator.logins.getUserController().getPlanConfig())
 		this._customerProperties = new LazyLoaded(() =>
-			this._customer.getAsync().then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties))),
+			this._customer.getAsync().then((customer) => locator.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties)))),
 		)
 		this._lastBooking = null
 
@@ -306,8 +306,8 @@ export class WhitelabelSettingsViewer implements UpdatableSettingsViewer {
 	> {
 		if (domainInfo && domainInfo.whitelabelConfig) {
 			return Promise.all([
-				locator.entityClient.load(WhitelabelConfigTypeRef, domainInfo.whitelabelConfig),
-				locator.serviceExecutor.get(BrandingDomainService, null).then((response) => neverNull(response.certificateInfo)),
+				locator.entityClient.load(WhitelabelConfigTypeRef, idToElementId(domainInfo.whitelabelConfig)),
+				locator.serviceExecutor.execute(BrandingDomainService_GET, NULL_ENTITY, null).then((response) => neverNull(response.certificateInfo)),
 			]).then(([whitelabelConfig, certificateInfo]) => ({
 				whitelabelConfig,
 				certificateInfo,
@@ -380,7 +380,7 @@ export class WhitelabelSettingsViewer implements UpdatableSettingsViewer {
 		)
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(CustomerTypeRef, update) && update.operation === OperationType.UPDATE) {
 				this._customer.reset()
@@ -399,6 +399,7 @@ export class WhitelabelSettingsViewer implements UpdatableSettingsViewer {
 			} else if (isUpdateForTypeRef(BookingTypeRef, update)) {
 				return this._updateFields()
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

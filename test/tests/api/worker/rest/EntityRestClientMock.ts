@@ -1,29 +1,35 @@
 import {
+	AnyEntityId,
 	BlobElementEntity,
 	clone,
 	compareNewestFirst,
 	compareOldestFirst,
 	ElementEntity,
 	elementIdPart,
+	elementIdToId,
+	EntityTypeEnum,
+	expandId,
 	firstBiggerThanSecond,
-	getElementId,
-	getIdOfInstance,
-	getListId,
 	getServerIdEncodingForType,
+	idToElementId,
 	isSameId,
 	isSameTypeRef,
 	ListElementEntity,
 	listIdPart,
-	SomeEntity,
+	PersistentEntity,
+	stringifyId,
 	timestampToGeneratedId,
-	Type,
 	TypeRef,
 } from "../../../../../src/platform-kit/meta"
-import { _verifyType, LoggedInUserProvider, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
+import { ensureIsPersistentType, LoggedInUserProvider, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
 import * as restError from "../../../../../src/platform-kit/rest-client/error"
-import { downcast } from "../../../../../src/platform-kit/utils"
+import { assertNotNull, downcast, isNotNull, Nullable } from "../../../../../src/platform-kit/utils"
 import { clientInitializedTypeModelResolver, IdGenerator, instancePipelineFromTypeModelResolver } from "../../../TestUtils"
-import { EntityRestClient, EntityRestClientLoadOptions } from "../../../../../src/platform-kit/network/EntityRestClient"
+import { EntityRestClient } from "../../../../../src/platform-kit/network/EntityRestClient"
+import { object } from "testdouble"
+import { SymmetricEncryptionScheme } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/SymmetricCipherFacade"
+import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, EntityRestClientLoadOptions } from "../../../../../src/platform-kit/instance-pipeline/RestClientOptions"
+import { ProgrammingError } from "../../../../../src/platform-kit/app-env"
 
 const authDataProvider: LoggedInUserProvider = downcast({
 	createAuthHeaders(): Dict {
@@ -32,16 +38,19 @@ const authDataProvider: LoggedInUserProvider = downcast({
 	isFullyLoggedIn(): boolean {
 		return true
 	},
+	getDefaultSymmetricEncryptionScheme(): SymmetricEncryptionScheme {
+		return SymmetricEncryptionScheme.AesCbc
+	},
 })
 
+type TypeRefString = string
 export class EntityRestClientMock extends EntityRestClient {
-	_entities: Record<Id, ElementEntity | Error> = {}
-	_listEntities: Record<Id, Record<Id, ListElementEntity | Error>> = {}
-	_blobEntities: Record<Id, Record<Id, BlobElementEntity | Error>> = {}
+	_entities: Record<TypeRefString, Record<Id, ElementEntity | Error>> = {}
+	_listEntities: Record<TypeRefString, Record<Id, Record<Id, ListElementEntity | BlobElementEntity | Error>>> = {}
 	_lastIdTimestamp: number
 	private _typeModelResolver: TypeModelResolver
-	private updatedInstances: SomeEntity[] = []
-	private createdInstances: SomeEntity[] = []
+	private updatedInstances: PersistentEntity[] = []
+	private createdInstances: PersistentEntity[] = []
 	private idGenerator = new IdGenerator(timestampToGeneratedId(1))
 
 	constructor() {
@@ -54,6 +63,7 @@ export class EntityRestClientMock extends EntityRestClient {
 			downcast({}),
 			typeModelResolver,
 			() => downcast({}),
+			object(),
 		)
 		this._lastIdTimestamp = Date.now()
 		this._typeModelResolver = typeModelResolver
@@ -65,43 +75,45 @@ export class EntityRestClientMock extends EntityRestClient {
 	}
 
 	addElementInstances(...instances: Array<ElementEntity>) {
-		for (const instance of instances) this._entities[instance._id] = instance
+		for (const instance of instances) {
+			const typeRefString = instance._type.toString()
+			if (this._entities[typeRefString] == null) this._entities[typeRefString] = {}
+			this._entities[typeRefString][elementIdToId(instance._id)] = instance
+		}
 	}
 
 	addListInstances(...instances: Array<ListElementEntity>) {
 		for (const instance of instances) {
-			if (!this._listEntities[getListId(instance)]) this._listEntities[getListId(instance)] = {}
-			this._listEntities[getListId(instance)][getElementId(instance)] = instance
+			const typeRefString = instance._type.toString()
+			const listId = listIdPart(instance._id)
+			if (!this._listEntities[typeRefString]) this._listEntities[typeRefString] = {}
+			if (!this._listEntities[typeRefString][listId]) this._listEntities[typeRefString][listId] = {}
+			this._listEntities[typeRefString][listId][elementIdPart(instance._id)] = instance
 		}
 	}
 
 	addBlobInstances(...instances: Array<BlobElementEntity>) {
-		for (const instance of instances) {
-			if (!this._blobEntities[getListId(instance)]) this._blobEntities[getListId(instance)] = {}
-			this._blobEntities[getListId(instance)][getElementId(instance)] = instance
-		}
+		return this.addListInstances(...instances)
 	}
 
-	setElementException(id: Id, error: Error) {
-		this._entities[id] = error
+	setListElementException(typeRef: TypeRef<ListElementEntity>, id: IdTuple, error: Error) {
+		const typeRefString = typeRef.toString()
+		if (!this._listEntities[typeRefString]) this._listEntities[typeRefString] = {}
+		if (!this._listEntities[typeRefString][listIdPart(id)]) this._listEntities[typeRefString][listIdPart(id)] = {}
+		this._listEntities[typeRefString][listIdPart(id)][elementIdPart(id)] = error
 	}
 
-	setListElementException(id: IdTuple, error: Error) {
-		if (!this._listEntities[listIdPart(id)]) this._listEntities[listIdPart(id)] = {}
-		this._listEntities[listIdPart(id)][elementIdPart(id)] = error
+	setBlobElementException(typeRef: TypeRef<BlobElementEntity>, id: IdTuple, error: Error) {
+		this.setListElementException(typeRef, id, error)
 	}
 
-	setBlobElementException(id: IdTuple, error: Error) {
-		if (!this._blobEntities[listIdPart(id)]) this._blobEntities[listIdPart(id)] = {}
-		this._blobEntities[listIdPart(id)][elementIdPart(id)] = error
-	}
-
-	_getListEntry(listId: Id, elementId: Id): ListElementEntity | null | undefined {
-		if (!this._listEntities[listId]) {
-			throw new restError.NotFoundError(`Not list ${listId}`)
+	_getListEntry(typeRef: TypeRef<ListElementEntity>, listId: Id, elementId: Id): ListElementEntity | null | undefined {
+		const typeRefString = typeRef.toString()
+		if (this._listEntities[typeRefString] == null || this._listEntities[typeRefString][listId] == null) {
+			throw new restError.NotFoundError(`Not list ${typeRefString}/${listId}`)
 		}
 		try {
-			return this._handleMockElement(this._listEntities[listId][elementId], [listId, elementId])
+			return this._handleMockElement(this._listEntities[typeRefString][listId][elementId], [listId, elementId])
 		} catch (e) {
 			if (e instanceof restError.NotFoundError) {
 				return null
@@ -111,45 +123,28 @@ export class EntityRestClientMock extends EntityRestClient {
 		}
 	}
 
-	_getBlobEntry(listId: Id, elementId: Id): ListElementEntity | null | undefined {
-		if (!this._blobEntities[listId]) {
-			throw new restError.NotFoundError(`Not list ${listId}`)
-		}
-		try {
-			return this._handleMockElement(this._blobEntities[listId][elementId], [listId, elementId])
-		} catch (e) {
-			if (e instanceof restError.NotFoundError) {
-				return null
-			} else {
-				throw e
-			}
-		}
-	}
-
-	async load<T extends SomeEntity>(_typeRef: TypeRef<T>, id: T["_id"], _opts: EntityRestClientLoadOptions = {}): Promise<T> {
-		if (id instanceof Array && id.length === 2) {
-			// list element request
-			const listId = id[0]
-			const elementId = id[1]
-
-			const listElement = this._getListEntry(listId, elementId)
+	async load<T extends PersistentEntity>(
+		typeRef: TypeRef<T>,
+		id: T["_id"],
+		_opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	): Promise<T> {
+		const [listId, elementId] = id
+		if (isNotNull(listId)) {
+			const listElement = this._getListEntry(typeRef as TypeRef<ListElementEntity>, listId, elementId)
 
 			if (listElement == null) {
 				throw new restError.NotFoundError(`List element ${listId} ${elementId} not found`)
 			}
-			return downcast(listElement)
-		} else if (typeof id === "string") {
-			//element request
-			return this._handleMockElement(this._entities[id], id)
+			return downcast<T>(listElement)
 		} else {
-			throw new Error("Illegal Id for ET: " + (id as any))
+			//element request
+			return this._handleMockElement(this._entities[typeRef.toString()][elementIdToId(id)], id)
 		}
 	}
 
 	async loadRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, start: Id, count: number, reverse: boolean): Promise<T[]> {
-		let entriesForListId = this._listEntities[listId]
-		if (!entriesForListId) return []
-		let filteredIds
+		const entriesForListId = (this._listEntities[typeRef.toString()] ?? {})[listId] ?? {}
+		let filteredIds: Array<Id>
 
 		const typeModel = await this._typeModelResolver.resolveClientTypeReference(typeRef)
 		const idEncoding = getServerIdEncodingForType(typeModel)
@@ -164,78 +159,75 @@ export class EntityRestClientMock extends EntityRestClient {
 				.filter((id) => firstBiggerThanSecond(id, start, idEncoding))
 		}
 
-		return filteredIds.map((id) => this._handleMockElement(entriesForListId[id], id))
+		return filteredIds.map((id) => this._handleMockElement(entriesForListId[id], idToElementId(id)))
 	}
 
-	async loadMultiple<T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id | null | undefined, elementIds: Array<Id>): Promise<Array<T>> {
+	async loadMultiple<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id | null | undefined, elementIds: Array<Id>): Promise<Array<T>> {
 		const lid = listId
+		const typeModel = await this._typeModelResolver.resolveClientTypeReference(typeRef)
 
-		if (lid) {
-			const typeModel = await this._typeModelResolver.resolveClientTypeReference(typeRef)
-			if (typeModel.type === Type.ListElement.valueOf()) {
+		switch (typeModel.type) {
+			case EntityTypeEnum.Element: {
+				const entities = this._entities[typeRef.toString()] ?? {}
 				return elementIds
 					.map((id) => {
-						return downcast(this._getListEntry(lid, id))
-					})
-					.filter(Boolean)
-			} else {
-				return elementIds
-					.map((id) => {
-						return downcast(this._getBlobEntry(lid, id))
-					})
-					.filter(Boolean)
-			}
-		} else {
-			return elementIds
-				.map((id) => {
-					try {
-						return this._handleMockElement(this._entities[id], id)
-					} catch (e) {
-						if (e instanceof restError.NotFoundError) {
-							return null
-						} else {
-							throw e
+						try {
+							return this._handleMockElement(entities[id], idToElementId(id))
+						} catch (e) {
+							if (e instanceof restError.NotFoundError) {
+								return null
+							} else {
+								throw e
+							}
 						}
-					}
-				})
-				.filter(Boolean)
+					})
+					.filter(isNotNull)
+			}
+			case EntityTypeEnum.BlobElement:
+			case EntityTypeEnum.ListElement: {
+				return elementIds.map((id) => downcast<T>(this._getListEntry(typeRef as TypeRef<ListElementEntity>, assertNotNull(lid), id))).filter(isNotNull)
+			}
+			case EntityTypeEnum.Aggregated:
+			case EntityTypeEnum.DataTransfer: {
+				throw new ProgrammingError("aggregated/dataTransfer are not to be requested")
+			}
 		}
 	}
 
-	async erase<T extends SomeEntity>(instance: T): Promise<void> {
+	async erase<T extends PersistentEntity>(instance: T): Promise<void> {
 		const typeModel = await this._typeModelResolver.resolveClientTypeReference(instance._type)
-		_verifyType(typeModel)
+		ensureIsPersistentType(typeModel)
 
-		const ids = getIdOfInstance(instance, typeModel)
+		const { listId, elementId } = expandId(instance._id)
 
-		this._handleDelete(ids.id, ids.listId)
+		this._handleDelete(instance._type, elementId, listId)
 		return Promise.resolve()
 	}
 
-	async eraseMultiple<T extends SomeEntity>(listId: Id, instances: Array<T>): Promise<void> {
+	async eraseMultiple<T extends PersistentEntity>(listId: Id, instances: Array<T>): Promise<void> {
 		if (instances.length === 0) {
 			return
 		}
 
 		const typeModel = await this._typeModelResolver.resolveClientTypeReference(instances[0]._type)
-		_verifyType(typeModel)
+		ensureIsPersistentType(typeModel)
 
 		this._handleDeleteMultiple(
-			instances.map((it) => getIdOfInstance(it, typeModel).id),
+			instances.map((it) => expandId(it._id).elementId),
 			listId,
 		)
 		return Promise.resolve()
 	}
 
-	async setup<T extends SomeEntity>(listId: Id | null | undefined, instance: T, extraHeaders?: Dict): Promise<Id> {
+	async setup<T extends PersistentEntity>(listId: Nullable<Id>, instance: T, extraHeaders: Nullable<Dict>): Promise<Id> {
 		const populatedInstance = clone(instance)
 		const elementId = this.idGenerator.getNext()
-		populatedInstance._id = listId == null ? elementId : [listId, elementId]
+		populatedInstance._id = [listId, elementId]
 		this.createdInstances.push(populatedInstance)
 		return elementId
 	}
 
-	getCreatedInstance<T extends SomeEntity>(type: TypeRef<T>): T {
+	getCreatedInstance<T extends PersistentEntity>(type: TypeRef<T>): T {
 		const createdInstance = this.createdInstances.findLast((updated) => isSameTypeRef(type, updated._type))
 		if (createdInstance == null) {
 			throw new Error(`Did not find created instance for ${type}`)
@@ -243,15 +235,15 @@ export class EntityRestClientMock extends EntityRestClient {
 		return createdInstance as T
 	}
 
-	setupMultiple<T extends SomeEntity>(listId: Id | null | undefined, instances: Array<T>): Promise<Array<Id>> {
+	setupMultiple<T extends PersistentEntity>(listId: Id | null | undefined, instances: Array<T>): Promise<Array<Id>> {
 		return Promise.reject("Illegal method: setupMultiple")
 	}
 
-	async update<T extends SomeEntity>(instance: T): Promise<void> {
+	async update<T extends PersistentEntity>(instance: T): Promise<void> {
 		this.updatedInstances.push(clone(instance))
 	}
 
-	getUpdatedInstance<T extends SomeEntity>(instance: T): T {
+	getUpdatedInstance<T extends PersistentEntity>(instance: T): T {
 		const updatedInstance = this.updatedInstances.findLast((updated) => isSameTypeRef(instance._type, updated._type) && isSameId(instance._id, updated._id))
 		if (updatedInstance == null) {
 			throw new Error(`Did not find updated instance for ${instance._type} ${instance._id}`)
@@ -265,31 +257,30 @@ export class EntityRestClientMock extends EntityRestClient {
 		}
 	}
 
-	_handleDelete(id: Id | null | undefined, listId: Id | null | undefined) {
+	_handleDelete(typeRef: TypeRef<PersistentEntity>, id: Id | null | undefined, listId: Id | null | undefined) {
 		if (id && listId) {
-			if (this._getListEntry(listId, id)) {
-				delete this._listEntities[listId][id]
+			if (this._getListEntry(typeRef as TypeRef<ListElementEntity>, listId, id)) {
+				delete this._listEntities[typeRef.toString()][listId][id]
 			} else {
 				throw new restError.NotFoundError(`List element ${listId} ${id} not found`)
 			}
 		} else if (id) {
-			if (this._entities[id]) {
-				delete this._listEntities[id]
-			} else {
+			if (this._entities[typeRef.toString()] == null || this._entities[typeRef.toString()][id] == null) {
 				throw new restError.NotFoundError(`Element ${id} not found`)
 			}
+			delete this._entities[typeRef.toString()][id]
 		} else {
 			throw new Error("Illegal arguments for DELETE")
 		}
 	}
 
-	_handleMockElement(element: any, id: Id | IdTuple): any {
+	_handleMockElement(element: any, id: AnyEntityId): any {
 		if (element instanceof Error) {
 			throw element
 		} else if (element != null) {
 			return element
 		} else {
-			throw new restError.NotFoundError(`element with id ${id.toString()} does not exists`)
+			throw new restError.NotFoundError(`element with id ${stringifyId(id)} does not exists`)
 		}
 	}
 }

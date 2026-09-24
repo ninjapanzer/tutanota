@@ -35,8 +35,10 @@ import { noPatchesAndInstance } from "../api/worker/EventBusClientTest"
 import { CalendarEvent, CalendarEventTypeRef } from "@tutao/entities/tutanota"
 import { makePopulatedClientModelInfo } from "../TestUtils.js"
 import { ProgressMonitor } from "../../../src/platform-kit/network/ProgressMonitorInterface"
-import { EntityEventsListener, EntityUpdateData } from "../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener } from "../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { GroupType } from "../../../src/entities/sys/Utils"
+import { SearchRouter } from "../../../src/applications/common/search/view/SearchRouter"
+import { CalendarSearchModel } from "../../../src/applications/calendar-app/search/model/CalendarSearchModel"
 
 let saveAndSendMock
 let rescheduleEventMock
@@ -53,7 +55,7 @@ o.spec("CalendarViewModel", function () {
 	} {
 		if (eventController == null) {
 			eventController = downcast({
-				addEntityListener: () => Promise.resolve(),
+				addEntityUpdatesListener: () => Promise.resolve(),
 			})
 		}
 
@@ -87,12 +89,15 @@ o.spec("CalendarViewModel", function () {
 		const mailboxModel: MailboxModel = object()
 		const previewModelFactory: CalendarEventPreviewModelFactory = async () => object()
 		const contactPreviewModelFactory: CalendarContactPreviewModelFactory = async () => object()
+		const searchRouter: SearchRouter = object()
+		const searchModel: CalendarSearchModel = object()
 		const viewModel = new CalendarViewModel(
 			loginController,
 			makeViewModelCallback,
 			previewModelFactory,
 			contactPreviewModelFactory,
 			calendarModel,
+			async () => searchModel,
 			eventsRepository,
 			new EntityClient(entityClientMock, makePopulatedClientModelInfo()),
 			eventController,
@@ -103,6 +108,9 @@ o.spec("CalendarViewModel", function () {
 			mailboxModel,
 			contactModel,
 			object(),
+			object(),
+			object(),
+			searchRouter,
 		)
 		viewModel.allowDrag = () => true
 		return { viewModel, calendarModel, eventsRepository }
@@ -393,11 +401,11 @@ o.spec("CalendarViewModel", function () {
 			o(Array.from(longEvents)).deepEquals(expected.longEvents)
 		})
 	})
-	o.spec("entityEventsReceived", function () {
+	o.spec("onEntityUpdatesReceived", function () {
 		o("transient event is removed on update", async function () {
-			const entityListeners: EntityEventsListener[] = []
+			const entityListeners: EntityUpdatesListener[] = []
 			const eventController: EventController = downcast({
-				addEntityListener(listener) {
+				addEntityUpdatesListener(listener) {
 					entityListeners.push(listener)
 				},
 			})

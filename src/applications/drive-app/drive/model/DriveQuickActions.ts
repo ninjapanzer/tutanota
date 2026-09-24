@@ -1,11 +1,11 @@
-import { Router } from "../../../../ui/ScopedRouter"
+import { Router } from "../../../../ui/ScopedThrottledRouter"
 import { QuickAction } from "../../../common/misc/quickactions/QuickActionsModel"
 import { DRIVE_PREFIX } from "../../../../ui/utils/RouteChange"
 import { DriveViewModel } from "../view/DriveViewModel"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { getDetachedDropdownBounds } from "../../../../ui/base/GuiUtils"
 import { DriveFilePicker } from "../view/DriveFilePicker"
-import { showNewFolderDialog } from "../view/DriveGuiUtils"
+import { showDuplicateFilesChoiceDialog, showNewFolderDialog } from "../view/DriveGuiUtils"
 
 export async function quickDriveActions(router: Router, driveViewModel: DriveViewModel, driveFilePicker: DriveFilePicker): Promise<readonly QuickAction[]> {
 	const driveTabAction: QuickAction = {
@@ -28,7 +28,8 @@ export async function quickDriveActions(router: Router, driveViewModel: DriveVie
 			},
 			{
 				description: `${lang.getTranslationText("driveView_action")}: ${lang.getTranslationText("uploadFile_action")}`,
-				exec: () => driveFilePicker.pickFiles(getDetachedDropdownBounds()).then((files) => driveViewModel.uploadFiles(files)),
+				exec: () =>
+					driveFilePicker.pickFiles(getDetachedDropdownBounds()).then((files) => driveViewModel.uploadFiles(files, showDuplicateFilesChoiceDialog)),
 			},
 		]
 	}

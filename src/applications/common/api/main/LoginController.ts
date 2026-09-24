@@ -1,23 +1,22 @@
 import type { DeferredObject, lazy, lazyAsync } from "@tutao/utils"
 import { assertNotNull, defer } from "@tutao/utils"
-import { assertMainOrNodeBoot, FeatureType, InvalidModelError, isAdminClient, SessionType } from "@tutao/app-env"
+import { EnvProvider, FeatureType, InvalidModelError, ProgrammingError, SessionType } from "@tutao/app-env"
 import type { UserController, UserControllerInitData } from "./UserController"
 import { getWhitelabelCustomizations } from "../../../../ui/utils/WhitelabelUtils.js"
-import * as restError from "@tutao/rest-client/error"
-import type { LoginFacade, NewSessionData } from "../../../../platform-kit/base/facades/LoginFacade"
-import { ResumeSessionErrorReason } from "../../../../platform-kit/base/facades/LoginFacade"
+import { NotFoundError } from "@tutao/rest-client/error"
+import { LoginFacade, NewSessionData, ResumeSessionResult, ResumeSessionState } from "../../../../platform-kit/base/facades/LoginFacade"
 import { UnencryptedCredentials } from "@tutao/native-bridge/generatedIpc/types"
 import { PageContextLoginListener } from "./PageContextLoginListener.js"
 import { CustomerFacade } from "../worker/facades/lazy/CustomerFacade"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
 import { Credentials } from "../../../../platform-kit/network/types"
-import { ExternalUserKeyDeriver, KdfType } from "../../../../platform-kit/base/crypto/Constants"
+import { ExternalUserKeyDeriver, KdfType } from "../../../../platform-kit/base/base-crypto/Constants"
 import { PostLoginAction } from "../../../../app-kit/native-bridge/common/PostLoginAction"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 
-assertMainOrNodeBoot()
+import { CacheMode } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { elementIdToId } from "@tutao/meta"
 
-export type ResumeSessionResult = { type: "success" } | { type: "error"; reason: ResumeSessionErrorReason }
+EnvProvider.assertMainOrNodeBoot()
 
 export class LoginController {
 	private userController: UserController | null = null
@@ -57,7 +56,15 @@ export class LoginController {
 	 * @param password
 	 */
 	async createPostSignupSession(username: string, password: string) {
-		return await this.loginFacade.createSession(username, password, client.getIdentifier(), SessionType.Persistent, null, true)
+		return await this.loginFacade.createSession(username, password, ClientDetector.get().getIdentifier(), SessionType.Persistent, null, true)
+	}
+
+	async createTemporarySessionOnly(username: string, password: string) {
+		return await this.loginFacade.createSession(username, password, ClientDetector.get().getIdentifier(), SessionType.Temporary, null, true)
+	}
+
+	async deleteSession(accessToken: Base64Url): Promise<void> {
+		await this.loginFacade.deleteSession(accessToken)
 	}
 
 	/**
@@ -67,8 +74,13 @@ export class LoginController {
 	 * @param sessionType whether to store the credentials in local storage
 	 * @param databaseKey if given, will use this key for the offline database. if not, will force a new database to be created and generate a key.
 	 */
-	async createSession(username: string, password: string, sessionType: SessionType, databaseKey: Uint8Array | null = null): Promise<NewSessionData> {
-		const newSessionData = await this.loginFacade.createSession(username, password, client.getIdentifier(), sessionType, databaseKey)
+	async createSession(
+		username: string,
+		password: string,
+		sessionType: SessionType,
+		databaseKey: Uint8Array<ArrayBuffer> | null = null,
+	): Promise<NewSessionData> {
+		const newSessionData = await this.loginFacade.createSession(username, password, ClientDetector.get().getIdentifier(), sessionType, databaseKey)
 		const { user, credentials, sessionId, userGroupInfo } = newSessionData
 		await this.onPartialLoginSuccess(
 			{
@@ -92,7 +104,7 @@ export class LoginController {
 		const { initUserController } = await import("./UserController")
 		this.userController = await initUserController(initData)
 
-		if (!isAdminClient()) {
+		if (!EnvProvider.get().isAdminClient()) {
 			await this.loadCustomizations()
 		}
 		await this._determineIfWhitelabel()
@@ -101,7 +113,7 @@ export class LoginController {
 			const handler = await lazyHandler()
 			await handler.onPartialLoginSuccess({
 				sessionType,
-				userId: initData.user._id,
+				userId: elementIdToId(initData.user._id),
 			})
 		}
 		this.atLeastPartiallyLoggedIn = true
@@ -111,7 +123,7 @@ export class LoginController {
 	async createExternalSession(
 		userId: Id,
 		password: string,
-		salt: Uint8Array,
+		salt: Uint8Array<ArrayBuffer>,
 		kdfType: KdfType,
 		clientIdentifier: string,
 		sessionType: SessionType,
@@ -143,25 +155,15 @@ export class LoginController {
 	 * Resume an existing session using stored credentials, may or may not unlock a persistent local database
 	 * @param unencryptedCredentials The stored credentials and optional database key for the offline db
 	 * @param externalUserKeyDeriver The KDF type and salt to resume a session
-	 * @param offlineTimeRangeDate the user configured time range for their offline storage, used to initialize the offline db
 	 */
-	async resumeSession(
-		unencryptedCredentials: UnencryptedCredentials,
-		externalUserKeyDeriver?: ExternalUserKeyDeriver | null,
-		offlineTimeRangeDate?: Date | null,
-	): Promise<ResumeSessionResult> {
+	async resumeSession(unencryptedCredentials: UnencryptedCredentials, externalUserKeyDeriver?: ExternalUserKeyDeriver | null): Promise<ResumeSessionResult> {
 		const { unencryptedToCredentials } = await import("../../misc/credentials/Credentials.js")
 		const credentials = unencryptedToCredentials(unencryptedCredentials)
-		const resumeResult = await this.loginFacade.resumeSession(
-			credentials,
-			externalUserKeyDeriver ?? null,
-			unencryptedCredentials.databaseKey ?? null,
-			offlineTimeRangeDate ?? null,
-		)
-		if (resumeResult.type === "error") {
+		const resumeResult = await this.loginFacade.resumeSession(credentials, externalUserKeyDeriver ?? null, unencryptedCredentials.databaseKey ?? null)
+		if (resumeResult.state === ResumeSessionState.Failure) {
 			return resumeResult
-		} else {
-			const { user, userGroupInfo, sessionId } = resumeResult.data
+		} else if (resumeResult.state === ResumeSessionState.Success) {
+			const { user, userGroupInfo, sessionId } = resumeResult.data!
 			try {
 				await this.onPartialLoginSuccess(
 					{
@@ -188,8 +190,9 @@ export class LoginController {
 				throw e
 			}
 
-			return { type: "success" }
+			return resumeResult
 		}
+		throw new ProgrammingError("Unknown resume session result")
 	}
 
 	isUserLoggedIn(): boolean {
@@ -277,7 +280,7 @@ export class LoginController {
 		try {
 			await this.loginFacade.deleteSession(credentials.accessToken, pushIdentifier)
 		} catch (e) {
-			if (e instanceof restError.NotFoundError) {
+			if (e instanceof NotFoundError) {
 				console.log("session already deleted")
 			} else {
 				throw e

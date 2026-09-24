@@ -16,6 +16,7 @@ import { ButtonSize } from "../../../../ui/base/ButtonSize.js"
 import { getAvailablePlansWithWhitelabel } from "../../subscription/utils/SubscriptionUtils.js"
 import { CertificateInfo, CustomerInfo } from "@tutao/entities/sys"
 import { PlanType } from "../../../../entities/sys/Utils"
+import { PreconditionFailedError } from "@tutao/rest-client/error"
 
 export type WhitelabelBrandingDomainSettingsAttrs = {
 	customerInfo: CustomerInfo
@@ -45,7 +46,7 @@ export class WhitelabelBrandingDomainSettings implements Component<WhitelabelBra
 
 	private renderDeactivateButton(whitelabelDomain: string): Children {
 		return m(IconButton, {
-			title: "deactivate_action",
+			label: "deactivate_action",
 			click: () => this.deactivate(whitelabelDomain),
 			icon: Icons.X,
 			size: ButtonSize.Compact,
@@ -57,7 +58,7 @@ export class WhitelabelBrandingDomainSettings implements Component<WhitelabelBra
 			try {
 				return await showProgressDialog("pleaseWait_msg", locator.customerFacade.deleteCertificate(whitelabelDomain))
 			} catch (e) {
-				if (e instanceof restError.PreconditionFailedError) {
+				if (e instanceof PreconditionFailedError) {
 					if (e.data === FAILURE_LOCKED) {
 						return await Dialog.message("operationStillActive_msg")
 					} else if (e.data === FAILURE_CONTACT_FORM_ACTIVE) {
@@ -71,7 +72,7 @@ export class WhitelabelBrandingDomainSettings implements Component<WhitelabelBra
 
 	_renderEditButton(customerInfo: CustomerInfo, certificateInfo: CertificateInfo | null, isWhitelabelFeatureEnabled: boolean): Children {
 		return m(IconButton, {
-			title: "edit_action",
+			label: "edit_action",
 			click: () => this.edit(isWhitelabelFeatureEnabled, customerInfo),
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,

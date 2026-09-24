@@ -7,9 +7,9 @@ import {
 import { SqlCipherFacade } from "../../../../../src/app-kit/native-bridge/common/generatedipc/types/SqlCipherFacade.js"
 import { DesktopSqlCipher } from "../../../../../src/applications/common/desktop/db/DesktopSqlCipher"
 import { assertNotNull, typedValues } from "../../../../../src/platform-kit/utils"
-import { untagSqlObject, untagSqlValue } from "../../../../../src/app-kit/local-store/SqlValue"
+import { untagSqlObject } from "../../../../../src/app-kit/local-store/SqlValue"
 import { sql } from "../../../../../src/app-kit/local-store/Sql"
-import { getElementId, getListId, getTypeString, ListElementEntity, serverToLocalIdEncoding } from "../../../../../src/platform-kit/meta"
+import { GENERATED_MAX_ID, getElementId, getListId, getTypeString, ListElementEntity, serverToLocalIdEncoding } from "../../../../../src/platform-kit/meta"
 import { createTestEntity, makePopulatedClientModelInfo } from "../../../TestUtils"
 import { object } from "testdouble"
 
@@ -25,6 +25,7 @@ import {
 	RecipientsTypeRef,
 } from "@tutao/entities/tutanota"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
+import { NOTHING_INDEXED_TIMESTAMP } from "../../../../../src/platform-kit/app-env"
 
 const offlineDatabaseTestKey = new Uint8Array([3957386659, 354339016, 3786337319, 3366334248])
 
@@ -63,24 +64,6 @@ o.spec("OfflineStoragePersistence", () => {
 		await sqlCipherFacade.closeDb()
 	})
 
-	o.spec("isMailIndexingEnabled", () => {
-		o.test("on fresh db", async () => {
-			o.check(await persistence.isMailIndexingEnabled()).equals(false)
-		})
-		o.test("when mail indexing was enabled", async () => {
-			const query = `INSERT INTO search_metadata
-                           VALUES ('${OfflineStoragePersistence.MAIL_INDEXING_ENABLED}', 1)`
-			await sqlCipherFacade.run(query, [])
-			o.check(await persistence.isMailIndexingEnabled()).equals(true)
-		})
-		o.test("when mail indexing was disabled", async () => {
-			const query = `INSERT INTO search_metadata
-                           VALUES ('${OfflineStoragePersistence.MAIL_INDEXING_ENABLED}', 0)`
-			await sqlCipherFacade.run(query, [])
-			o.check(await persistence.isMailIndexingEnabled()).equals(false)
-		})
-	})
-
 	o.spec("areContactsIndexed", () => {
 		o.test("on fresh db", async () => {
 			o.check(await persistence.areContactsIndexed()).equals(false)
@@ -99,25 +82,6 @@ o.spec("OfflineStoragePersistence", () => {
 		})
 	})
 
-	o.spec("setMailIndexingEnabled", () => {
-		o.test("enable indexing", async () => {
-			await persistence.setMailIndexingEnabled(true)
-			const query = `SELECT value
-                           FROM search_metadata
-                           WHERE key ='${OfflineStoragePersistence.MAIL_INDEXING_ENABLED}'`
-			const record = untagSqlValue(assertNotNull(await sqlCipherFacade.get(query, [])).value)
-			o.check(record).equals(1)
-		})
-		o.test("disable indexing", async () => {
-			await persistence.setMailIndexingEnabled(false)
-			const query = `SELECT value
-                           FROM search_metadata
-                           WHERE key ='${OfflineStoragePersistence.MAIL_INDEXING_ENABLED}'`
-			const record = untagSqlValue(assertNotNull(await sqlCipherFacade.get(query, [])).value)
-			o.check(record).equals(0)
-		})
-	})
-
 	o.test("getIndexedGroups", async () => {
 		const { mailGroupData, contactGroupData } = await prepareIndexedGroups(sqlCipherFacade)
 		o.check(await persistence.getIndexedGroups()).deepEquals([mailGroupData, contactGroupData])
@@ -128,14 +92,21 @@ o.spec("OfflineStoragePersistence", () => {
 			groupId: "mailGroup",
 			type: GroupType.Mail,
 			indexedTimestamp: 123456,
+			lastIndexedEntityElementId: GENERATED_MAX_ID,
+			lastIndexedEntityListId: GENERATED_MAX_ID,
 		}
 		const contactGroupData: IndexedGroupData = {
 			groupId: "contactGroup",
 			type: GroupType.Contact,
 			indexedTimestamp: 123456,
+			lastIndexedEntityElementId: GENERATED_MAX_ID,
+			lastIndexedEntityListId: GENERATED_MAX_ID,
 		}
-		await persistence.addIndexedGroup(mailGroupData.groupId, mailGroupData.type, mailGroupData.indexedTimestamp)
-		await persistence.addIndexedGroup(contactGroupData.groupId, contactGroupData.type, contactGroupData.indexedTimestamp)
+		await persistence.addIndexedGroup(mailGroupData.groupId, mailGroupData.type, mailGroupData.indexedTimestamp, [GENERATED_MAX_ID, GENERATED_MAX_ID])
+		await persistence.addIndexedGroup(contactGroupData.groupId, contactGroupData.type, contactGroupData.indexedTimestamp, [
+			GENERATED_MAX_ID,
+			GENERATED_MAX_ID,
+		])
 
 		const indexedGroups = await getAllIndexedGroups(sqlCipherFacade)
 		o.check(indexedGroups).deepEquals([mailGroupData, contactGroupData])
@@ -421,6 +392,104 @@ o.spec("OfflineStoragePersistence", () => {
 		await persistence.deleteContactData(contact._id)
 		o.check(await sqlCipherFacade.get(indexSearch, [])).equals(null)
 	})
+
+	o.test("resetMailIndex", async () => {
+		const mailGroupData: IndexedGroupData = {
+			groupId: "mailGroup",
+			type: GroupType.Mail,
+			indexedTimestamp: 123456,
+			lastIndexedEntityElementId: "lastIndexedMailElementId",
+			lastIndexedEntityListId: "lastIndexedMailListId",
+		}
+		const contactGroupData: IndexedGroupData = {
+			groupId: "contactGroup",
+			type: GroupType.Contact,
+			indexedTimestamp: 123456,
+			lastIndexedEntityElementId: "lastIndexedContactElementId",
+			lastIndexedEntityListId: "lastIndexedContactListId",
+		}
+
+		{
+			const query = `INSERT INTO search_group_data
+				   VALUES ('${mailGroupData.groupId}', ${mailGroupData.type},
+						   ${mailGroupData.indexedTimestamp}, '${mailGroupData.lastIndexedEntityListId}',
+						   '${mailGroupData.lastIndexedEntityElementId}'),
+						  ('${contactGroupData.groupId}', ${contactGroupData.type},
+						   ${contactGroupData.indexedTimestamp}, '${contactGroupData.lastIndexedEntityListId}',
+						   '${contactGroupData.lastIndexedEntityElementId}')`
+			await sqlCipherFacade.run(query, [])
+		}
+		const indexedGroups = await getAllIndexedGroups(sqlCipherFacade)
+		o.check(indexedGroups).deepEquals([mailGroupData, contactGroupData])
+
+		{
+			const query = `INSERT INTO mail_index(rowid)
+						   VALUES (1),
+								  (2)`
+			await sqlCipherFacade.run(query, [])
+		}
+		const mails = (await sqlCipherFacade.all(`SELECT rowid FROM mail_index`, [])).map(untagSqlObject)
+		o.check(mails).deepEquals([{ rowid: 1 }, { rowid: 2 }])
+
+		{
+			const query = `INSERT INTO content_mail_index(rowid, sets, receivedDate)
+								  VALUES (1, 'myFavoriteSet', 123456),
+										 (2, 'myOtherSet', 123456)`
+			await sqlCipherFacade.run(query, [])
+		}
+		const contents = (
+			await sqlCipherFacade.all(
+				`SELECT rowid, receivedDate, sets
+				 FROM content_mail_index`,
+				[],
+			)
+		).map(untagSqlObject)
+		o.check(contents).deepEquals([
+			{ rowid: 1, receivedDate: 123456, sets: "myFavoriteSet" },
+			{ rowid: 2, receivedDate: 123456, sets: "myOtherSet" },
+		])
+
+		{
+			const query = `INSERT INTO contact_index(rowid)
+					 VALUES (1),
+							(2)`
+			await sqlCipherFacade.run(query, [])
+		}
+		const contacts = (
+			await sqlCipherFacade.all(
+				`SELECT rowid
+				 FROM contact_index`,
+				[],
+			)
+		).map(untagSqlObject)
+		o.check(contacts).deepEquals([{ rowid: 1 }, { rowid: 2 }])
+
+		await persistence.resetMailIndex()
+
+		const indexedGroupsAfterReset = await getAllIndexedGroups(sqlCipherFacade)
+		o.check(indexedGroupsAfterReset).deepEquals([
+			{
+				...mailGroupData,
+				indexedTimestamp: NOTHING_INDEXED_TIMESTAMP,
+				lastIndexedEntityElementId: GENERATED_MAX_ID,
+				lastIndexedEntityListId: GENERATED_MAX_ID,
+			},
+			contactGroupData,
+		])
+
+		const mailsAfterReset = await sqlCipherFacade.all(`SELECT rowid FROM mail_index`, [])
+		o.check(mailsAfterReset).deepEquals([])
+		const contentsAfterReset = await sqlCipherFacade.all(`SELECT rowid FROM content_mail_index`, [])
+		o.check(contentsAfterReset).deepEquals([])
+		const contactsAfterReset = (
+			await sqlCipherFacade.all(
+				`SELECT rowid
+				 FROM contact_index`,
+				[],
+			)
+		).map(untagSqlObject)
+		o.check(contactsAfterReset).deepEquals([{ rowid: 1 }, { rowid: 2 }])
+	})
 })
 
 async function fakeStoreListElementEntityInOfflineDb(sqlCipherFacade: SqlCipherFacade, entity: ListElementEntity) {
@@ -441,24 +510,34 @@ async function prepareIndexedGroups(sqlCipherFacade: SqlCipherFacade) {
 		groupId: "mailGroup",
 		type: GroupType.Mail,
 		indexedTimestamp: 123456,
+		lastIndexedEntityElementId: GENERATED_MAX_ID,
+		lastIndexedEntityListId: GENERATED_MAX_ID,
 	}
 	const contactGroupData: IndexedGroupData = {
 		groupId: "contactGroup",
 		type: GroupType.Contact,
 		indexedTimestamp: 123456,
+		lastIndexedEntityElementId: GENERATED_MAX_ID,
+		lastIndexedEntityListId: GENERATED_MAX_ID,
 	}
 	const query = `INSERT INTO search_group_data
-                   VALUES ('${mailGroupData.groupId}', ${mailGroupData.type},
-                           ${mailGroupData.indexedTimestamp}),
-                          ('${contactGroupData.groupId}', ${contactGroupData.type},
-                           ${contactGroupData.indexedTimestamp})`
+				   VALUES ('${mailGroupData.groupId}', ${mailGroupData.type},
+						   ${mailGroupData.indexedTimestamp}, '${mailGroupData.lastIndexedEntityListId}',
+						   '${mailGroupData.lastIndexedEntityElementId}'),
+						  ('${contactGroupData.groupId}', ${contactGroupData.type},
+						   ${contactGroupData.indexedTimestamp}, '${contactGroupData.lastIndexedEntityListId}',
+						   '${contactGroupData.lastIndexedEntityElementId}')`
 	await sqlCipherFacade.run(query, [])
 	return { mailGroupData, contactGroupData }
 }
 
 async function getAllIndexedGroups(sqlCipherFacade: SqlCipherFacade) {
-	const query = `SELECT groupId, CAST(groupType as TEXT) as type, indexedTimestamp
-                   FROM search_group_data`
+	const query = `SELECT groupId,
+						  CAST(groupType as TEXT) as type,
+						  indexedTimestamp,
+						  lastIndexedEntityListId,
+						  lastIndexedEntityElementId
+				   FROM search_group_data`
 	const rows = await sqlCipherFacade.all(query, [])
 	return rows.map(untagSqlObject).map((row) => row as unknown as IndexedGroupData)
 }

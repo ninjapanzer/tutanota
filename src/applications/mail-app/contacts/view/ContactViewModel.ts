@@ -2,15 +2,25 @@ import { ContactModel } from "../../../common/contactsFunctionality/ContactModel
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { EventController } from "../../../common/api/main/EventController.js"
 import { ListElementListModel } from "../../../common/misc/ListElementListModel.js"
-import { compareContacts } from "./ContactGuiUtils.js"
 import { ListState } from "../../../../ui/base/List.js"
-import { assertNotNull, lazyMemoized } from "../../../../platform-kit/utils"
+import { assertNotNull, lazyAsync, lazyMemoized } from "../../../../platform-kit/utils"
 import Stream from "mithril/stream"
-import { Router } from "../../../../ui/ScopedRouter.js"
+import { Router } from "../../../../ui/ScopedThrottledRouter.js"
 import { Contact, ContactTypeRef } from "@tutao/entities/tutanota"
 import { ListAutoSelectBehavior } from "../../../common/misc/DeviceConfig.js"
 import { getElementId } from "../../../../platform-kit/meta"
-import { EntityEventsListener, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import {
+	CacheSyncStatus,
+	EntityUpdatesListener,
+	isUpdateForTypeRef,
+	ListenerPriority,
+} from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SearchRouter } from "../../../common/search/view/SearchRouter"
+import { ContactSearchModel } from "../../search/model/ContactSearchModel"
+import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
+import { compareContacts } from "../ContactUtils"
+import { SearchCategoryType } from "../../../common/api/worker/search/SearchTypes"
 
 /** ViewModel for the overall contact view. */
 export class ContactViewModel {
@@ -26,6 +36,9 @@ export class ContactViewModel {
 		private readonly eventController: EventController,
 		private readonly router: Router,
 		private readonly updateUi: () => unknown,
+		private readonly syncTracker: SyncTracker,
+		private readonly searchRouter: SearchRouter,
+		private readonly searchModel: lazyAsync<ContactSearchModel>,
 	) {}
 
 	readonly listModel: ListElementListModel<Contact> = new ListElementListModel<Contact>({
@@ -42,7 +55,10 @@ export class ContactViewModel {
 		autoSelectBehavior: () => ListAutoSelectBehavior.NONE,
 	})
 
+	/** init is called every time the view is opened */
 	async init(contactListId?: Id) {
+		this.syncTracker.addSyncListener(this.syncListener)
+
 		// update url if the view was just opened
 		if (contactListId == null) this.updateUrl()
 		if (this.contactListId) return
@@ -50,6 +66,7 @@ export class ContactViewModel {
 		this.contactListId = assertNotNull(await this.contactModel.getContactListId(), "not available for external users")
 
 		this.initOnce()
+
 		await this.listModel.loadInitial()
 	}
 
@@ -59,12 +76,34 @@ export class ContactViewModel {
 	}
 
 	private readonly initOnce = lazyMemoized(() => {
-		this.eventController.addEntityListener(this.entityListener)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		this.listModelStateStream = this.listModel.stateStream.map(() => {
 			this.updateUi()
 			this.updateUrl()
 		})
 	})
+
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ContactViewModel",
+		onEntityUpdatesReceived: async (updates) => {
+			for (const update of updates) {
+				const { instanceListId, instanceId, operation } = update
+				if (isUpdateForTypeRef(ContactTypeRef, update) && instanceListId === this.contactListId) {
+					await this.listModel.onEntityUpdateReceived(instanceListId, instanceId, operation)
+				}
+			}
+		},
+		priority: ListenerPriority.NORMAL,
+	}
+
+	private readonly syncListener: SyncListener = {
+		id: "ContactViewModel",
+		priority: ListenerPriority.NORMAL,
+		targetStatus: CacheSyncStatus.OnlineSyncOngoing,
+		onSyncStatusChange: async () => {
+			await this.listModel?.reload()
+		},
+	}
 
 	private updateUrl() {
 		const contactId =
@@ -77,18 +116,6 @@ export class ContactViewModel {
 		} else {
 			this.router.routeTo(`/contact/:listId`, { listId: this.contactListId })
 		}
-	}
-
-	private readonly entityListener: EntityEventsListener = {
-		onEntityUpdatesReceived: async (updates) => {
-			for (const update of updates) {
-				const { instanceListId, instanceId, operation } = update
-				if (isUpdateForTypeRef(ContactTypeRef, update) && instanceListId === this.contactListId) {
-					await this.listModel.entityEventReceived(instanceListId, instanceId, operation)
-				}
-			}
-		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
 	}
 
 	async loadAndSelect(contactId: Id) {
@@ -111,9 +138,16 @@ export class ContactViewModel {
 		return this.listModel.state
 	}
 
-	dispose() {
-		this.eventController.removeEntityListener(this.entityListener)
+	deinit() {
+		this.syncTracker.removeSyncListener(this.syncListener)
 		this.listModelStateStream?.end(true)
 		this.listModelStateStream = null
+	}
+	selectSearchResult(searchQuery: SearchQuery, contact: Contact | null) {
+		this.searchRouter.routeTo(searchQuery.query, searchQuery.restriction, contact ? getElementId(contact) : null)
+	}
+	async getSearchResults({ maxResults, query }: QuickSearchQuery): Promise<LiveSearchResult<Contact>> {
+		const { createEmptyRestriction } = await import("../../../common/search/SearchUtils")
+		return (await this.searchModel()).searchContacts({ query, maxResults, restriction: createEmptyRestriction(SearchCategoryType.contact) })
 	}
 }

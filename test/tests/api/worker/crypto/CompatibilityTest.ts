@@ -1,27 +1,20 @@
 import o from "@tutao/otest"
 import {
-	AeadFacade,
-	aes256EncryptSearchIndexEntry,
-	aesDecrypt,
-	aesEncrypt,
+	AeadWithSessionKeySubKeys,
+	AesKeyLength,
 	AsymmetricKeyPair,
-	asyncDecryptBytes,
-	bitArrayToUint8Array,
 	bytesToEd25519PrivateKey,
 	bytesToEd25519PublicKey,
 	bytesToEd25519Signature,
 	bytesToKyberPrivateKey,
 	bytesToKyberPublicKey,
 	cryptoUtils,
-	CryptoWrapper,
 	decapsulateKyber,
-	decryptKey,
 	Ed25519PrivateKey,
 	ed25519PrivateKeyToBytes,
 	ed25519PublicKeyToBytes,
 	ed25519SignatureToBytes,
 	encapsulateKyber,
-	encryptKey,
 	generateKeyFromPassphraseArgon2id,
 	generateKeyFromPassphraseBcrypt,
 	hexToRsaPrivateKey,
@@ -29,22 +22,26 @@ import {
 	hkdf,
 	hmacSha256,
 	hmacSha256Async,
-	IV_BYTE_LENGTH,
+	INITIALIZATION_VECTOR_LENGTH_BYTES,
+	InstanceTypeId,
 	KeyLength,
-	KeyPairType,
 	keyToUint8Array,
 	kyberPrivateKeyToBytes,
 	kyberPublicKeyToBytes,
 	MacTag,
-	PQKeyPairs,
+	pqKeyPairsToPublicKeys,
 	PQPublicKeys,
 	PublicKey,
 	random,
 	Randomizer,
 	rsaDecrypt,
 	rsaEncrypt,
-	SymmetricKeyDeriver,
+	RsaKeyPair,
+	RsaX25519KeyPair,
+	RsaX25519PublicKey,
+	SymmetricCipherVersion,
 	uint8ArrayToKey,
+	validateKdfNonceLength,
 	verifyHmacSha256,
 	verifyHmacSha256Async,
 	x25519Decapsulate,
@@ -54,6 +51,8 @@ import {
 	base64ToUint8Array,
 	byteArraysToBytes,
 	bytesToByteArrays,
+	filterInt,
+	freshVersioned,
 	hexToUint8Array,
 	neverNull,
 	stringToUtf8Uint8Array,
@@ -63,18 +62,26 @@ import {
 	Versioned,
 } from "../../../../../src/platform-kit/utils"
 import testData from "./CompatibilityTestData.json"
-import { uncompress } from "../../../../../src/platform-kit/instance-pipeline"
 import { matchers, object, when } from "testdouble"
-import { PQFacade } from "../../../../../src/platform-kit/base/crypto/PQFacade.js"
-import { WASMKyberFacade } from "../../../../../src/platform-kit/base/crypto/KyberFacade.js"
-import { Ed25519Facade, WASMEd25519Facade } from "../../../../../src/platform-kit/base/crypto/Ed25519Facade"
-import { PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/crypto/PublicKeySignatureFacade"
+import { PQFacade } from "../../../../../src/platform-kit/base/base-crypto/PQFacade.js"
+import { WASMKyberFacade } from "../../../../../src/platform-kit/base/base-crypto/KyberFacade.js"
+import { Ed25519Facade, WASMEd25519Facade } from "../../../../../src/platform-kit/base/base-crypto/Ed25519Facade"
+import { PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/base-crypto/PublicKeySignatureFacade"
 import { blake3Hash, blake3Kdf, blake3Mac, blake3MacVerify } from "@tutao/crypto/blake3"
+import { PQKeyPairs } from "../../../../../src/platform-kit/crypto/encryption/PQKeyPairs.js"
 import { loadArgon2WASM, loadLibOQSWASM } from "../../../crypto/WebAssemblyTestUtils"
+import { ParsedCiphertextAead, parseVersionedCiphertext } from "../../../../../src/platform-kit/crypto/encryption/symmetric/ParsedCiphertext"
+import { aesDecrypt, aesEncrypt, asyncDecryptBytes } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { decryptKey, encryptKey } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
+import { SymmetricKeyDeriver } from "@tutao/crypto/symmetric-key-deriver"
+import { AeadFacade } from "@tutao/crypto/aead-facade"
+import { uncompress } from "../../../../../src/platform-kit/instance-pipeline/Compression"
+import { uint8ArrayTo128Key, uint8ArrayTo256Key } from "@tutao/crypto/symmetric-cipher-utils"
 
 const originalRandom = random.generateRandomData
 
-const liboqs = await loadLibOQSWASM()
+const libOQS = await loadLibOQSWASM()
 
 o.spec("CompatibilityTest", function () {
 	o.afterEach(function () {
@@ -105,22 +112,22 @@ o.spec("CompatibilityTest", function () {
 			const randomizer = object<Randomizer>()
 			when(randomizer.generateRandomData(matchers.anything())).thenReturn(seed)
 
-			const encapsulation = encapsulateKyber(liboqs, publicKey, randomizer)
+			const encapsulation = encapsulateKyber(libOQS, publicKey, randomizer)
 			// NOTE: We cannot do compatibility tests for encapsulation with this library, only decapsulation, since we cannot inject randomness.
 			//
 			// As such, we'll just test round-trip. Since we test decapsulation, if round-trip is correct, then encapsulation SHOULD be correct.
-			const roundTripSharedSecret = decapsulateKyber(liboqs, privateKey, encapsulation.ciphertext)
+			const roundTripSharedSecret = decapsulateKyber(libOQS, privateKey, encapsulation.ciphertext)
 			o(encapsulation.sharedSecret).deepEquals(roundTripSharedSecret)
 			// o(encapsulation.sharedSecret).deepEquals(hexToUint8Array(td.sharedSecret))
 			// o(encapsulation.ciphertext).deepEquals(hexToUint8Array(td.cipherText))
 
-			const decapsulatedSharedSecret = decapsulateKyber(liboqs, privateKey, hexToUint8Array(td.cipherText))
+			const decapsulatedSharedSecret = decapsulateKyber(libOQS, privateKey, hexToUint8Array(td.cipherText))
 			o(decapsulatedSharedSecret).deepEquals(hexToUint8Array(td.sharedSecret))
 		}
 	})
 	o("aes 256", function () {
 		for (const td of testData.aes256Tests) {
-			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, IV_BYTE_LENGTH)
+			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, INITIALIZATION_VECTOR_LENGTH_BYTES)
 			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
 			// encrypt data
 			let encryptedBytes = aesEncrypt(key, base64ToUint8Array(td.plainTextBase64))
@@ -189,19 +196,19 @@ o.spec("CompatibilityTest", function () {
 		}
 	})
 
-	o("aes 128 no mac", function () {
+	o("aes 128 no mac decryption", function () {
+		// We don't test encryption because we don't encrypt like this anymore
 		for (const td of testData.aes128Tests) {
-			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, IV_BYTE_LENGTH)
-			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
-			let encryptedBytes = aes256EncryptSearchIndexEntry(key, base64ToUint8Array(td.plainTextBase64))
-			o(uint8ArrayToBase64(encryptedBytes)).equals(td.cipherTextBase64)
-			let decryptedBytes = uint8ArrayToBase64(aesDecrypt(key, encryptedBytes))
+			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, INITIALIZATION_VECTOR_LENGTH_BYTES)
+			let key = uint8ArrayTo128Key(hexToUint8Array(td.hexKey))
+			let decryptedBytes = uint8ArrayToBase64(aesDecrypt(key, base64ToUint8Array(td.cipherTextBase64)))
 			o(decryptedBytes).equals(td.plainTextBase64)
 		}
 	})
+
 	o("aes 128 mac", function () {
 		for (const td of testData.aes128MacTests) {
-			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, IV_BYTE_LENGTH)
+			random.generateRandomData = (_number) => hexToUint8Array(td.seed).slice(0, INITIALIZATION_VECTOR_LENGTH_BYTES)
 			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
 			let encryptedBytes = aesEncrypt(key, base64ToUint8Array(td.plainTextBase64))
 			o(uint8ArrayToBase64(encryptedBytes)).equals(td.cipherTextBase64)
@@ -214,25 +221,28 @@ o.spec("CompatibilityTest", function () {
 		for (const td of testData.aeadTests) {
 			random.generateRandomData = (IV_BYTE_LENGTH: number) => hexToUint8Array(td.seed).slice(0, IV_BYTE_LENGTH)
 			const aeadFacade = new AeadFacade()
-			const encryptionKey = uint8ArrayToKey(hexToUint8Array(td.encryptionKey))
-			const authenticationKey = uint8ArrayToKey(hexToUint8Array(td.authenticationKey))
-			const keys = { encryptionKey, authenticationKey }
+			const encryptionKey = uint8ArrayTo256Key(hexToUint8Array(td.encryptionKey))
+			const authenticationKey = uint8ArrayTo256Key(hexToUint8Array(td.authenticationKey))
+			const cipherVersion = SymmetricCipherVersion.AeadWithSessionKey
+			const subKeys = new AeadWithSessionKeySubKeys(encryptionKey, authenticationKey)
 			const plaintext = base64ToUint8Array(td.plaintextBase64)
 			const associatedData = base64ToUint8Array(td.associatedData)
-			const ciphertext = base64ToUint8Array(td.ciphertextBase64)
+			const versionedCiphertext = base64ToUint8Array(td.ciphertextBase64)
+			const parsedCiphertext = parseVersionedCiphertext(versionedCiphertext) as ParsedCiphertextAead
 			const plaintextKey = hexToUint8Array(td.plaintextKey)
-			const encryptedKey = base64ToUint8Array(td.encryptedKey)
+			const versionedEncryptedKey = base64ToUint8Array(td.encryptedKey)
+			const parsedEncryptedKey = parseVersionedCiphertext(versionedEncryptedKey) as ParsedCiphertextAead
 
 			// encrypt data
-			const encryptedBytes = aeadFacade.encrypt(keys, plaintext, associatedData)
-			o(ciphertext).deepEquals(encryptedBytes)
-			const decryptedBytes = aeadFacade.decrypt(keys, ciphertext, associatedData)
+			const encryptedBytes = aeadFacade.encrypt(subKeys, plaintext, associatedData)
+			o(versionedCiphertext).deepEquals(encryptedBytes)
+			const decryptedBytes = aeadFacade.decrypt(subKeys, parsedCiphertext, associatedData)
 			o(plaintext).deepEquals(decryptedBytes)
 
 			// encrypt key
-			const reEncryptedKey = aeadFacade.encrypt(keys, plaintextKey, associatedData)
-			o(encryptedKey).deepEquals(reEncryptedKey)
-			const decryptedKey = aeadFacade.decrypt(keys, reEncryptedKey, associatedData)
+			const reEncryptedKey = aeadFacade.encrypt(subKeys, plaintextKey, associatedData)
+			o(versionedEncryptedKey).deepEquals(reEncryptedKey)
+			const decryptedKey = aeadFacade.decrypt(subKeys, parsedEncryptedKey, associatedData)
 			o(plaintextKey).deepEquals(decryptedKey)
 		}
 	})
@@ -254,14 +264,14 @@ o.spec("CompatibilityTest", function () {
 	o("bcrypt 256", function () {
 		for (const td of testData.bcrypt256Tests) {
 			let key = generateKeyFromPassphraseBcrypt(td.password, hexToUint8Array(td.saltHex), KeyLength.b256)
-			o(uint8ArrayToHex(bitArrayToUint8Array(key))).equals(td.keyHex)
+			o(uint8ArrayToHex(keyToUint8Array(key))).equals(td.keyHex)
 		}
 	})
 	o("argon2id", async function () {
 		const argon2 = await loadArgon2WASM()
 		for (let td of testData.argon2idTests) {
 			let key = await generateKeyFromPassphraseArgon2id(argon2, td.password, hexToUint8Array(td.saltHex))
-			o(uint8ArrayToHex(bitArrayToUint8Array(key))).equals(td.keyHex)
+			o(uint8ArrayToHex(keyToUint8Array(key))).equals(td.keyHex)
 		}
 	})
 	o("compression", function () {
@@ -303,7 +313,7 @@ o.spec("CompatibilityTest", function () {
 			} else {
 				try {
 					byteArraysToBytes(byteArrays)
-					throw new Error(" encoding error no thrown")
+					throw new Error(" encoding error not thrown")
 				} catch (e) {
 					o(td.encodingError).equals(e.message)
 				}
@@ -362,13 +372,9 @@ o.spec("CompatibilityTest", function () {
 				privateKey: bytesToKyberPrivateKey(hexToUint8Array(td.privateKyberKey)),
 			}
 
-			const pqPublicKeys: PQPublicKeys = {
-				keyPairType: KeyPairType.TUTA_CRYPT,
-				x25519PublicKey: x25519KeyPair.publicKey,
-				kyberPublicKey: kyberKeyPair.publicKey,
-			}
-			const pqKeyPairs: PQKeyPairs = { keyPairType: KeyPairType.TUTA_CRYPT, x25519KeyPair, kyberKeyPair }
-			const pqFacade = new PQFacade(new WASMKyberFacade(liboqs))
+			const pqPublicKeys = new PQPublicKeys(x25519KeyPair.publicKey, kyberKeyPair.publicKey)
+			const pqKeyPairs = new PQKeyPairs(x25519KeyPair, kyberKeyPair)
+			const pqFacade = new PQFacade(new WASMKyberFacade(libOQS))
 
 			const encapsulation = await pqFacade.encapsulateAndEncode(x25519KeyPair, ephemeralKeyPair, pqPublicKeys, bucketKey)
 			// NOTE: We cannot do compatibility tests for encapsulation with this library, only decapsulation, since we cannot inject randomness.
@@ -393,54 +399,27 @@ o.spec("CompatibilityTest", function () {
 			let encryptionPublicKey: PublicKey
 
 			if (td.pubKyberKey) {
-				let keyPairType = KeyPairType.TUTA_CRYPT
 				let kyberPublicKey = bytesToKyberPublicKey(hexToUint8Array(td.pubKyberKey))
 				let x25519PublicKey = hexToUint8Array(td.pubEccKey)
-				encryptionKeyPair = {
-					keyPairType,
-					kyberKeyPair: {
-						publicKey: kyberPublicKey,
-						privateKey: bytesToKyberPrivateKey(hexToUint8Array(td.privateKyberKey)),
-					},
-					x25519KeyPair: {
-						privateKey: hexToUint8Array(td.privateEccKey),
-						publicKey: x25519PublicKey,
-					},
-				}
-				encryptionPublicKey = {
-					keyPairType,
-					kyberPublicKey,
-					x25519PublicKey,
-				}
+				const x25519KeyPair = { privateKey: hexToUint8Array(td.privateEccKey), publicKey: x25519PublicKey }
+				const kyberKeyPair = { publicKey: kyberPublicKey, privateKey: bytesToKyberPrivateKey(hexToUint8Array(td.privateKyberKey)) }
+				encryptionKeyPair = new PQKeyPairs(x25519KeyPair, kyberKeyPair)
+				encryptionPublicKey = pqKeyPairsToPublicKeys(encryptionKeyPair as PQKeyPairs)
 			} else {
-				// we expect that an rsa key pair are present
+				// we expect that an RSA key pair is present
 				let rsaPublicKey = hexToRsaPublicKey(td.pubRsaKey)
 				if (td.pubEccKey) {
-					let keyPairType = KeyPairType.RSA_AND_X25519
 					let publicEccKey = hexToUint8Array(td.pubEccKey)
-					encryptionKeyPair = {
-						publicKey: rsaPublicKey,
-						privateKey: hexToRsaPrivateKey(td.privateRsaKey),
-						keyPairType,
+					encryptionKeyPair = new RsaX25519KeyPair(
+						rsaPublicKey,
+						hexToRsaPrivateKey(td.privateRsaKey),
 						publicEccKey,
-						privateEccKey: hexToUint8Array(td.privateEccKey),
-					}
-					encryptionPublicKey = {
-						...rsaPublicKey,
-						keyPairType,
-						publicEccKey,
-					}
+						hexToUint8Array(td.privateEccKey),
+					)
+					encryptionPublicKey = new RsaX25519PublicKey(rsaPublicKey, publicEccKey)
 				} else {
-					let keyPairType = KeyPairType.RSA
-					encryptionKeyPair = {
-						publicKey: rsaPublicKey,
-						privateKey: hexToRsaPrivateKey(td.privateRsaKey),
-						keyPairType,
-					}
-					encryptionPublicKey = {
-						...rsaPublicKey,
-						keyPairType,
-					}
+					encryptionKeyPair = new RsaKeyPair(rsaPublicKey, hexToRsaPrivateKey(td.privateRsaKey))
+					encryptionPublicKey = rsaPublicKey
 				}
 			}
 			const versionedEncryptionKeyPair: Versioned<AsymmetricKeyPair> = {
@@ -507,35 +486,46 @@ o.spec("CompatibilityTest", function () {
 		o.test("from session key, from group key 256 bits, from group key 128 bits", function () {
 			for (const td of testData.aeadKeyDerivationTests) {
 				const symmetricKeyDeriver = new SymmetricKeyDeriver()
-				const kdfNonce = hexToUint8Array(td.kdfNonceHex)
-				const globalInstanceId = td.globalInstanceTypeId
+				const kdfNonce = validateKdfNonceLength(hexToUint8Array(td.kdfNonceHex))
+				const splitGlobalInstanceTypeId = td.globalInstanceTypeId.split("/")
+				const instanceTypeId: InstanceTypeId = {
+					app: splitGlobalInstanceTypeId[0],
+					id: filterInt(splitGlobalInstanceTypeId[1]),
+					name: "name",
+				}
 				const keysFrom256 = symmetricKeyDeriver.deriveSubKeysAeadFromGroupKey(
-					uint8ArrayToKey(hexToUint8Array(td.groupKey256Hex)),
+					freshVersioned(uint8ArrayToKey(hexToUint8Array(td.groupKey256Hex))),
 					kdfNonce,
-					globalInstanceId,
+					instanceTypeId,
 				)
+
 				o.check(keysFrom256).deepEquals({
-					encryptionKey: uint8ArrayToKey(hexToUint8Array(td.encryptionKeyFrom256Hex)),
-					authenticationKey: uint8ArrayToKey(hexToUint8Array(td.authenticationKeyFrom256Hex)),
+					cipherVersion: SymmetricCipherVersion.AeadWithGroupKey,
+					groupKeyVersion: 0,
+					encryptionKey: uint8ArrayTo256Key(hexToUint8Array(td.encryptionKeyFrom256Hex)),
+					authenticationKey: uint8ArrayTo256Key(hexToUint8Array(td.authenticationKeyFrom256Hex)),
 				})
 
 				const keysFrom128 = symmetricKeyDeriver.deriveSubKeysAeadFromGroupKey(
-					uint8ArrayToKey(hexToUint8Array(td.groupKey128Hex)),
+					freshVersioned(uint8ArrayToKey(hexToUint8Array(td.groupKey128Hex))),
 					kdfNonce,
-					globalInstanceId,
+					instanceTypeId,
 				)
 				o.check(keysFrom128).deepEquals({
-					encryptionKey: uint8ArrayToKey(hexToUint8Array(td.encryptionKeyFrom128Hex)),
-					authenticationKey: uint8ArrayToKey(hexToUint8Array(td.authenticationKeyFrom128Hex)),
+					cipherVersion: SymmetricCipherVersion.AeadWithGroupKey,
+					groupKeyVersion: 0,
+					encryptionKey: uint8ArrayTo256Key(hexToUint8Array(td.encryptionKeyFrom128Hex)),
+					authenticationKey: uint8ArrayTo256Key(hexToUint8Array(td.authenticationKeyFrom128Hex)),
 				})
 
 				const keysFromSessionKey = symmetricKeyDeriver.deriveSubKeysAeadFromSessionKey(
 					uint8ArrayToKey(hexToUint8Array(td.sessionKeyHex)),
-					globalInstanceId,
+					instanceTypeId,
 				)
 				o.check(keysFromSessionKey).deepEquals({
-					encryptionKey: uint8ArrayToKey(hexToUint8Array(td.encryptionKeyFromSessionKeyHex)),
-					authenticationKey: uint8ArrayToKey(hexToUint8Array(td.authenticationKeyFromSessionKeyHex)),
+					cipherVersion: SymmetricCipherVersion.AeadWithSessionKey,
+					encryptionKey: uint8ArrayTo256Key(hexToUint8Array(td.encryptionKeyFromSessionKeyHex)),
+					authenticationKey: uint8ArrayTo256Key(hexToUint8Array(td.authenticationKeyFromSessionKeyHex)),
 				})
 			}
 		})

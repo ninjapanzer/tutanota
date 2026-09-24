@@ -1,15 +1,14 @@
 import o from "@tutao/otest"
-import { EventBusClient, EventBusListener } from "../../../../src/platform-kit/network/EventBusClient.js"
+import { EventBusClient, EventBusListener } from "../../../../src/app-kit/local-store/event/EventBusClient.js"
 import { OperationType, timestampToGeneratedId } from "../../../../src/platform-kit/meta"
 import { DefaultEntityRestCache } from "../../../../src/applications/common/api/worker/rest/DefaultEntityRestCache.js"
-import { OutOfSyncError } from "../../../../src/platform-kit/app-env/OutOfSyncError.js"
-import { matchers, object, verify, when } from "testdouble"
+import { OutOfSyncError, ProgrammingError } from "../../../../src/platform-kit/app-env"
+import { func, matchers, object, verify, when } from "testdouble"
 import { SleepDetector } from "../../../../src/applications/common/api/worker/utils/SleepDetector.js"
 import { UserFacade } from "../../../../src/platform-kit/base/facades/UserFacade"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver, removeOriginals } from "../../TestUtils.js"
 import { InstancePipeline, TypeModelResolver } from "../../../../src/platform-kit/instance-pipeline"
-import { CryptoFacade } from "../../../../src/platform-kit/base/crypto/CryptoFacade"
-import { ProgrammingError } from "../../../../src/platform-kit/app-env"
+import { CryptoFacade } from "../../../../src/platform-kit/base/base-crypto/CryptoFacade"
 import { Thunk } from "../../../../src/platform-kit/utils"
 import { ConnectMode, WsConnectionState } from "../../../../src/platform-kit/network/Constants"
 import { MailTypeRef } from "@tutao/entities/tutanota"
@@ -27,15 +26,22 @@ import {
 } from "@tutao/entities/sys"
 import { WebsocketConnectivityListener } from "../../../../src/platform-kit/network/WebsocketConnectivityListener"
 import { LastProcessedEventBatchProvider } from "../../../../src/platform-kit/network/LastProcessedEventBatchProvider"
-import { EntityUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import {
+	CacheSyncStatus,
+	CachingStatus,
+	EntityUpdateData,
+	entityUpdateToUpdateData,
+} from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { GroupType } from "../../../../src/entities/sys/Utils"
+import { ProgressMonitorInterface } from "../../../../src/platform-kit/network/ProgressMonitorInterface"
 
-export const noPatchesAndInstance: Pick<EntityUpdateData, "instance" | "patches" | "blobInstance"> = {
+export const noPatchesAndInstance: Pick<EntityUpdateData, "instance" | "patches" | "blobInstance" | "cachingStatus"> = {
 	instance: null,
 	patches: null,
 	blobInstance: null,
+	cachingStatus: CachingStatus.CacheNotUpdated,
 }
-o.spec("EventBusClientTest", function () {
+o.spec("EventBusClient", function () {
 	let ebc: EventBusClient
 	let cacheMock: DefaultEntityRestCache
 	let userMock: UserFacade
@@ -49,6 +55,7 @@ o.spec("EventBusClientTest", function () {
 	let cryptoFacadeMock: CryptoFacade
 	let connectivityListenerMock: WebsocketConnectivityListener
 	let lastProcessedEventBatchStorageFacade: LastProcessedEventBatchProvider
+	let createProgressMonitor: (totalWork: number) => ProgressMonitorInterface
 	let now = Date.UTC(2026, 3, 25)
 
 	function initEventBus() {
@@ -70,16 +77,16 @@ o.spec("EventBusClientTest", function () {
 			sleepDetector,
 			typeModelResolver,
 			cryptoFacadeMock,
-			cryptoFacadeMock,
+			object(),
 			() => Promise.resolve(lastProcessedEventBatchStorageFacade),
 			serverDateProvider,
-			object(),
+			createProgressMonitor,
 		)
 	}
 
 	o.before(function () {
 		// Things that are not defined in node but are read-only in Browser
-		if (!globalThis.isBrowser) {
+		if (!globalThis.isBrowserTest) {
 			// @ts-ignore
 			WebSocket.CONNECTING = WebSocket.CONNECTING ?? 0
 			// @ts-ignore
@@ -94,27 +101,7 @@ o.spec("EventBusClientTest", function () {
 	o.beforeEach(async function () {
 		listenerMock = object()
 		lastProcessedEventBatchStorageFacade = object()
-		cacheMock = object({
-			async entityEventsReceived(events): Promise<ReadonlyArray<EntityUpdateData>> {
-				return events.slice()
-			},
-			async getLastEntityEventBatchForGroup(_groupId: Id): Promise<Id | null> {
-				return null
-			},
-			async recordSyncTime(): Promise<void> {
-				return
-			},
-			async timeSinceLastSyncMs(): Promise<number | null> {
-				return null
-			},
-			async purgeStorage(): Promise<void> {},
-			async putLastEntityEventBatchForGroup(_groupId: Id, _batchId: Id): Promise<void> {
-				return
-			},
-			async isOutOfSync(): Promise<boolean> {
-				return false
-			},
-		} as Partial<DefaultEntityRestCache> as DefaultEntityRestCache)
+		cacheMock = object()
 
 		user = createTestEntity(UserTypeRef, {
 			userGroup: createTestEntity(GroupMembershipTypeRef, {
@@ -135,6 +122,7 @@ o.spec("EventBusClientTest", function () {
 		instancePipeline = instancePipelineFromTypeModelResolver(typeModelResolver)
 		cryptoFacadeMock = object()
 		connectivityListenerMock = object()
+		createProgressMonitor = func<(totalWork: number) => ProgressMonitorInterface>()
 		initEventBus()
 	})
 
@@ -150,7 +138,7 @@ o.spec("EventBusClientTest", function () {
 			]
 		})
 
-		o("initial connect: when the cache is clean it initializes cache with GENERATED_MIN_ID", async function () {
+		o.test("initial connect: when the cache is clean it initializes cache with GENERATED_MIN_ID", async function () {
 			when(lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(mailGroupId)).thenResolve(null)
 			when(cacheMock.timeSinceLastSyncMs()).thenResolve(null)
 
@@ -165,7 +153,7 @@ o.spec("EventBusClientTest", function () {
 			)
 		})
 
-		o("reconnect: when the cache is out of sync with the server, the cache is purged", async function () {
+		o.test("reconnect: when the cache is out of sync with the server, the cache is purged", async function () {
 			when(lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(mailGroupId)).thenResolve("lastBatchId")
 			// Make initial connection to simulate reconnect (populate lastEntityEventIds
 			await ebc.connect(ConnectMode.Initial)
@@ -182,7 +170,7 @@ o.spec("EventBusClientTest", function () {
 			verify(listenerMock.onError(matchers.isA(OutOfSyncError)))
 		})
 
-		o("initial connect: when the cache is out of sync with the server, the cache is purged", async function () {
+		o.test("initial connect: when the cache is out of sync with the server, the cache is purged", async function () {
 			when(lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(mailGroupId)).thenResolve("lastBatchId")
 			when(cacheMock.isOutOfSync()).thenResolve(true)
 
@@ -194,19 +182,31 @@ o.spec("EventBusClientTest", function () {
 		})
 	})
 
-	o("parallel received event batches are passed sequentially to the entity rest cache", async function () {
+	o.test("parallel received event batches are passed sequentially to the entity rest cache", async function () {
 		o.timeout(20000)
 		await ebc.connect(ConnectMode.Initial)
 		await socket.onopen?.(new Event("open"))
 
-		const messageData1 = await createEntityMessage(1)
-		const messageData2 = await createEntityMessage(2)
+		const messageData1 = await createEntityMessage(
+			createEntityData({
+				eventBatchId: "1",
+				eventBatchOwner: "ownerId",
+				application: "tutanota",
+				typeId: String(MailTypeRef.typeId),
+			}),
+		)
+		const messageData2 = await createEntityMessage(
+			createEntityData({
+				eventBatchId: "2",
+				eventBatchOwner: "ownerId",
+				application: "tutanota",
+				typeId: String(MailTypeRef.typeId),
+			}),
+		)
 
 		const filteredEvents: EntityUpdateData[] = []
-		when(cacheMock.entityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(filteredEvents)
-		when(
-			listenerMock.onEntityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()),
-		).thenResolve()
+		when(cacheMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(filteredEvents)
+		when(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve()
 
 		// call twice as if it was received in parallel
 		const p1 = socket.onmessage?.({
@@ -220,12 +220,13 @@ o.spec("EventBusClientTest", function () {
 		await Promise.all([p1, p2])
 
 		await ebc.messageQueue
+		await ebc.waitForEmptyQueue()
 
 		// Is waiting for cache to process the first event
-		verify(cacheMock.entityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything()), { times: 2 })
+		verify(cacheMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything()), { times: 2 })
 	})
 
-	o("on counter update it send message to the main thread", async function () {
+	o.test("on counter update it send message to the main thread", async function () {
 		const counterUpdate = createCounterData({ mailGroupId: "group1", counterValue: 4, counterId: "list1" })
 
 		await ebc.connect(ConnectMode.Initial)
@@ -239,22 +240,30 @@ o.spec("EventBusClientTest", function () {
 		const updateCaptor = matchers.captor()
 		verify(listenerMock.onCounterChanged(updateCaptor.capture()))
 
-		o(updateCaptor.values!.map(removeOriginals)).deepEquals([counterUpdate])
+		o.check(updateCaptor.values!.map(removeOriginals)).deepEquals([counterUpdate])
 	})
 
-	o("verify new hash is set when entity updates are processed", async function () {
+	o.test("verify new hash is set when entity updates are processed", async function () {
 		await ebc.connect(ConnectMode.Initial)
 		await socket.onmessage?.({
-			data: await createEntityMessage(1, "newHash"),
+			data: await createEntityMessage(
+				createEntityData({
+					eventBatchId: "1",
+					eventBatchOwner: "ownerId",
+					application: "tutanota",
+					typeId: String(MailTypeRef.typeId),
+					applicationTypesHash: "newHash",
+				}),
+			),
 		} as MessageEvent<string>)
 
 		await ebc.messageQueue
 
-		o(typeModelResolver.getServerApplicationTypesModelHash()).equals("newHash")
+		o.check(typeModelResolver.getServerApplicationTypesModelHash()).equals("newHash")
 	})
 
 	o.spec("sleep detection", function () {
-		o("on connect it starts", async function () {
+		o.test("on connect it starts", async function () {
 			verify(sleepDetector.start(matchers.anything()), { times: 0 })
 
 			await ebc.connect(ConnectMode.Initial)
@@ -263,7 +272,7 @@ o.spec("EventBusClientTest", function () {
 			verify(sleepDetector.start(matchers.anything()), { times: 1 })
 		})
 
-		o("on disconnect it stops", async function () {
+		o.test("on disconnect it stops", async function () {
 			await ebc.connect(ConnectMode.Initial)
 			await socket.onopen?.(new Event("open"))
 
@@ -271,7 +280,7 @@ o.spec("EventBusClientTest", function () {
 			verify(sleepDetector.stop())
 		})
 
-		o("on sleep it reconnects", async function () {
+		o.test("on sleep it reconnects", async function () {
 			let passedCb: Thunk
 			when(sleepDetector.start(matchers.anything())).thenDo((cb: Thunk) => (passedCb = cb))
 			const firstSocket = socket
@@ -293,24 +302,280 @@ o.spec("EventBusClientTest", function () {
 		})
 	})
 
-	async function createEntityMessage(eventBatchId: number, applicationTypesHash: string = "hash"): Promise<string> {
-		const event: WebsocketEntityData = createTestEntity(WebsocketEntityDataTypeRef, {
-			eventBatchId: String(eventBatchId),
-			eventBatchOwner: "ownerId",
+	o.spec("all event batches are processed", function () {
+		const mailGroupId = "mailGroupId"
+		let progressMonitor: ProgressMonitorInterface
+
+		o.beforeEach(function () {
+			user.memberships = [
+				createTestEntity(GroupMembershipTypeRef, {
+					groupType: GroupType.Mail,
+					group: mailGroupId,
+				}),
+			]
+			when(lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(mailGroupId)).thenResolve("lastBatchId")
+
+			progressMonitor = object()
+			when(progressMonitor.isDone()).thenResolve(false)
+			when(createProgressMonitor(matchers.anything())).thenReturn(progressMonitor)
+		})
+
+		o.test("event batch with entity update of a known type is processed", async function () {
+			const eventBatchId = "1"
+			const batchEvents = [
+				await entityUpdateToUpdateData(
+					createTestEntity(EntityUpdateTypeRef, {
+						application: MailTypeRef.app,
+						typeId: String(MailTypeRef.typeId),
+						operation: OperationType.UPDATE,
+					}),
+				),
+			]
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve(batchEvents)
+
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;1",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			const entityData = createEntityData({
+				eventBatchId,
+				application: "tutanota",
+				typeId: String(MailTypeRef.typeId),
+				eventBatchOwner: mailGroupId,
+			})
+			await socket.onmessage?.({
+				data: await createEntityMessage(entityData),
+			} as MessageEvent)
+			await ebc.messageQueue
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
+			await socket.onmessage?.({
+				data: "initialSyncDone",
+			} as MessageEvent)
+			await ebc.messageQueue
+			await ebc.waitForEmptyQueue()
+			verify(listenerMock.onEntityUpdatesReceived(batchEvents, eventBatchId, mailGroupId, matchers.anything()))
+			verify(progressMonitor.workDone(1), { times: 1 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
+		})
+
+		o.test("event batch with entity update of an unknown type is processed", async function () {
+			const eventBatchId = "1"
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
+
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;1",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			const entityData = createEntityData({ eventBatchId, application: "unknown", typeId: "1", eventBatchOwner: mailGroupId })
+			await socket.onmessage?.({
+				data: await createEntityMessage(entityData),
+			} as MessageEvent)
+			await ebc.messageQueue
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
+			await socket.onmessage?.({
+				data: "initialSyncDone",
+			} as MessageEvent)
+			await ebc.messageQueue
+			await ebc.waitForEmptyQueue()
+			verify(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+			verify(progressMonitor.workDone(1), { times: 1 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
+		})
+
+		o.test("event batch with empty entity updates is processed", async function () {
+			const eventBatchId = "1"
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
+
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;1",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			const entityData = createTestEntity(WebsocketEntityDataTypeRef, {
+				eventBatchId,
+				eventBatchOwner: mailGroupId,
+				entityUpdates: [],
+				applicationTypesHash: "hash",
+			})
+			await socket.onmessage?.({
+				data: await createEntityMessage(entityData),
+			} as MessageEvent)
+			await ebc.messageQueue
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
+			await socket.onmessage?.({
+				data: "initialSyncDone",
+			} as MessageEvent)
+			await ebc.messageQueue
+			await ebc.waitForEmptyQueue()
+			verify(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+			verify(progressMonitor.workDone(1), { times: 1 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
+		})
+	})
+
+	o.spec("handle InitialSyncWorkEstimate message", function () {
+		const mailGroupId = "mailGroupId"
+		let progressMonitor: ProgressMonitorInterface
+
+		o.beforeEach(function () {
+			user.memberships = [
+				createTestEntity(GroupMembershipTypeRef, {
+					groupType: GroupType.Mail,
+					group: mailGroupId,
+				}),
+			]
+			when(lastProcessedEventBatchStorageFacade.getLastEntityEventBatchForGroup(mailGroupId)).thenResolve("lastBatchId")
+
+			progressMonitor = object()
+			when(createProgressMonitor(matchers.anything())).thenReturn(progressMonitor)
+		})
+
+		o.test("handle first InitialSyncWorkEstimate message", async function () {
+			const totalWorkCaptor = matchers.captor()
+			when(createProgressMonitor(totalWorkCaptor.capture())).thenReturn(progressMonitor)
+			const workDoneCaptor = matchers.captor()
+			when(progressMonitor.workDone(workDoneCaptor.capture())).thenResolve()
+
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;10",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			// newWorkEstimate (10) + artificialWorkEstimate (25) + initialWorkDone (25)
+			o.check(totalWorkCaptor.value).equals(10 + 25 + 25)
+			// initialWorkDone is finished directly after creating progressMonitor
+			o.check(workDoneCaptor.value).equals(25)
+		})
+
+		o.test("handle subsequent InitialSyncWorkEstimate message", async function () {
+			when(createProgressMonitor(matchers.anything())).thenReturn(progressMonitor)
+			when(progressMonitor.workDone(matchers.anything())).thenResolve()
+
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;1",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			progressMonitor.totalWork = 1230
+			const updateTotalWorkCaptor = matchers.captor()
+			when(progressMonitor.updateTotalWork(updateTotalWorkCaptor.capture())).thenResolve()
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;5",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			o.check(updateTotalWorkCaptor.value).equals(1230 + 5)
+		})
+
+		o.test("reports OnlineSyncOngoingFewUpdates for a work estimate below the small-work threshold", async function () {
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;99",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates))
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing), { times: 0 })
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates))
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing), { times: 0 })
+		})
+
+		o.test("reports OnlineSyncOngoing for a work estimate at or above the small-work threshold", async function () {
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;100",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing))
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates), { times: 0 })
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing))
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates), { times: 0 })
+		})
+	})
+
+	o.spec("handle InitialSyncDone message", function () {
+		o.test("initialSyncDone message calls updateCacheWithMissedEntityUpdates method on cache and resumes the event queue", async function () {
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+			const eventBatchId = "1"
+			const entityUpdateData = await entityUpdateToUpdateData(
+				createTestEntity(EntityUpdateTypeRef, {
+					application: MailTypeRef.app,
+					typeId: String(MailTypeRef.typeId),
+					operation: OperationType.UPDATE,
+				}),
+			)
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, "mailGroupId")).thenResolve([entityUpdateData])
+			when(createProgressMonitor(matchers.anything())).thenReturn(object<ProgressMonitorInterface>())
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			o.check(ebc["eventQueue"]["paused"]).equals(true)
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;1",
+			} as MessageEvent)
+			const entityData = createEntityData({
+				eventBatchId,
+				application: "tutanota",
+				typeId: String(MailTypeRef.typeId),
+				eventBatchOwner: "mailGroupId",
+			})
+			await socket.onmessage?.({
+				data: await createEntityMessage(entityData),
+			} as MessageEvent)
+			await socket.onmessage?.({
+				data: "initialSyncDone;1",
+			} as MessageEvent)
+			await ebc.messageQueue
+			verify(cacheMock.updateCacheWithMissedEntityUpdates([entityUpdateData]), { times: 1 })
+			o.check(ebc["eventQueue"]["paused"]).equals(false)
+		})
+	})
+
+	type EntityMessageParams = { eventBatchId: string; eventBatchOwner: string; application: string; typeId: string; applicationTypesHash?: string }
+
+	function createEntityData({ eventBatchId, eventBatchOwner, application, typeId, applicationTypesHash = "hash" }: EntityMessageParams): WebsocketEntityData {
+		return createTestEntity(WebsocketEntityDataTypeRef, {
+			eventBatchId,
+			eventBatchOwner,
 			entityUpdates: [
 				createTestEntity(EntityUpdateTypeRef, {
-					_id: "eventBatchId",
-					application: "tutanota",
-					typeId: MailTypeRef.typeId.toString(),
-					instanceListId: "listId1",
-					instanceId: "id1",
+					application,
+					typeId,
 					operation: OperationType.UPDATE,
 				}),
 			],
-			applicationTypesHash: applicationTypesHash,
+			applicationTypesHash,
 		})
+	}
+
+	async function createEntityMessage(event: WebsocketEntityData): Promise<string> {
 		const instanceAsData = await instancePipeline.mapAndEncrypt(event._type, event, null)
-		return "entityUpdate;" + JSON.stringify(instanceAsData)
+		return "entityUpdate;" + instanceAsData.getJsonRepresentation()
 	}
 
 	type CounterMessageParams = { mailGroupId: Id; counterValue: number; counterId: Id }
@@ -331,6 +596,6 @@ o.spec("EventBusClientTest", function () {
 
 	async function createCounterMessage(event: WebsocketCounterData): Promise<string> {
 		const instanceAsData = await instancePipeline.mapAndEncrypt(event._type, event, null)
-		return "unreadCounterUpdate;" + JSON.stringify(instanceAsData)
+		return "unreadCounterUpdate;" + instanceAsData.getJsonRepresentation()
 	}
 })

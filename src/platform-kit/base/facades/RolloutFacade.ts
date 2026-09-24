@@ -1,10 +1,10 @@
-import { assertWorkerOrNode, ProgrammingError, RolloutType } from "@tutao/app-env"
-import { getAsEnumValue } from "../../meta"
+import { EnvProvider, ProgrammingError, RolloutType } from "@tutao/app-env"
+import { getAsEnumValue, NULL_ENTITY } from "../../meta"
 import { IServiceExecutor } from "../../network/ServiceRequest"
-import { assertNotNull, LazyLoaded } from "@tutao/utils"
-import { RolloutService } from "@tutao/entities/sys"
+import { assertNotNull, isNotNull, LazyLoaded } from "@tutao/utils"
+import { RolloutService_GET } from "@tutao/entities/sys"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export interface RolloutAction {
 	execute(): Promise<void>
@@ -23,7 +23,7 @@ export class RolloutFacade {
 		private readonly sendError: (error: Error) => Promise<void>,
 	) {
 		this.rolloutActions = new LazyLoaded(async () => {
-			const result = await this.serviceExecutor.get(RolloutService, null)
+			const result = await this.serviceExecutor.execute(RolloutService_GET, NULL_ENTITY, null)
 			const rolloutActions = new Map<RolloutType, RolloutAction>()
 			for (const rollout of result.rollouts) {
 				const rolloutType = assertNotNull(getAsEnumValue(RolloutType, rollout.rolloutType))
@@ -37,7 +37,7 @@ export class RolloutFacade {
 		})
 	}
 
-	public async getScheduledRolloutTypes() {
+	public async getScheduledRolloutTypes(): Promise<MapIterator<RolloutType>> {
 		return (await this.rolloutActions.getAsync()).keys()
 	}
 
@@ -49,7 +49,7 @@ export class RolloutFacade {
 	 * The action will be discarded if the RolloutType is not scheduled for this user, and it will also be deleted
 	 * after being executed.
 	 */
-	public async configureRollout(rolloutType: RolloutType, rolloutAction: RolloutAction) {
+	public async configureRollout(rolloutType: RolloutType, rolloutAction: RolloutAction): Promise<void> {
 		const actions = await this.rolloutActions.getAsync()
 		if (actions.has(rolloutType)) {
 			actions.set(rolloutType, rolloutAction)
@@ -63,16 +63,16 @@ export class RolloutFacade {
 	 * @throws ProgrammingError if the RolloutType was scheduled but not configured.
 	 * @returns RolloutResult that indicates whether it was executed.
 	 */
-	public async processRollout<T>(rolloutType: RolloutType): Promise<void> {
+	public async processRollout(rolloutType: RolloutType): Promise<void> {
 		const rolloutActions = await this.rolloutActions.getAsync()
-		const rollout = rolloutActions.get(rolloutType)
-		if (rollout) {
+		const rollout = rolloutActions.get(rolloutType) ?? null
+		if (isNotNull(rollout)) {
 			try {
 				await rollout.execute()
 			} catch (e) {
 				console.log(`error executing rollout action`, rolloutType)
-				//@ts-ignore We report the error to the user interface but do not block further execution.
-				this.sendError(e)
+				// We report the error to the user interface but do not block further execution.
+				void this.sendError(e)
 			} finally {
 				// we remove it for now to delete locally stored data (potentially sensitive)
 				// it will be scheduled again in the next login

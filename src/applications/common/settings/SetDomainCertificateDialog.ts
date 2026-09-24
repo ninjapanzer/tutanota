@@ -1,17 +1,17 @@
 import m from "mithril"
 import { Dialog } from "../../../ui/base/Dialog.js"
-import * as restError from "@tutao/rest-client/error"
+import { InvalidDataError, LockedError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog.js"
 import { isDomainName } from "../../../platform-kit/utils/FormatUtils.js"
 import stream from "mithril/stream"
 import { LegacyTextField } from "../../../ui/base/LegacyTextField.js"
 import { ofClass } from "@tutao/utils"
 import { locator } from "../api/main/CommonLocator.js"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { getWhitelabelDomainInfo } from "../api/common/utils/CustomerUtils.js"
 import { CustomerInfo } from "@tutao/entities/sys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 function orderWhitelabelCertificate(domain: string, dialog: Dialog) {
 	showProgressDialog(
@@ -22,13 +22,13 @@ function orderWhitelabelCertificate(domain: string, dialog: Dialog) {
 				dialog.close()
 			})
 			.catch(
-				ofClass(restError.TooManyRequestsError, (e) => {
+				ofClass(InvalidDataError, (e) => {
 					Dialog.message("certificateError_msg")
 				}),
 			)
-			.catch(ofClass(restError.LockedError, (e) => Dialog.message("operationStillActive_msg")))
+			.catch(ofClass(LockedError, (e) => Dialog.message("operationStillActive_msg")))
 			.catch(
-				ofClass(restError.PreconditionFailedError, (e) => {
+				ofClass(PreconditionFailedError, (e) => {
 					switch (e.data) {
 						case "lock.locked":
 							Dialog.message("operationStillActive_msg")

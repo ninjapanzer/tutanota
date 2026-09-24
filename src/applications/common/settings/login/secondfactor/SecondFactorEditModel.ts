@@ -3,12 +3,13 @@ import { validateWebauthnDisplayName, WebauthnClient } from "../../../misc/2fa/w
 import type { TotpSecret } from "@tutao/crypto"
 import { assertNotNull, LazyLoaded, neverNull, singleAsync } from "@tutao/utils"
 import { TranslationKey } from "../../../../../ui/utils/LanguageViewModel.js"
-import { isApp, ProgrammingError, SecondFactorType } from "@tutao/app-env"
+import { DomainConfig, EnvProvider, ProgrammingError, SecondFactorType } from "@tutao/app-env"
 import { LoginFacade } from "../../../../../platform-kit/base/facades/LoginFacade.js"
 import { UserError } from "../../../api/main/UserError.js"
 import { getHtmlSanitizer } from "../../../misc/HtmlSanitizer.js"
 import QRCode from "qrcode-svg"
 import { createSecondFactor, GroupInfoTypeRef, U2fRegisteredDevice, User } from "@tutao/entities/sys"
+import { elementIdToId } from "@tutao/meta"
 
 export const enum VerificationStatus {
 	Initial = "Initial",
@@ -60,7 +61,7 @@ export class SecondFactorEditModel {
 		this.otpInfo = new LazyLoaded(async () => {
 			const url = await this.getOtpAuthUrl(this.totpKeys.readableKey)
 
-			const totpQRCodeSvg = isApp()
+			const totpQRCodeSvg = EnvProvider.get().isApp()
 				? null
 				: getHtmlSanitizer().sanitizeSVG(
 						new QRCode({
@@ -165,7 +166,7 @@ export class SecondFactorEditModel {
 			}
 
 			try {
-				this.u2fRegistrationData = await this.webauthnClient.register(this.user._id, this.name)
+				this.u2fRegistrationData = await this.webauthnClient.register(elementIdToId(this.user._id), this.name)
 				this.verificationStatus = VerificationStatus.Success
 			} catch (e) {
 				console.log("Webauthn registration failed: ", e)
@@ -182,12 +183,12 @@ export class SecondFactorEditModel {
 		}
 
 		const sf = createSecondFactor({
-			_ownerGroup: this.user._ownerGroup!,
 			name: this.name,
 			type: this.selectedType,
 			otpSecret: null,
 			u2f: null,
 		})
+		sf._ownerGroup = this.user._ownerGroup!
 
 		if (this.selectedType === SecondFactorType.webauthn) {
 			if (this.verificationStatus !== VerificationStatus.Success) {
@@ -247,7 +248,7 @@ export class SecondFactorEditModel {
 	/**
 	 * check if the given validation code is the current, next or last code for the TOTP
 	 */
-	private async tryCodes(expectedCode: number, key: Uint8Array): Promise<VerificationStatus> {
+	private async tryCodes(expectedCode: number, key: Uint8Array<ArrayBuffer>): Promise<VerificationStatus> {
 		const time = Math.floor(new Date().getTime() / 1000 / 30)
 		// We try out 3 codes: current minute, 30 seconds before and 30 seconds after.
 		// If at least one of them works, we accept it.

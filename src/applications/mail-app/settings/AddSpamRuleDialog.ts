@@ -2,8 +2,8 @@ import m from "mithril"
 import type { TranslationKey } from "../../../ui/utils/LanguageViewModel"
 import { lang } from "../../../ui/utils/LanguageViewModel"
 import { isDomainOrTopLevelDomain, isMailAddress } from "../../../platform-kit/utils/FormatUtils"
-import { assertMainOrNode, TUTA_MAIL_ADDRESS_DOMAINS } from "../../../platform-kit/app-env"
-import { contains, objectEntries } from "../../../platform-kit/utils"
+import { EnvProvider, TUTA_MAIL_ADDRESS_DOMAINS } from "../../../platform-kit/app-env"
+import { contains } from "../../../platform-kit/utils"
 import { Dialog } from "../../../ui/base/Dialog"
 import stream from "mithril/stream"
 import type { SelectorItemList } from "../../../ui/base/DropDownSelector.js"
@@ -15,7 +15,7 @@ import { EmailSenderListElement } from "@tutao/entities/sys"
 import { isOfflineError } from "../../../platform-kit/rest-client/error"
 import { getSpamRuleField, getSpamRuleType } from "../mail/MailUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 type LoadedData = { customDomains: string[]; existingSpamRules: EmailSenderListElement[] }
 
@@ -76,7 +76,7 @@ export function showAddSpamRuleDialog(existingSpamRuleOrTemplate: EmailSenderLis
 	const dialog = Dialog.showActionDialog({
 		title: "addSpamRule_action",
 		child: form,
-		validator: () => validate(selectedType(), valueFieldValue(), selectedField(), loadedData, existingSpamRuleOrTemplate),
+		validator: async () => validate(selectedType(), valueFieldValue(), selectedField(), loadedData, existingSpamRuleOrTemplate),
 		allowOkWithReturn: true,
 		okAction: addSpamRuleOkAction,
 	})
@@ -161,7 +161,8 @@ export function getSpamRuleFieldToName(): Record<SpamRuleFieldType, string> {
 }
 
 export function getSpamRuleFieldMapping(): SelectorItemList<SpamRuleFieldType> {
-	return objectEntries(getSpamRuleFieldToName()).map(([value, name]) => ({
+	let entries = Object.entries(getSpamRuleFieldToName()) as [SpamRuleFieldType, string][]
+	return entries.map(([value, name]) => ({
 		value,
 		name,
 	}))

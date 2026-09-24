@@ -1,22 +1,22 @@
-import { clone } from "../../../../../platform-kit/meta"
+import { clone, elementIdToId, idToElementId } from "../../../../../platform-kit/meta"
 import { CalendarEvent, CalendarEventAttendee } from "@tutao/entities/tutanota"
 import { CalendarAttendeeStatus } from "../../../../../entities/tutanota/Utils"
 import {
 	addDaysForRecurringEvent,
+	AlarmInterval,
 	calendarEventHasMoreThanOneOccurrencesLeft,
 	CalendarTimeRange,
 	getStartOfDayWithZone,
 	getTimeZone,
 } from "../../../../common/calendar/date/CalendarUtils.js"
 import { CalendarEventModel, CalendarOperation, EventSaveResult, EventType, getNonOrganizerAttendees } from "../eventeditor-model/CalendarEventModel.js"
-import * as restError from "../../../../../platform-kit/rest-client/error"
+import { NotFoundError } from "@tutao/rest-client/error"
 import { CalendarInfoBase, CalendarModel } from "../../model/CalendarModel.js"
 import { EndType, ProgrammingError } from "../../../../../platform-kit/app-env"
 import m from "mithril"
-import { deepEqual, incrementDate, isNotEmpty, LazyLoaded, Thunk } from "../../../../../platform-kit/utils"
-import { CalendarEventUidIndexEntry } from "../../../../common/api/worker/facades/lazy/CalendarFacade.js"
+import { convertTextToHtml, deepEqual, incrementDate, isNotEmpty, LazyLoaded, Thunk } from "../../../../../platform-kit/utils"
+import { ResolvedUidIndexEntry } from "../../../../common/api/worker/facades/lazy/CalendarFacade.js"
 import { EventEditorDialog } from "../eventeditor-view/CalendarEventEditDialog.js"
-import { convertTextToHtml } from "../../../../../ui/utils/Formatter.js"
 import { prepareCalendarDescription } from "../../../../common/api/common/utils/CommonCalendarUtils.js"
 import { SearchToken } from "../../../../../ui/utils/QueryTokenUtils"
 import { lang } from "../../../../../ui/utils/LanguageViewModel.js"
@@ -57,7 +57,7 @@ export class CalendarEventPreviewViewModel {
 		if (!this.calendarEvent?._ownerGroup) {
 			return undefined
 		}
-		return this.calendarModel.getCalendarInfo(this.calendarEvent._ownerGroup)
+		return this.calendarModel.getCalendarInfo(idToElementId(this.calendarEvent._ownerGroup))
 	})
 
 	/**
@@ -70,6 +70,7 @@ export class CalendarEventPreviewViewModel {
 	 * @param lazyIndexEntry async function to resolve the progenitor of the shown event
 	 * @param eventModelFactory
 	 * @param calendarInviteHandler
+	 * @param alarms
 	 * @param highlightedStrings
 	 * @param uiUpdateCallback
 	 */
@@ -79,9 +80,10 @@ export class CalendarEventPreviewViewModel {
 		readonly eventType: EventType,
 		private readonly hasBusinessFeature: boolean,
 		ownAttendee: CalendarEventAttendee | null,
-		private readonly lazyIndexEntry: () => Promise<CalendarEventUidIndexEntry | null>,
+		private readonly lazyIndexEntry: () => Promise<ResolvedUidIndexEntry | null>,
 		private readonly eventModelFactory: (mode: CalendarOperation, event: CalendarEvent) => Promise<CalendarEventModel | null>,
 		private readonly calendarInviteHandler: () => Promise<CalendarInviteHandler>,
+		public readonly alarms: AlarmInterval[] | Error,
 		private readonly highlightedStrings?: readonly SearchToken[],
 		private readonly uiUpdateCallback: () => void = m.redraw,
 	) {
@@ -166,7 +168,7 @@ export class CalendarEventPreviewViewModel {
 			const model = await this.eventModelFactory(CalendarOperation.DeleteThis, this.calendarEvent)
 			await model?.apply()
 		} catch (e) {
-			if (!(e instanceof restError.NotFoundError)) {
+			if (!(e instanceof NotFoundError)) {
 				throw e
 			}
 		}
@@ -177,7 +179,7 @@ export class CalendarEventPreviewViewModel {
 			const model = await this.eventModelFactory(CalendarOperation.DeleteAll, this.calendarEvent)
 			await model?.apply()
 		} catch (e) {
-			if (!(e instanceof restError.NotFoundError)) {
+			if (!(e instanceof NotFoundError)) {
 				throw e
 			}
 		}
@@ -196,7 +198,7 @@ export class CalendarEventPreviewViewModel {
 				recurrenceId: this.calendarEvent.startTime,
 			})
 		} catch (err) {
-			if (err instanceof restError.NotFoundError) {
+			if (err instanceof NotFoundError) {
 				console.log("occurrence not found when clicking on the event")
 			} else {
 				throw err
@@ -219,7 +221,7 @@ export class CalendarEventPreviewViewModel {
 			const eventEditor = new EventEditorDialog()
 			await eventEditor.showNewCalendarEventEditDialog(newEventModel, async () => await this.finishThisAndFutureUpdate(progenitorModel, timeZone))
 		} catch (err) {
-			if (err instanceof restError.NotFoundError) {
+			if (err instanceof NotFoundError) {
 				console.log("calendar event not found when clicking on the event")
 			} else {
 				throw err
@@ -235,7 +237,7 @@ export class CalendarEventPreviewViewModel {
 			}
 			await this.finishThisAndFutureUpdate(progenitorModel, this.calendarEvent.repeatRule?.timeZone ?? getTimeZone())
 		} catch (err) {
-			if (err instanceof restError.NotFoundError) {
+			if (err instanceof NotFoundError) {
 				console.log("calendar event not found when clicking on the event")
 			} else {
 				throw err
@@ -280,7 +282,7 @@ export class CalendarEventPreviewViewModel {
 					isAlteredInstance: false,
 				},
 			}
-			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.zone)
+			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.calendarTimeZone)
 
 			const occurrencesLeft =
 				newEventModel.editModels.whenModel.repeatEndOccurrences -
@@ -332,13 +334,13 @@ export class CalendarEventPreviewViewModel {
 			newEventModel.editModels.whenModel.deleteExcludedDates()
 			newEventModel.editModels.whoModel.resetGuestsStatus()
 
-			const calendarId = newEventModel.editModels.whoModel.selectedCalendar.group._id
+			const calendarId = elementIdToId(newEventModel.editModels.whoModel.selectedCalendar.group._id)
 			await newEventModel.editModels.alarmModel.removeCalendarDefaultAlarms(calendarId, this.calendarModel.getGroupSettings())
 
 			const eventEditor = new EventEditorDialog()
 			return await eventEditor.showNewCalendarEventEditDialog(newEventModel)
 		} catch (err) {
-			if (err instanceof restError.NotFoundError) {
+			if (err instanceof NotFoundError) {
 				console.log("calendar event not found when clicking on the event")
 			} else {
 				throw err
@@ -377,7 +379,7 @@ export class CalendarEventPreviewViewModel {
 				recurrenceId: null,
 			})
 		} catch (err) {
-			if (err instanceof restError.NotFoundError) {
+			if (err instanceof NotFoundError) {
 				console.log("calendar event not found when clicking on the event")
 			} else {
 				throw err

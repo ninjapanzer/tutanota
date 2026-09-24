@@ -5,20 +5,21 @@ import {
 	KeyAuthenticationFacade,
 	NewAdminPubKeyAuthenticationParams,
 	PubDistKeyAuthenticationParams,
+	SystemMapKind,
 	UserGroupKeyAuthenticationParams,
 } from "../../../../../src/platform-kit/network/KeyAuthenticationFacade.js"
 import {
 	Aes256Key,
 	aes256RandomKey,
 	cryptoUtils,
-	CryptoWrapper,
 	Ed25519PublicKey,
-	KeyPairType,
 	KyberPublicKey,
+	PQPublicKeys,
 	X25519PublicKey,
 } from "../../../../../src/platform-kit/crypto"
 import { CryptoError } from "../../../../../src/platform-kit/crypto/error"
 import { KeyVersion } from "../../../../../src/platform-kit/utils"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 
 const WRONG_BYTES = new Uint8Array([255, 254, 253])
 const WRONG_ID: Id = "I_CLEARLY_MISSED_SOMETHING" // this must be base64 compatible
@@ -77,7 +78,7 @@ o.spec("KeyAuthenticationFacadeTest", function () {
 	o.spec("user group key authentication system", function () {
 		o("should verify computed tag", async function () {
 			const params: UserGroupKeyAuthenticationParams = {
-				tagType: "USER_GROUP_KEY_TAG",
+				tagType: SystemMapKind.USER_GROUP_KEY_TAG,
 				untrustedKey: { newUserGroupKey },
 				sourceOfTrust: { currentUserGroupKey: currentUserGroupKey },
 				bindingData: {
@@ -122,14 +123,10 @@ o.spec("KeyAuthenticationFacadeTest", function () {
 	o.spec("new admin public key authentication system", function () {
 		o("should verify computed tag", async function () {
 			const params: NewAdminPubKeyAuthenticationParams = {
-				tagType: "NEW_ADMIN_PUB_KEY_TAG",
+				tagType: SystemMapKind.NEW_ADMIN_PUB_KEY_TAG,
 				sourceOfTrust: { receivingUserGroupKey: currentUserGroupKey },
 				untrustedKey: {
-					newAdminPubKey: {
-						keyPairType: KeyPairType.TUTA_CRYPT,
-						kyberPublicKey,
-						x25519PublicKey,
-					},
+					newAdminPubKey: new PQPublicKeys(x25519PublicKey, kyberPublicKey),
 				},
 				bindingData: {
 					newAdminGroupKeyVersion,
@@ -184,9 +181,9 @@ o.spec("KeyAuthenticationFacadeTest", function () {
 	o.spec("public distribution key authentication system", function () {
 		o("should verify computed tag", async function () {
 			const params: PubDistKeyAuthenticationParams = {
-				tagType: "PUB_DIST_KEY_TAG",
+				tagType: SystemMapKind.PUB_DIST_KEY_TAG,
 				sourceOfTrust: { currentAdminGroupKey },
-				untrustedKey: { distPubKey: { keyPairType: KeyPairType.TUTA_CRYPT, kyberPublicKey, x25519PublicKey } },
+				untrustedKey: { distPubKey: new PQPublicKeys(x25519PublicKey, kyberPublicKey) },
 				bindingData: {
 					adminGroupId,
 					userGroupId,
@@ -240,7 +237,7 @@ o.spec("KeyAuthenticationFacadeTest", function () {
 	o.spec("admin group symmetric key authentication system", function () {
 		o("should verify computed tag", async function () {
 			const params: AdminSymKeyAuthenticationParams = {
-				tagType: "ADMIN_SYM_KEY_TAG",
+				tagType: SystemMapKind.ADMIN_SYM_KEY_TAG,
 				sourceOfTrust: { currentReceivingUserGroupKey: currentUserGroupKey },
 				untrustedKey: { newAdminGroupKey },
 				bindingData: {
@@ -282,7 +279,7 @@ o.spec("KeyAuthenticationFacadeTest", function () {
 	o.spec("public identity key authentication system", function () {
 		o("should verify computed tag", async function () {
 			const params: IdentityPubKeyAuthenticationParams = {
-				tagType: "IDENTITY_PUB_KEY_TAG",
+				tagType: SystemMapKind.IDENTITY_PUB_KEY_TAG,
 				sourceOfTrust: { symmetricGroupKey: currentUserGroupKey },
 				untrustedKey: { identityPubKey: ed25519PublicKey },
 				bindingData: {

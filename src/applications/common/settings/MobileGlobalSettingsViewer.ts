@@ -1,8 +1,8 @@
-import { OperationType } from "@tutao/meta"
+import { idToElementId, OperationType } from "@tutao/meta"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { CustomerPropertiesTypeRef, CustomerServerProperties, CustomerServerPropertiesTypeRef, CustomerTypeRef } from "@tutao/entities/sys"
 import m, { Children } from "mithril"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { AccountMaintenanceSettings, AccountMaintenanceUpdateNotifier } from "./AccountMaintenanceSettings.js"
 import { UpdatableSettingsViewer } from "./Interfaces.js"
 import { LazyLoaded, neverNull, noOp, promiseMap } from "@tutao/utils"
@@ -11,7 +11,7 @@ import { EntityClient } from "../../../platform-kit/network/EntityClient"
 import { LoginController } from "../api/main/LoginController"
 import { CustomerFacade } from "../api/worker/facades/lazy/CustomerFacade"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class MobileGlobalSettingsViewer implements UpdatableSettingsViewer {
 	private readonly props = stream<Readonly<CustomerServerProperties>>()
@@ -19,8 +19,8 @@ export class MobileGlobalSettingsViewer implements UpdatableSettingsViewer {
 
 	private readonly customerProperties = new LazyLoaded(() =>
 		this.entityClient
-			.load(CustomerTypeRef, neverNull(this.logins.getUserController().user.customer))
-			.then((customer) => this.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties))),
+			.load(CustomerTypeRef, idToElementId(neverNull(this.logins.getUserController().user.customer)))
+			.then((customer) => this.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties)))),
 	)
 
 	constructor(
@@ -51,13 +51,14 @@ export class MobileGlobalSettingsViewer implements UpdatableSettingsViewer {
 		})
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		this.accountMaintenanceUpdateNotifier?.(updates)
 
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(CustomerServerPropertiesTypeRef, update) && update.operation === OperationType.UPDATE) {
 				return this.updateCustomerServerProperties()
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 }

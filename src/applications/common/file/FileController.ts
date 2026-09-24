@@ -1,11 +1,10 @@
 import { Dialog } from "../../../ui/base/Dialog.js"
-import { assertMainOrNode, isApp } from "@tutao/app-env"
-import { assertNotNull, filterInt, neverNull, newPromise, promiseMap } from "@tutao/utils"
+import { EnvProvider } from "@tutao/app-env"
+import { assertNotNull, filterInt, isNotNull, neverNull, newPromise, promiseMap } from "@tutao/utils"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { deduplicateFilenames, sanitizeFilename } from "../../../ui/utils/FileUtils"
 import { BlobFacade } from "../api/worker/facades/lazy/BlobFacade.js"
-import * as restError from "@tutao/rest-client/error"
-import { isOfflineError } from "@tutao/rest-client/error"
+import { ConnectionError, isOfflineError } from "@tutao/rest-client/error"
 import { CryptoError } from "@tutao/crypto/error"
 import { locator } from "../api/main/CommonLocator.js"
 import { PermissionError } from "../api/common/error/PermissionError.js"
@@ -14,14 +13,15 @@ import { ArchiveDataType } from "../../../entities/sys/Utils"
 import { FileReference, WebFile } from "../../../entities/tutanota/Utils"
 import { TransferId } from "../../../entities/drive/Utils"
 import { convertToDataFile, createDataFile } from "../api/worker/utils/DataFile.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { BrowserType } from "../../../platform-kit/app-env/boot/ClientConstants"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { createReferencingInstance, DownloadableFileEntity } from "../../../entities/storage/BlobUtils"
+import { DiskFolder } from "../../drive-app/drive/view/DriveUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
-const enum DownloadPostProcessing {
+export const enum DownloadPostProcessing {
 	Open,
 	Write,
 }
@@ -83,7 +83,7 @@ export abstract class FileController {
 				}
 			}
 			if (isOffline) {
-				throw new restError.ConnectionError("currently local-store")
+				throw new ConnectionError("currently offline")
 			}
 		} finally {
 			// we don't necessarily know when the user is done with the temporary file that was opened
@@ -183,11 +183,24 @@ export function readLocalFiles(nativeFiles: Array<File>): Promise<Array<DataFile
 	)
 }
 
+export const enum FileChooserMultiMode {
+	Single,
+	Multi,
+}
+
+export const enum FileChooserFileMode {
+	File,
+	Folder,
+}
+
 /**
- * @param allowMultiple allow selecting multiple files
+ * @param multiMode
+ * @param fileMode if {@link FileChooserFileMode#Folder} is passed it `webkitdirectory` is added to the input element
+ * which presents the user with a folder picker instead. `change` even still contains only files but the files do have
+ * `webkitRelativePath` available to them.
  * @param allowedExtensions Array of extensions strings without "."
  */
-export function runFileChooser(allowMultiple: boolean, allowedExtensions?: Array<string>): Promise<File[]> {
+export function runFileChooser(multiMode: FileChooserMultiMode, fileMode: FileChooserFileMode, allowedExtensions?: Array<string>): Promise<File[]> {
 	// each time when called create a new file chooser to make sure that the same file can be selected twice directly after another
 	// remove the last file input
 	const fileInput = document.getElementById("hiddenFileChooser")
@@ -200,8 +213,11 @@ export function runFileChooser(allowMultiple: boolean, allowedExtensions?: Array
 
 	const newFileInput = document.createElement("input")
 	newFileInput.setAttribute("type", "file")
+	if (fileMode === FileChooserFileMode.Folder) {
+		newFileInput.setAttribute("webkitdirectory", "true")
+	}
 
-	if (allowMultiple) {
+	if (multiMode === FileChooserMultiMode.Multi) {
 		newFileInput.setAttribute("multiple", "multiple")
 	}
 
@@ -224,8 +240,8 @@ export function runFileChooser(allowMultiple: boolean, allowedExtensions?: Array
 	return promise
 }
 
-export async function showFileChooser(allowMultiple: boolean, allowedExtensions?: Array<string>): Promise<Array<DataFile>> {
-	const files = await runFileChooser(allowMultiple, allowedExtensions)
+export async function showFileChooser(multiMode: FileChooserMultiMode, allowedExtensions?: Array<string>): Promise<Array<DataFile>> {
+	const files = await runFileChooser(multiMode, FileChooserFileMode.File, allowedExtensions)
 	return readLocalFiles(files).catch(async (e) => {
 		console.log(e)
 		await Dialog.message("couldNotAttachFile_msg")
@@ -233,11 +249,41 @@ export async function showFileChooser(allowMultiple: boolean, allowedExtensions?
 	})
 }
 
-export async function showStandardsFileChooser(allowMultiple: boolean, allowedExtensions?: Array<string>): Promise<Array<WebFile>> {
-	const selectedFiles = await runFileChooser(allowMultiple, allowedExtensions)
+export async function showStandardsFileChooser(multiMode: FileChooserMultiMode, allowedExtensions?: Array<string>): Promise<Array<WebFile>> {
+	const selectedFiles = await runFileChooser(multiMode, FileChooserFileMode.File, allowedExtensions)
 	return selectedFiles.map((f) => {
 		return { _type: "WebFile", file: f }
 	})
+}
+
+export async function showBrowserFolderChooser(multiMode: FileChooserMultiMode): Promise<DiskFolder<WebFile>[]> {
+	const selectedFiles = await runFileChooser(multiMode, FileChooserFileMode.Folder)
+	return buildDirectoryStructure(selectedFiles)
+}
+
+export function buildDirectoryStructure(filesWithRelativePaths: readonly File[]): DiskFolder<WebFile>[] {
+	const virtualRootFolder: DiskFolder<WebFile> = {
+		folders: [],
+		files: [],
+		name: "\0",
+	}
+	for (const file of filesWithRelativePaths) {
+		const pathComponents = file.webkitRelativePath.split("/")
+		pathComponents.pop() // remove the file name itself
+		let currentLevelFolder: DiskFolder<WebFile> = virtualRootFolder
+		for (const component of pathComponents) {
+			const matchingFolder = currentLevelFolder.folders.find((folder) => folder.name === component)
+			if (isNotNull(matchingFolder)) {
+				currentLevelFolder = matchingFolder
+			} else {
+				const newFolder: DiskFolder<WebFile> = { folders: [], files: [], name: component }
+				currentLevelFolder.folders.push(newFolder)
+				currentLevelFolder = newFolder
+			}
+		}
+		currentLevelFolder.files.push({ file: file, _type: "WebFile" })
+	}
+	return virtualRootFolder.folders
 }
 
 /**
@@ -260,8 +306,9 @@ export async function zipDataFiles(dataFiles: Array<DataFile>, name: string): Pr
 		const filename = assertNotNull(deduplicatedMap[sanitizeFilename(file.name)].shift())
 		zip.file(filename, file.data, { binary: true })
 	}
-	const zipData = await zip.generateAsync({ type: "uint8array" })
-	return createDataFile(name, "application/zip", zipData)
+	// jszip currently doesn't have the types to support Uint8Array<ArrayBuffer> directly here.
+	const zipData = await zip.generateAsync({ type: "arraybuffer" })
+	return createDataFile(name, "application/zip", new Uint8Array(zipData))
 }
 
 export async function openDataFileInBrowser(dataFile: DataFile): Promise<void> {
@@ -276,7 +323,8 @@ export async function openDataFileInBrowser(dataFile: DataFile): Promise<void> {
 		// Maybe it will gain enough traction that it will be reverted
 		// It's unclear to me why target=_blank is being ignored. If there is a way to ensure that it always opens a new tab,
 		// Then we should do that instead of this, because it's preferable to keep the mime type.
-		const needsPdfWorkaround = dataFile.mimeType === "application/pdf" && client.browser === BrowserType.FIREFOX && client.browserVersion >= 98
+		const needsPdfWorkaround =
+			dataFile.mimeType === "application/pdf" && ClientDetector.get().browser === BrowserType.FIREFOX && ClientDetector.get().browserVersion >= 98
 
 		const mimeType = needsPdfWorkaround ? "application/octet-stream" : dataFile.mimeType
 
@@ -297,7 +345,7 @@ export async function openDataFileInBrowser(dataFile: DataFile): Promise<void> {
 				window.URL.revokeObjectURL(url)
 			}, 2000)
 		} else {
-			if (client.isIos() && client.browser === BrowserType.CHROME && typeof FileReader === "function") {
+			if (ClientDetector.get().isIos() && ClientDetector.get().browser === BrowserType.CHROME && typeof FileReader === "function") {
 				const reader = new FileReader()
 				const downloadPromise = newPromise((resolve) => {
 					reader.onloadend = async function () {
@@ -329,7 +377,7 @@ export async function downloadAndDecryptFromArchive(
 }
 
 export async function showNativeFilePicker(fileTypes?: Array<string>, isFileOnly: boolean = false): Promise<ReadonlyArray<DataFile>> {
-	if (isApp()) {
+	if (EnvProvider.get().isApp()) {
 		const rect = { width: 0, height: 0, left: 0, top: 0 } as DOMRect
 		try {
 			const fileApp = locator.fileApp

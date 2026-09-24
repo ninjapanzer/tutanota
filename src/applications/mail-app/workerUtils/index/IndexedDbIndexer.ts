@@ -1,30 +1,27 @@
-import { CancelledError, daysToMillis, ENTITY_EVENT_BATCH_TTL_DAYS, NOTHING_INDEXED_TIMESTAMP, ProgrammingError } from "@tutao/app-env"
-import * as restError from "../../../../platform-kit/rest-client/error"
-import { isSameId, isSameTypeRef, OperationType, timestampToGeneratedId } from "../../../../platform-kit/meta"
+import { CancelledError, ENTITY_EVENT_BATCH_TTL_DAYS, NOTHING_INDEXED_TIMESTAMP, TimeConstants } from "@tutao/app-env"
+import { ConnectionError, NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
+import { elementIdToId, idToElementId, isSameId, isSameTypeRef, OperationType, timestampToGeneratedId } from "../../../../platform-kit/meta"
 import type { DatabaseEntry, DbKey, DbTransaction } from "../../../common/api/worker/search/DbFacade.js"
 import { b64UserIdHash, DbFacade } from "../../../common/api/worker/search/DbFacade.js"
-import { contains, DateProvider, defer, downcast, isNotNull, millisToDays, neverNull, promiseMap } from "../../../../platform-kit/utils"
+import { assertNotNull, contains, DateProvider, defer, downcast, isNotNull, millisToDays, neverNull, promiseMap } from "../../../../platform-kit/utils"
 import { filterIndexMemberships } from "../../../common/api/common/utils/IndexUtils.js"
 import type { GroupData } from "../../../common/api/worker/search/SearchTypes.js"
 import { IndexingErrorReason } from "../../../common/api/worker/search/SearchTypes.js"
 import { ContactIndexer } from "./ContactIndexer.js"
-import { MailIndexer } from "./MailIndexer.js"
 import { IndexerCore } from "./IndexerCore.js"
 import { DbError } from "../../../common/api/common/error/DbError.js"
-import type { QueuedBatch } from "../../../../platform-kit/network/EventQueue.js"
-import { EventQueue } from "../../../../platform-kit/network/EventQueue.js"
+import type { QueuedBatch } from "../../../../app-kit/local-store/event/EventQueue.js"
+import { EventQueue } from "../../../../app-kit/local-store/event/EventQueue.js"
 import { MembershipRemovedError } from "../../../common/api/common/error/MembershipRemovedError.js"
 import { InvalidDatabaseStateError } from "../../../common/api/common/error/InvalidDatabaseStateError.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import {
 	_encryptKeyWithVersionedKey,
-	aes256EncryptSearchIndexEntry,
 	aes256RandomKey,
-	aesDecryptUnauthenticated,
 	AesKey,
-	decryptKey,
-	IV_BYTE_LENGTH,
-	random,
+	decrypt256Key,
+	generateInitializationVector,
+	validateInitializationVectorLength,
 	VersionedKey,
 } from "../../../../platform-kit/crypto"
 import { InfoMessageHandler } from "../../../common/gui/InfoMessageHandler.js"
@@ -39,17 +36,19 @@ import {
 	SearchIndexWordsIndex,
 	SearchTermSuggestionsOS,
 } from "../../../common/api/worker/search/IndexTables.js"
-import { KeyLoaderFacade } from "../../../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { getIndexerMetaData, updateEncryptionMetadata } from "../../../common/api/worker/facades/lazy/ConfigurationDatabase.js"
 import { Indexer, IndexerInitParams } from "./Indexer"
 import { EncryptedDbWrapper } from "../../../common/api/worker/search/EncryptedDbWrapper"
 import { IndexingNotSupportedError } from "../../../common/api/common/error/IndexingNotSupportedError"
 import { OutOfSyncError } from "../../../../platform-kit/app-env/OutOfSyncError"
-import { MailTypeRef } from "@tutao/entities/tutanota"
+import { ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import { GroupMembership, User, UserTypeRef } from "@tutao/entities/sys"
 import { getMembershipGroupType, GroupType } from "../../../../entities/sys/Utils"
 import { ClientTypeModelResolver } from "../../../../platform-kit/instance-pipeline"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { aes256EncryptSearchIndexEntry, aesDecryptUnauthenticated } from "../../../../platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { WebMailIndexer } from "./WebMailIndexer.js"
 
 export type InitParams = {
 	user: User
@@ -121,7 +120,7 @@ export class IndexedDbIndexer implements Indexer {
 	 * putting events from websocket before initial events.
 	 * @private visibleForTesting
 	 */
-	eventQueue: EventQueue = new EventQueue("indexer_realtime", (batch: QueuedBatch) => this._processEntityEvents(batch))
+	eventQueue: EventQueue = new EventQueue("indexer_realtime", (batch: QueuedBatch) => this._processEntityUpdates(batch))
 	constructor(
 		private readonly serverDateProvider: DateProvider,
 		/** @private visibleForTesting */
@@ -129,7 +128,7 @@ export class IndexedDbIndexer implements Indexer {
 		private readonly core: IndexerCore,
 		private readonly infoMessageHandler: InfoMessageHandler,
 		private readonly entity: EntityClient,
-		private readonly mailIndexer: MailIndexer,
+		private readonly mailIndexer: WebMailIndexer,
 		private readonly contactIndexer: ContactIndexer,
 		private readonly typeModelResolver: ClientTypeModelResolver,
 		private readonly keyLoaderFacade: KeyLoaderFacade,
@@ -197,7 +196,7 @@ export class IndexedDbIndexer implements Indexer {
 					aimedMailIndexTimestamp: this.mailIndexer.currentIndexTimestamp,
 					indexedMailCount: 0,
 					failedIndexingUpTo: this.mailIndexer.currentIndexTimestamp,
-					error: e instanceof restError.ConnectionError ? IndexingErrorReason.ConnectionLost : IndexingErrorReason.Unknown,
+					error: e instanceof ConnectionError ? IndexingErrorReason.ConnectionLost : IndexingErrorReason.Unknown,
 				})
 
 				this.initDeferred.reject(e)
@@ -208,7 +207,7 @@ export class IndexedDbIndexer implements Indexer {
 	}
 
 	private getDbId(user: User) {
-		return b64UserIdHash(user._id)
+		return b64UserIdHash(elementIdToId(user._id))
 	}
 
 	private async indexOrLoadContactListIfNeeded() {
@@ -219,7 +218,7 @@ export class IndexedDbIndexer implements Indexer {
 			}
 		} catch (e) {
 			// external users have no contact list.
-			if (!(e instanceof restError.NotFoundError)) {
+			if (!(e instanceof NotFoundError)) {
 				throw e
 			}
 		}
@@ -239,7 +238,7 @@ export class IndexedDbIndexer implements Indexer {
 		await this.initDeferred.promise
 
 		if (!this.core.isStoppedProcessing()) {
-			await this.deleteIndex(this.initParams.user._id)
+			await this.deleteIndex(elementIdToId(this.initParams.user._id))
 			await this.fullLoginInit({
 				user: this.initParams.user,
 			})
@@ -288,7 +287,7 @@ export class IndexedDbIndexer implements Indexer {
 		this.eventQueue.resume()
 	}
 
-	async processEntityEvents(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void> {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void> {
 		try {
 			await this.throwIfOutOfDate()
 			await this.writeServerTimestamp()
@@ -297,7 +296,7 @@ export class IndexedDbIndexer implements Indexer {
 				await this.disableMailIndexing()
 			}
 		}
-		this.eventQueue.addBatches([{ events: updates, batchId, groupId, isInitialSyncDone }])
+		this.eventQueue.addBatches([{ updates: updates, batchId, groupId, isInitialSyncDone }])
 		// Trigger event queue processing in case it was stopped due to an error
 		// Realtime queue won't be automatically paused and doesn't need a trigger here. It will be resumed when
 		// we loaded all events.
@@ -312,7 +311,7 @@ export class IndexedDbIndexer implements Indexer {
 	private async reCreateIndex(): Promise<void> {
 		const mailIndexingWasEnabled = this.mailIndexer.mailIndexingEnabled
 		this.mailIndexer.cancelMailIndexing()
-		await this.deleteIndex(this.initParams.user._id)
+		await this.deleteIndex(elementIdToId(this.initParams.user._id))
 		// do not try to init again on error
 		await this.fullLoginInit({
 			user: this.initParams.user,
@@ -325,14 +324,14 @@ export class IndexedDbIndexer implements Indexer {
 
 	private async createIndexTables(user: User, userGroupKey: VersionedKey): Promise<void> {
 		const key = aes256RandomKey()
-		const iv = random.generateRandomData(IV_BYTE_LENGTH)
-		this.db.init({ key, iv })
+		const initializationVector = generateInitializationVector()
+		this.db.init({ key, initializationVector })
 		const groupBatches = await this._loadGroupData(user)
 		const userEncDbKey = _encryptKeyWithVersionedKey(userGroupKey, key)
 		const transaction = await this.db.dbFacade.createTransaction(false, [MetaDataOS, GroupDataOS])
 		await transaction.put(MetaDataOS, Metadata.userEncDbKey, userEncDbKey.key)
 		await transaction.put(MetaDataOS, Metadata.mailIndexingEnabled, this.mailIndexer.mailIndexingEnabled)
-		await transaction.put(MetaDataOS, Metadata.encDbIv, aes256EncryptSearchIndexEntry(key, iv))
+		await transaction.put(MetaDataOS, Metadata.encDbIv, aes256EncryptSearchIndexEntry(key, initializationVector.bytes))
 		await transaction.put(MetaDataOS, Metadata.userGroupKeyVersion, userEncDbKey.encryptingKeyVersion)
 		await transaction.put(MetaDataOS, Metadata.lastEventIndexTimeMs, this.serverDateProvider.now())
 		await this._initGroupData(groupBatches, transaction)
@@ -340,9 +339,9 @@ export class IndexedDbIndexer implements Indexer {
 	}
 
 	private async loadIndexTables(user: User, userGroupKey: AesKey, metaData: EncryptedIndexerMetaData): Promise<void> {
-		const key = decryptKey(userGroupKey, metaData.userEncDbKey)
-		const iv = aesDecryptUnauthenticated(key, neverNull(metaData.encDbIv))
-		this.db.init({ key, iv })
+		const key = decrypt256Key(userGroupKey, metaData.userEncDbKey)
+		const initializationVector = validateInitializationVectorLength(aesDecryptUnauthenticated(key, neverNull(metaData.encDbIv)))
+		this.db.init({ key, initializationVector })
 		const groupDiff = await this._loadGroupDiff(user)
 		await this._updateGroups(user, groupDiff)
 		await this.mailIndexer.updateCurrentIndexTimestamp(user)
@@ -352,7 +351,9 @@ export class IndexedDbIndexer implements Indexer {
 
 	private async updateIndexedGroups(): Promise<void> {
 		const t: DbTransaction = await this.db.dbFacade.createTransaction(true, [GroupDataOS])
-		const indexedGroupIds = await promiseMap(await t.getAll(GroupDataOS), (groupDataEntry: DatabaseEntry) => downcast<Id>(groupDataEntry.key))
+		const indexedGroupIds = await promiseMap(await t.getAll(GroupDataOS), (groupDataEntry: DatabaseEntry) =>
+			Promise.resolve(downcast<Id>(groupDataEntry.key)),
+		)
 
 		if (indexedGroupIds.length === 0) {
 			// tried to index twice, this is probably not our fault
@@ -467,15 +468,15 @@ export class IndexedDbIndexer implements Indexer {
 	}
 
 	/** @private visibleForTesting */
-	async _processEntityEvents(batch: QueuedBatch): Promise<any> {
-		const { groupId, batchId, events } = batch
+	async _processEntityUpdates(batch: QueuedBatch): Promise<any> {
+		const { groupId, batchId, updates } = batch
 		try {
 			await this.initDeferred.promise
 
-			await this._processUserEntityEvents(events)
-			await this.processMailEntityEvents(events)
-			await this.mailIndexer.processEntityEvents(events, groupId, batchId)
-			await this.contactIndexer.processEntityEvents(events, groupId, batchId)
+			await this._processUserEntityUpdates(updates)
+			await this.processMailEntityUpdates(updates)
+			await this.mailIndexer.onEntityUpdatesReceived(updates)
+			await this.processContactEntityUpdates(updates)
 			await this.core.putLastBatchIdForGroup(groupId, batchId)
 		} catch (e) {
 			if (e instanceof CancelledError) {
@@ -483,7 +484,7 @@ export class IndexedDbIndexer implements Indexer {
 			} else if (e instanceof DbError && this.core.isStoppedProcessing()) {
 				console.log("Ignoring DBerror when indexing is disabled", e)
 			} else if (e instanceof InvalidDatabaseStateError) {
-				console.log("InvalidDatabaseStateError during _processEntityEvents")
+				console.log("InvalidDatabaseStateError during _processEntityUpdates")
 
 				this._stopProcessing()
 
@@ -501,10 +502,10 @@ export class IndexedDbIndexer implements Indexer {
 	 *
 	 * ATTENTION: Must be called before the group batch ID is written.
 	 */
-	private async processMailEntityEvents(events: Iterable<EntityUpdateData>) {
+	private async processMailEntityUpdates(events: Iterable<EntityUpdateData>) {
 		for (const event of events) {
 			if (isUpdateForTypeRef(MailTypeRef, event)) {
-				const mailId: IdTuple = [event.instanceListId, event.instanceId]
+				const mailId: IdTuple = [neverNull(event.instanceListId), event.instanceId]
 				try {
 					switch (event.operation) {
 						case OperationType.DELETE:
@@ -518,7 +519,41 @@ export class IndexedDbIndexer implements Indexer {
 							break
 					}
 				} catch (e) {
-					if (e instanceof restError.NotAuthorizedError || e instanceof restError.NotFoundError) {
+					if (e instanceof NotAuthorizedError || e instanceof NotFoundError) {
+						/* empty */
+					} else {
+						throw e
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * Process all contact entity events and delegates them to the indexer.
+	 *
+	 * This is required because we do not use cache handlers, so we have to call these methods on ContactIndexer ourselves.
+	 *
+	 * ATTENTION: Must be called before the group batch ID is written.
+	 */
+	private async processContactEntityUpdates(events: Iterable<EntityUpdateData>) {
+		for (const event of events) {
+			if (isUpdateForTypeRef(ContactTypeRef, event)) {
+				const contactId: IdTuple = [assertNotNull(event.instanceListId), event.instanceId]
+				try {
+					switch (event.operation) {
+						case OperationType.DELETE:
+							await this.contactIndexer.afterContactDeleted(contactId)
+							break
+						case OperationType.UPDATE:
+							await this.contactIndexer.afterContactUpdated(contactId)
+							break
+						case OperationType.CREATE:
+							await this.contactIndexer.afterContactCreated(contactId)
+							break
+					}
+				} catch (e) {
+					if (e instanceof NotAuthorizedError || e instanceof NotFoundError) {
 						continue
 					} else {
 						throw e
@@ -531,14 +566,18 @@ export class IndexedDbIndexer implements Indexer {
 	/**
 	 * @private visibleForTesting
 	 */
-	async _processUserEntityEvents(events: readonly EntityUpdateData[]): Promise<void> {
+	async _processUserEntityUpdates(events: readonly EntityUpdateData[]): Promise<void> {
 		for (const event of events) {
 			if (
-				!(event.operation === OperationType.UPDATE && isSameTypeRef(UserTypeRef, event.typeRef) && isSameId(this.initParams.user._id, event.instanceId))
+				!(
+					event.operation === OperationType.UPDATE &&
+					isSameTypeRef(UserTypeRef, event.typeRef) &&
+					isSameId(this.initParams.user._id, idToElementId(event.instanceId))
+				)
 			) {
 				continue
 			}
-			this.initParams.user = await this.entity.load(UserTypeRef, event.instanceId)
+			this.initParams.user = await this.entity.load(UserTypeRef, idToElementId(event.instanceId))
 			await updateEncryptionMetadata(this.db.dbFacade, this.keyLoaderFacade, MetaDataOS)
 		}
 	}
@@ -551,7 +590,7 @@ export class IndexedDbIndexer implements Indexer {
 
 			const timeSinceLastIndex = now - lastIndexTimeMs
 
-			if (timeSinceLastIndex >= daysToMillis(ENTITY_EVENT_BATCH_TTL_DAYS)) {
+			if (timeSinceLastIndex >= TimeConstants.daysToMillis(ENTITY_EVENT_BATCH_TTL_DAYS)) {
 				throw new OutOfSyncError(
 					`we haven't updated the index in ${millisToDays(timeSinceLastIndex)} days. last update was ${new Date(
 						neverNull(lastIndexTimeMs),
@@ -573,10 +612,6 @@ export class IndexedDbIndexer implements Indexer {
 		const now = this.serverDateProvider.now()
 
 		await transaction.put(MetaDataOS, Metadata.lastEventIndexTimeMs, now)
-	}
-
-	async resizeMailIndex(_: number) {
-		throw new ProgrammingError("resizeMailIndex can only be called with offline storage")
 	}
 
 	async rebuildMailIndex() {
