@@ -396,6 +396,24 @@ impl EntityFacadeImpl {
 					error: None,
 				})
 			},
+			(Cardinality::One, true, ElementValue::Bytes(bytes)) if bytes.is_empty() => {
+				// A required encrypted field stored empty carries no ciphertext, so
+				// there is nothing to decrypt. Same handling as the empty-string
+				// form above: fall back to the type's default.
+				let value = model_value.value_type.get_default();
+				Ok(MappedValue { value, error: None })
+			},
+			(Cardinality::ZeroOrOne, true, ElementValue::Bytes(bytes)) if bytes.is_empty() => {
+				// An optional encrypted field stored empty is absent, not a
+				// zero-length ciphertext. The TS client resolves this to null.
+				// Reached by every mail body: Body has both `text` and
+				// `compressedText`, only one is populated, and the other comes
+				// back empty.
+				Ok(MappedValue {
+					value: ElementValue::Null,
+					error: None,
+				})
+			},
 			(Cardinality::One | Cardinality::ZeroOrOne, true, ElementValue::Bytes(bytes)) => {
 				// If it's a proper encrypted value, then we need to decrypt it and parse it.
 				let plaintext = session_key.decrypt_data(bytes.as_slice()).map_err(|e| {
@@ -923,6 +941,75 @@ mod tests {
 		assert_eq!(Ok(ElementValue::String(String::default())), decrypted_value);
 	}
 
+	#[test]
+	fn decrypt_empty_bytes_optional_encrypted_value_is_null() {
+		// An optional encrypted field the server stores empty arrives as zero
+		// bytes, not as Null. Every mail body hits this: Body carries both
+		// `text` and `compressedText` and only one is ever populated. Handing
+		// the empty sibling to AES fails the IV length check with
+		// InvalidDataSizeError, so it must resolve to Null as it does in TS.
+		let decrypted_value = EntityFacadeImpl::decrypt_and_parse_value(
+			ElementValue::Bytes(Vec::new()),
+			&GenericAesKey::from_bytes(&KNOWN_SK).unwrap(),
+			"test",
+			&create_model_value(ValueType::String, true, Cardinality::ZeroOrOne),
+		)
+		.map(|a| a.value);
+
+		assert_eq!(Ok(ElementValue::Null), decrypted_value);
+	}
+
+	#[test]
+	fn decrypt_empty_bytes_required_encrypted_value_is_default() {
+		// Same shape on a required field: there is no ciphertext to decrypt, so
+		// fall back to the type default exactly as the empty-string form does.
+		let decrypted_value = EntityFacadeImpl::decrypt_and_parse_value(
+			ElementValue::Bytes(Vec::new()),
+			&GenericAesKey::from_bytes(&KNOWN_SK).unwrap(),
+			"test",
+			&create_model_value(ValueType::String, true, Cardinality::One),
+		)
+		.map(|a| a.value);
+
+		assert_eq!(Ok(ElementValue::String(String::default())), decrypted_value);
+	}
+
+	#[test]
+	fn decrypt_non_empty_bytes_still_decrypts() {
+		// Guard against the empty-value arms swallowing real ciphertext.
+		let model_value = create_model_value(ValueType::String, true, Cardinality::ZeroOrOne);
+		let sk = GenericAesKey::from_bytes(&KNOWN_SK).unwrap();
+		let iv = InitializationVector::generate(&RandomizerFacade::from_core(rand_core::OsRng));
+		let value = ElementValue::String("not empty".to_string());
+
+		let encrypted_value =
+			EntityFacadeImpl::encrypt_value(&model_value, &value, &sk, iv).unwrap();
+		let decrypted_value =
+			EntityFacadeImpl::decrypt_and_parse_value(encrypted_value, &sk, "test", &model_value)
+				.map(|a| a.value);
+
+		assert_eq!(
+			Ok(ElementValue::String("not empty".to_string())),
+			decrypted_value
+		);
+	}
+
+	#[test]
+	fn decrypt_empty_bytes_optional_compressed_string_is_null() {
+		// The field that actually triggers this in practice. Body.compressedText
+		// (id 1276) is a ZeroOrOne encrypted CompressedString, and it is the
+		// empty sibling whenever the body was stored in Body.text instead --
+		// which is every draft, so every read of one hit InvalidDataSizeError.
+		let decrypted_value = EntityFacadeImpl::decrypt_and_parse_value(
+			ElementValue::Bytes(Vec::new()),
+			&GenericAesKey::from_bytes(&KNOWN_SK).unwrap(),
+			"compressedText",
+			&create_model_value(ValueType::CompressedString, true, Cardinality::ZeroOrOne),
+		)
+		.map(|a| a.value);
+
+		assert_eq!(Ok(ElementValue::Null), decrypted_value);
+	}
 	#[test]
 	fn compress_empty_compressed_string() {
 		let session_key = GenericAesKey::from_bytes(&KNOWN_SK).unwrap();
